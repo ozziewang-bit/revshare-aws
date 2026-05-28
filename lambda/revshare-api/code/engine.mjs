@@ -117,6 +117,19 @@ function evalNode(node, rows) {
   }
 }
 
+// Split top-level flat_per_partner_total leaves out of the rule for per_store mode
+function splitTopLevel(rule) {
+  if (rule.type === 'flat_per_partner_total')
+    return { perStoreRule: null, topLevelLeaves: [rule] };
+  if (rule.type === 'sum') {
+    const topLevel = [], keep = [];
+    for (const c of rule.children) (c.type === 'flat_per_partner_total' ? topLevel : keep).push(c);
+    if (!keep.length) return { perStoreRule: null, topLevelLeaves: topLevel };
+    return { perStoreRule: { type: 'sum', children: keep }, topLevelLeaves: topLevel };
+  }
+  return { perStoreRule: rule, topLevelLeaves: [] };
+}
+
 // Group rows by storeId
 function groupByStore(rows) {
   const groups = new Map();
@@ -139,16 +152,27 @@ export function evaluateRun({ rule, rows, aggregationMode }) {
   if (aggregationMode === 'per_store') {
     validatePerStoreTree(rule);
 
+    const { perStoreRule, topLevelLeaves } = splitTopLevel(rule);
     const storeGroups = groupByStore(rows);
     const byStore = [];
-    let total = 0;
+    let storeTotal = 0;
     for (const [storeId, storeRows] of storeGroups) {
-      const payout = evalNode(rule, storeRows);
-      total += payout;
+      const payout = perStoreRule ? evalNode(perStoreRule, storeRows) : 0;
+      storeTotal += payout;
       byStore.push({ storeId, payout, components: [] });
     }
+
+    // Evaluate top-level leaves once across all rows
+    let topLevelPayout = 0;
+    for (const leaf of topLevelLeaves) topLevelPayout += evalNode(leaf, rows);
+
+    const total = storeTotal + topLevelPayout;
     const machineCounts = totalMachineCounts(rows);
-    return { totalPayout: total, byStore, machineCounts };
+    const result = { totalPayout: total, byStore, machineCounts };
+    if (topLevelLeaves.length > 0) {
+      result.topLevel = { payout: topLevelPayout, components: [] };
+    }
+    return result;
 
   } else {
     // whole aggregation

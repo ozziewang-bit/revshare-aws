@@ -226,3 +226,23 @@ test('per_store vs whole: same data crosses threshold differently', () => {
   // 160 total, 60 above × 10% = 6
   assert.equal(ws.totalPayout, 6);
 });
+
+test('flat_per_partner_total in per_store: applied once at top level, recorded in result.topLevel', () => {
+  const result = evaluateRun({
+    rule: { type: 'sum', children: [
+      { type: 'flat_per_machine', rows: [{ model: 'ALL', amount: 100 }] },
+      { type: 'flat_per_partner_total', amount: 5000 },
+    ]},
+    rows: [
+      { storeId: 'A', machineSerial: 'M1', model: 'S5', rentals: 0, revenue: 0 },
+      { storeId: 'B', machineSerial: 'M2', model: 'S5', rentals: 0, revenue: 0 },
+      { storeId: 'C', machineSerial: 'M3', model: 'S5', rentals: 0, revenue: 0 },
+    ],
+    aggregationMode: 'per_store'
+  });
+  // per-store: 1 machine × 100 each = 300; lump: 5000 once
+  assert.equal(result.totalPayout, 5300);
+  assert.equal(result.byStore.length, 3);
+  assert.equal(result.byStore[0].payout, 100);
+  assert.equal(result.topLevel.payout, 5000);
+});
