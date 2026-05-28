@@ -147,3 +147,15 @@ test('flat_per_partner_total nested in max is rejected in per_store mode', () =>
     aggregationMode: 'per_store'
   }), /flat_per_partner_total.*per_store/);
 });
+
+test('sum combinator adds child outputs', () => {
+  const result = evaluateRun({
+    rule: { type: 'sum', children: [
+      { type: 'flat_per_machine', rows: [{ model: 'ALL', amount: 100 }] },
+      { type: 'percent', rows: [{ model: 'ALL', percent: 10 }] },
+    ]},
+    rows: [{ storeId: 'A', machineSerial: 'M1', model: 'S5', rentals: 0, revenue: 1000 }],
+    aggregationMode: 'whole'
+  });
+  assert.equal(result.totalPayout, 200);  // 100 flat + 100 percent
+});
