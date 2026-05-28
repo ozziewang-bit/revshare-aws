@@ -55,3 +55,31 @@ test('flat_per_machine: model not covered and no ALL row → 0 contribution', ()
   });
   assert.equal(result.totalPayout, 300);
 });
+
+test('percent leaf: 10% on S5 revenue, 5% on T35', () => {
+  const result = evaluateRun({
+    rule: { type: 'percent', rows: [
+      { model: 'S5', percent: 10 }, { model: 'T35', percent: 5 },
+    ]},
+    rows: [
+      { storeId: 'A', machineSerial: 'M1', model: 'S5',  rentals: 0, revenue: 10000 },
+      { storeId: 'A', machineSerial: 'M2', model: 'T35', rentals: 0, revenue: 20000 },
+    ],
+    aggregationMode: 'whole'
+  });
+  assert.equal(result.totalPayout, 2000);   // 1000 + 1000
+});
+
+test('percent leaf: ALL applies to uncovered models', () => {
+  const result = evaluateRun({
+    rule: { type: 'percent', rows: [
+      { model: 'S5', percent: 10 }, { model: 'ALL', percent: 2 },
+    ]},
+    rows: [
+      { storeId: 'A', machineSerial: 'M1', model: 'S5',  rentals: 0, revenue: 10000 },
+      { storeId: 'A', machineSerial: 'M2', model: 'L20', rentals: 0, revenue:  5000 },
+    ],
+    aggregationMode: 'whole'
+  });
+  assert.equal(result.totalPayout, 1100);   // 1000 + 100
+});

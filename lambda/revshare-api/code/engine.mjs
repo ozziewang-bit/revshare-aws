@@ -9,6 +9,15 @@ function countByModel(rows) {
   return counts;
 }
 
+// Sum a numeric field by model
+function sumByModel(rows, field) {
+  const sums = {};
+  for (const row of rows) {
+    sums[row.model] = (sums[row.model] || 0) + row[field];
+  }
+  return sums;
+}
+
 function evalFlatPerMachine(node, rows) {
   const counts = countByModel(rows);
   const explicit = new Set(node.rows.map(r => r.model).filter(m => m !== 'ALL'));
@@ -24,10 +33,28 @@ function evalFlatPerMachine(node, rows) {
   return total;
 }
 
+function evalPercent(node, rows) {
+  const sums = sumByModel(rows, 'revenue');
+  const explicit = new Set(node.rows.map(r => r.model).filter(m => m !== 'ALL'));
+  const allRow = node.rows.find(r => r.model === 'ALL');
+  let total = 0;
+  for (const row of node.rows) {
+    if (row.model === 'ALL') {
+      for (const [m, s] of Object.entries(sums))
+        if (!explicit.has(m)) total += s * (row.percent / 100);
+    } else {
+      total += (sums[row.model] || 0) * (row.percent / 100);
+    }
+  }
+  return total;
+}
+
 function evalNode(node, rows) {
   switch (node.type) {
     case 'flat_per_machine':
       return evalFlatPerMachine(node, rows);
+    case 'percent':
+      return evalPercent(node, rows);
     default:
       throw new Error(`unknown rule type: ${node.type}`);
   }
