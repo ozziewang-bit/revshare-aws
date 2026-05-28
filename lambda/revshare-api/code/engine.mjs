@@ -78,7 +78,6 @@ function evalPercent(node, rows) {
 // Allowed: root, or direct child of root sum.
 function validatePerStoreTree(node, depth = 0, parentType = null) {
   if (node.type === 'flat_per_partner_total') {
-    // Only allowed at root (depth 0) or as direct child of root sum (depth 1, parent = 'sum')
     if (depth > 0 && !(depth === 1 && parentType === 'sum')) {
       throw new Error(
         'flat_per_partner_total is not allowed in per_store mode except at root or as direct child of root sum'
@@ -118,14 +117,43 @@ function evalNode(node, rows) {
   }
 }
 
+// Group rows by storeId
+function groupByStore(rows) {
+  const groups = new Map();
+  for (const row of rows) {
+    if (!groups.has(row.storeId)) groups.set(row.storeId, []);
+    groups.get(row.storeId).push(row);
+  }
+  return groups;
+}
+
+// Count all machines by model across all rows
+function totalMachineCounts(rows) {
+  return countByModel(rows);
+}
+
 export function evaluateRun({ rule, rows, aggregationMode }) {
   if (!rule || typeof rule !== 'object' || !rule.type)
     throw new Error('rule must be a node with a type field');
 
   if (aggregationMode === 'per_store') {
     validatePerStoreTree(rule);
-  }
 
-  const payout = evalNode(rule, rows);
-  return { totalPayout: payout };
+    const storeGroups = groupByStore(rows);
+    const byStore = [];
+    let total = 0;
+    for (const [storeId, storeRows] of storeGroups) {
+      const payout = evalNode(rule, storeRows);
+      total += payout;
+      byStore.push({ storeId, payout, components: [] });
+    }
+    const machineCounts = totalMachineCounts(rows);
+    return { totalPayout: total, byStore, machineCounts };
+
+  } else {
+    // whole aggregation
+    const payout = evalNode(rule, rows);
+    const machineCounts = totalMachineCounts(rows);
+    return { totalPayout: payout, byPartner: { payout, components: [] }, machineCounts };
+  }
 }

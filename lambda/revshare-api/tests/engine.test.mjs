@@ -183,3 +183,46 @@ test('min: cap shape returns the smaller', () => {
   });
   assert.equal(result.totalPayout, 5000);    // min(20000, 5000)
 });
+
+test('whole aggregation: byPartner present, no byStore', () => {
+  const result = evaluateRun({
+    rule: { type: 'flat_per_machine', rows: [{ model: 'ALL', amount: 100 }] },
+    rows: [
+      { storeId: 'A', machineSerial: 'M1', model: 'S5', rentals: 0, revenue: 0 },
+      { storeId: 'B', machineSerial: 'M2', model: 'S5', rentals: 0, revenue: 0 },
+    ],
+    aggregationMode: 'whole'
+  });
+  assert.equal(result.totalPayout, 200);
+  assert.equal(result.byPartner.payout, 200);
+  assert.equal(result.byStore, undefined);
+});
+
+test('per_store: byStore present, tiers reset per store', () => {
+  const result = evaluateRun({
+    rule: { type: 'tiered_percent', basis: 'revenue', rows: [
+      { model: 'ALL', tiers: [{ from: 0, to: 100, percent: 0 }, { from: 100, percent: 10 }]}
+    ]},
+    rows: [
+      { storeId: 'A', machineSerial: 'M1', model: 'S5', rentals: 0, revenue: 80 },
+      { storeId: 'B', machineSerial: 'M2', model: 'S5', rentals: 0, revenue: 80 },
+    ],
+    aggregationMode: 'per_store'
+  });
+  assert.equal(result.totalPayout, 0);
+  assert.equal(result.byStore.length, 2);
+  assert.equal(result.byPartner, undefined);
+});
+
+test('per_store vs whole: same data crosses threshold differently', () => {
+  const rule = { type: 'tiered_percent', basis: 'revenue', rows: [
+    { model: 'ALL', tiers: [{ from: 0, to: 100, percent: 0 }, { from: 100, percent: 10 }]}
+  ]};
+  const rows = [
+    { storeId: 'A', machineSerial: 'M1', model: 'S5', rentals: 0, revenue: 80 },
+    { storeId: 'B', machineSerial: 'M2', model: 'S5', rentals: 0, revenue: 80 },
+  ];
+  const ws = evaluateRun({ rule, rows, aggregationMode: 'whole' });
+  // 160 total, 60 above × 10% = 6
+  assert.equal(ws.totalPayout, 6);
+});
