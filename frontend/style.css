@@ -36,3 +36,14 @@ table.ts thead th { background: #f1f5f9; color: var(--text2); font-weight: 600; 
 form label { display: block; margin-bottom: 10px; }
 form input, form select { margin-left: 8px; font-size: 14px; padding: 4px 8px; border-radius: 4px; border: 1px solid var(--border); }
 .muted { color: var(--text3); }
+
+.leaf-card { background: #fff; border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; margin-bottom: 10px; }
+.leaf-card .lh { display: flex; justify-content: space-between; margin-bottom: 8px; }
+.leaf-card .lt { background: #dcfce7; color: #166534; font-family: var(--font-mono); font-size: 10px; padding: 2px 7px; border-radius: 4px; }
+.leaf-card .controls button { background: none; border: none; cursor: pointer; color: var(--text3); font-size: 11px; margin-left: 4px; }
+.leaf-tbl { width: 100%; border-collapse: collapse; font-size: 12px; margin: 6px 0; }
+.leaf-tbl th, .leaf-tbl td { border: 1px solid var(--border); padding: 3px 6px; }
+.leaf-tbl thead th { background: #f8fafc; font-size: 10px; color: var(--text2); font-weight: 600; }
+.leaf-tbl input { width: 100%; border: none; font-family: var(--font-mono); font-size: 11px; padding: 2px 4px; }
+.tier-block { background: #f8fafc; padding: 8px 10px; border-radius: 6px; margin-bottom: 8px; }
+.addbtn { border: 1.5px dashed var(--border); border-radius: 8px; padding: 10px 14px; cursor: pointer; color: var(--text2); background: transparent; width: 100%; }
