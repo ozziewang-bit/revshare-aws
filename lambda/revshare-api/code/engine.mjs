@@ -33,6 +33,33 @@ function evalFlatPerMachine(node, rows) {
   return total;
 }
 
+function applyTiers(amount, tiers) {
+  let payout = 0;
+  for (const t of tiers) {
+    if (amount <= t.from) break;
+    const cap = t.to ?? Infinity;
+    const slice = Math.min(amount, cap) - t.from;
+    if (slice > 0) payout += slice * (t.percent / 100);
+  }
+  return payout;
+}
+
+function evalTieredPercent(node, rows) {
+  const sums = sumByModel(rows, node.basis);
+  const explicit = new Set(node.rows.map(r => r.model).filter(m => m !== 'ALL'));
+  const allRow = node.rows.find(r => r.model === 'ALL');
+  let total = 0;
+  for (const row of node.rows) {
+    if (row.model === 'ALL') {
+      for (const [m, s] of Object.entries(sums))
+        if (!explicit.has(m)) total += applyTiers(s, row.tiers);
+    } else {
+      total += applyTiers(sums[row.model] || 0, row.tiers);
+    }
+  }
+  return total;
+}
+
 function evalPercent(node, rows) {
   const sums = sumByModel(rows, 'revenue');
   const explicit = new Set(node.rows.map(r => r.model).filter(m => m !== 'ALL'));
@@ -55,6 +82,8 @@ function evalNode(node, rows) {
       return evalFlatPerMachine(node, rows);
     case 'percent':
       return evalPercent(node, rows);
+    case 'tiered_percent':
+      return evalTieredPercent(node, rows);
     default:
       throw new Error(`unknown rule type: ${node.type}`);
   }

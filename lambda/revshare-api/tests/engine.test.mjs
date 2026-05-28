@@ -83,3 +83,47 @@ test('percent leaf: ALL applies to uncovered models', () => {
   });
   assert.equal(result.totalPayout, 1100);   // 1000 + 100
 });
+
+test('tiered_percent: marginal brackets on revenue, single ALL row', () => {
+  const result = evaluateRun({
+    rule: { type: 'tiered_percent', basis: 'revenue', rows: [
+      { model: 'ALL', tiers: [
+        { from: 0, to: 50000, percent: 0 },
+        { from: 50000, to: 100000, percent: 10 },
+        { from: 100000, percent: 15 },
+      ]}
+    ]},
+    rows: [{ storeId: 'A', machineSerial: 'M1', model: 'S5', rentals: 0, revenue: 120000 }],
+    aggregationMode: 'whole'
+  });
+  // 50000*0 + 50000*0.10 + 20000*0.15 = 0 + 5000 + 3000 = 8000
+  assert.equal(result.totalPayout, 8000);
+});
+
+test('tiered_percent: per-model tier ladders are independent', () => {
+  const result = evaluateRun({
+    rule: { type: 'tiered_percent', basis: 'revenue', rows: [
+      { model: 'S5', tiers: [{ from: 0, to: 50000, percent: 0 }, { from: 50000, percent: 10 }]},
+      { model: 'T35', tiers: [{ from: 0, to: 30000, percent: 5 }, { from: 30000, percent: 12 }]},
+    ]},
+    rows: [
+      { storeId: 'A', machineSerial: 'M1', model: 'S5', rentals: 0, revenue: 80000 },
+      { storeId: 'A', machineSerial: 'M2', model: 'T35', rentals: 0, revenue: 42000 },
+    ],
+    aggregationMode: 'whole'
+  });
+  // S5: 30000*0.10 = 3000; T35: 30000*0.05 + 12000*0.12 = 1500+1440 = 2940
+  assert.equal(result.totalPayout, 5940);
+});
+
+test('tiered_percent: basis=rentals counts rentals not revenue', () => {
+  const result = evaluateRun({
+    rule: { type: 'tiered_percent', basis: 'rentals', rows: [
+      { model: 'ALL', tiers: [{ from: 0, to: 100, percent: 0 }, { from: 100, percent: 10 }]}
+    ]},
+    rows: [{ storeId: 'A', machineSerial: 'M1', model: 'S5', rentals: 250, revenue: 0 }],
+    aggregationMode: 'whole'
+  });
+  // 100*0 + 150*0.10 = 15
+  assert.equal(result.totalPayout, 15);
+});
