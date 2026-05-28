@@ -127,3 +127,23 @@ test('tiered_percent: basis=rentals counts rentals not revenue', () => {
   // 100*0 + 150*0.10 = 15
   assert.equal(result.totalPayout, 15);
 });
+
+test('flat_per_partner_total at root contributes its amount', () => {
+  const result = evaluateRun({
+    rule: { type: 'flat_per_partner_total', amount: 5000 },
+    rows: [{ storeId: 'A', machineSerial: 'M', model: 'S5', rentals: 0, revenue: 0 }],
+    aggregationMode: 'whole'
+  });
+  assert.equal(result.totalPayout, 5000);
+});
+
+test('flat_per_partner_total nested in max is rejected in per_store mode', () => {
+  assert.throws(() => evaluateRun({
+    rule: { type: 'max', children: [
+      { type: 'percent', rows: [{ model: 'ALL', percent: 10 }] },
+      { type: 'flat_per_partner_total', amount: 10000 }
+    ]},
+    rows: [],
+    aggregationMode: 'per_store'
+  }), /flat_per_partner_total.*per_store/);
+});

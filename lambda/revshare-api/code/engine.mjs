@@ -47,7 +47,6 @@ function applyTiers(amount, tiers) {
 function evalTieredPercent(node, rows) {
   const sums = sumByModel(rows, node.basis);
   const explicit = new Set(node.rows.map(r => r.model).filter(m => m !== 'ALL'));
-  const allRow = node.rows.find(r => r.model === 'ALL');
   let total = 0;
   for (const row of node.rows) {
     if (row.model === 'ALL') {
@@ -63,7 +62,6 @@ function evalTieredPercent(node, rows) {
 function evalPercent(node, rows) {
   const sums = sumByModel(rows, 'revenue');
   const explicit = new Set(node.rows.map(r => r.model).filter(m => m !== 'ALL'));
-  const allRow = node.rows.find(r => r.model === 'ALL');
   let total = 0;
   for (const row of node.rows) {
     if (row.model === 'ALL') {
@@ -76,6 +74,24 @@ function evalPercent(node, rows) {
   return total;
 }
 
+// Validate that flat_per_partner_total only appears in allowed positions in per_store mode.
+// Allowed: root, or direct child of root sum.
+function validatePerStoreTree(node, depth = 0, parentType = null) {
+  if (node.type === 'flat_per_partner_total') {
+    // Only allowed at root (depth 0) or as direct child of root sum (depth 1, parent = 'sum')
+    if (depth > 0 && !(depth === 1 && parentType === 'sum')) {
+      throw new Error(
+        'flat_per_partner_total is not allowed in per_store mode except at root or as direct child of root sum'
+      );
+    }
+  }
+  if (node.children) {
+    for (const child of node.children) {
+      validatePerStoreTree(child, depth + 1, node.type);
+    }
+  }
+}
+
 function evalNode(node, rows) {
   switch (node.type) {
     case 'flat_per_machine':
@@ -84,6 +100,19 @@ function evalNode(node, rows) {
       return evalPercent(node, rows);
     case 'tiered_percent':
       return evalTieredPercent(node, rows);
+    case 'flat_per_partner_total':
+      return node.amount;
+    case 'sum': {
+      let total = 0;
+      for (const child of node.children) total += evalNode(child, rows);
+      return total;
+    }
+    case 'max': {
+      return Math.max(...node.children.map(c => evalNode(c, rows)));
+    }
+    case 'min': {
+      return Math.min(...node.children.map(c => evalNode(c, rows)));
+    }
     default:
       throw new Error(`unknown rule type: ${node.type}`);
   }
@@ -92,6 +121,10 @@ function evalNode(node, rows) {
 export function evaluateRun({ rule, rows, aggregationMode }) {
   if (!rule || typeof rule !== 'object' || !rule.type)
     throw new Error('rule must be a node with a type field');
+
+  if (aggregationMode === 'per_store') {
+    validatePerStoreTree(rule);
+  }
 
   const payout = evalNode(rule, rows);
   return { totalPayout: payout };
