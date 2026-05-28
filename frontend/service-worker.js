@@ -1,5 +1,9 @@
-const CACHE_VERSION = 'revshare-v1';
-const SHELL = ['/', '/index.html', '/style.css', '/app.js', '/manifest.json'];
+const CACHE_VERSION = 'revshare-v2';
+const SHELL = [
+  '/', '/index.html', '/style.css', '/app.js', '/manifest.json',
+  '/lib/html2canvas.min.js', '/lib/jspdf.umd.min.js',
+  '/icon-192.png', '/icon-512.png', '/apple-touch-icon.png'
+];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE_VERSION).then(c => Promise.allSettled(SHELL.map(u => c.add(u)))));
