@@ -1,0 +1,8 @@
+{
+  "name": "revshare-aws",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test lambda/revshare-api/tests/*.mjs"
+  }
+}
