@@ -177,6 +177,7 @@ async function renderPartnerDetail(partnerId) {
     if (leaf) { editorRule.children.push(leaf); render(); }
   }
 
+  // Appended to render() call above — fetches past runs and lists them below the rule editor
   async function renderRunsHistory() {
     const runs = await api('/partners/' + partnerId + '/runs');
     const wrap = document.createElement('div');
