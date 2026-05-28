@@ -63,23 +63,4 @@ export async function getRun(partnerId, runId) {
   return out.Item || null;
 }
 
-export async function recordAuthFail(ip) {
-  const now = Date.now();
-  await ddb.send(new PutCommand({
-    TableName: TABLE,
-    Item: { pk: `AUTHFAIL#${ip}`, sk: `TS#${now}`, ttl: Math.floor(now / 1000) + 60 }
-  }));
-}
-
-export async function countAuthFailsLastMinute(ip) {
-  const since = Date.now() - 60_000;
-  const out = await ddb.send(new QueryCommand({
-    TableName: TABLE,
-    KeyConditionExpression: 'pk = :p AND sk >= :s',
-    ExpressionAttributeValues: { ':p': `AUTHFAIL#${ip}`, ':s': `TS#${since}` },
-    Select: 'COUNT'
-  }));
-  return out.Count || 0;
-}
-
 export { ulid };

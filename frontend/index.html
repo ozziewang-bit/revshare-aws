@@ -9,23 +9,7 @@
   <meta name="theme-color" content="#2563eb">
   <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 </head>
-<body class="no-auth">
-  <!-- Pre-paint auth gate: hides app shell until session is verified -->
-  <script>
-    (function() {
-      var pw = localStorage.getItem('revshare_pw');
-      var exp = parseInt(localStorage.getItem('revshare_pw_exp') || '0', 10);
-      if (pw && exp > Date.now()) document.body.classList.remove('no-auth');
-    })();
-  </script>
-
-  <div class="login-screen">
-    <h1>RevShare</h1>
-    <input type="password" id="pw-input" placeholder="Password" autocomplete="current-password">
-    <button id="pw-submit">Sign in</button>
-    <div id="pw-error" class="error" hidden></div>
-  </div>
-
+<body>
   <div class="shell" id="shell">
     <header class="topbar">
       <div class="brand">RevShare</div>

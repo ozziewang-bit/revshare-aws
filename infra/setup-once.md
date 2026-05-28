@@ -77,8 +77,7 @@ the distribution ID and domain back here once provisioned.
 ## Live IDs (provisioned 2026-05-28)
 
 - DynamoDB table: `RevsharePartner` (ap-northeast-1, on-demand, TTL on `ttl`)
-- SSM password hash: `/revshare/auth-hash` (SecureString, scrypt)
-- IAM role: `arn:aws:iam::585546485067:role/revshare-api-role`
+- IAM role: `arn:aws:iam::585546485067:role/revshare-api-role` (DynamoDB read/write only — SSM dropped when auth was removed 2026-05-28)
 - Lambda: `revshare-api` (Node 22.x, 256MB, 30s timeout, env `REVSHARE_TABLE=RevsharePartner`)
 - API Gateway HTTP API: `mqszkp91di`
 - API endpoint URL: `https://mqszkp91di.execute-api.ap-northeast-1.amazonaws.com`

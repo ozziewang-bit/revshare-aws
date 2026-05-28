@@ -1,23 +1,8 @@
-// === auth ===
+// === API ===
 const API_URL = window.REVSHARE_API_URL || '';   // injected by deploy script
-function getPw() {
-  const pw = localStorage.getItem('revshare_pw');
-  const exp = parseInt(localStorage.getItem('revshare_pw_exp') || '0', 10);
-  if (!pw || exp < Date.now()) return null;
-  return pw;
-}
-function setPw(pw) {
-  localStorage.setItem('revshare_pw', pw);
-  localStorage.setItem('revshare_pw_exp', String(Date.now() + 30 * 24 * 3600 * 1000));
-}
-function clearPw() {
-  localStorage.removeItem('revshare_pw');
-  localStorage.removeItem('revshare_pw_exp');
-}
 async function api(path, opts = {}) {
-  const headers = { 'content-type': 'application/json', 'x-app-password': getPw() || '', ...(opts.headers || {}) };
+  const headers = { 'content-type': 'application/json', ...(opts.headers || {}) };
   const res = await fetch(API_URL + path, { ...opts, headers });
-  if (res.status === 401) { clearPw(); location.reload(); throw new Error('auth_failed'); }
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`HTTP ${res.status}: ${text}`);
@@ -25,30 +10,8 @@ async function api(path, opts = {}) {
   return res.status === 204 ? null : res.json();
 }
 
-// === login screen wiring ===
-document.getElementById('pw-submit').addEventListener('click', async () => {
-  const pw = document.getElementById('pw-input').value;
-  const errEl = document.getElementById('pw-error');
-  errEl.hidden = true;
-  try {
-    const res = await fetch(API_URL + '/partners', { headers: { 'x-app-password': pw } });
-    if (res.ok) {
-      setPw(pw);
-      document.body.classList.remove('no-auth');
-      initApp();
-    } else {
-      errEl.textContent = res.status === 429 ? 'Too many attempts. Wait 1 minute.' : 'Invalid password.';
-      errEl.hidden = false;
-    }
-  } catch (e) {
-    errEl.textContent = 'Network error: ' + e.message;
-    errEl.hidden = false;
-  }
-});
-
 // === router + screens ===
 function initApp() {
-  // Mount partners list by default. Real router added in Task 27.
   renderPartnersList();
 }
 
@@ -420,7 +383,4 @@ async function downloadPdf(run) {
 }
 
 // Boot
-if (getPw()) {
-  document.body.classList.remove('no-auth');
-  initApp();
-}
+initApp();

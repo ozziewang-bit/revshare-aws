@@ -1,6 +1,3 @@
-import { verifyPassword } from './auth.mjs';
-import { recordAuthFail, countAuthFailsLastMinute } from './db.mjs';
-import { handleLogin } from './routes/login.mjs';
 import {
   listPartnersRoute, createPartnerRoute,
   getPartnerRoute, updatePartnerRoute, archivePartnerRoute
@@ -14,11 +11,10 @@ export const handler = async (event) => {
     const method = event.requestContext?.http?.method;
     const path = event.requestContext?.http?.path || event.rawPath || '';
 
-    if (method === 'GET' && path === '/healthz') return ok({ ok: true });
-    if (method === 'POST' && path === '/login') return await handleLogin(event);
+    // API Gateway HTTP-API CORS injects the right headers; just return 204.
+    if (method === 'OPTIONS') return { statusCode: 204, headers: {}, body: '' };
 
-    const authResult = await checkAuth(event);
-    if (authResult) return authResult;
+    if (method === 'GET' && path === '/healthz') return ok({ ok: true });
 
     if (method === 'GET'    && path === '/partners')                                         return await listPartnersRoute();
     if (method === 'POST'   && path === '/partners')                                         return await createPartnerRoute(event);
@@ -36,22 +32,6 @@ export const handler = async (event) => {
     return resp(500, { error: 'internal', message: e.message });
   }
 };
-
-async function checkAuth(event) {
-  const ip = event.requestContext?.http?.sourceIp || 'unknown';
-  const pw = event.headers?.['x-app-password'];
-  if (!pw) return resp(401, { error: 'missing_password' });
-
-  const fails = await countAuthFailsLastMinute(ip);
-  if (fails >= 5) return resp(429, { error: 'rate_limited' });
-
-  const ok = await verifyPassword(pw);
-  if (!ok) {
-    await recordAuthFail(ip);
-    return resp(401, { error: 'invalid' });
-  }
-  return null;
-}
 
 async function routePartner(event, handlerFn) {
   const path = event.requestContext?.http?.path || event.rawPath || '';

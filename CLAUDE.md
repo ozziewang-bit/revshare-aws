@@ -19,10 +19,9 @@ Initial implementation plan (33 tasks): [`docs/superpowers/plans/2026-05-28-revs
 ## 2. Live URLs and resources
 
 - **Site (S3 website, plain HTTP):** http://revshare-frontend-felipetan.s3-website-ap-northeast-1.amazonaws.com
-- **API:** https://mqszkp91di.execute-api.ap-northeast-1.amazonaws.com
+- **API:** https://mqszkp91di.execute-api.ap-northeast-1.amazonaws.com (no auth — see §9)
 - **Lambda:** `revshare-api` (Node 22.x, ap-northeast-1)
 - **DDB table:** `RevsharePartner` (single-table, pk/sk)
-- **SSM:** `/revshare/auth-hash` (SecureString, scrypt format)
 - **CloudFront:** not yet provisioned. Site is HTTP-only via S3 static website
   until you set up CloudFront + ACM + a custom domain.
 
@@ -34,9 +33,8 @@ Account `585546485067`, region `ap-northeast-1`. IAM user `felipe-mac-cli`.
 |---|---|
 | `lambda/revshare-api/code/engine.mjs` | Pure calculation engine. No AWS SDK. Tested via `node:test`. |
 | `lambda/revshare-api/code/csv.mjs` | CSV parser + validation. |
-| `lambda/revshare-api/code/auth.mjs` | scrypt verify + in-memory cache. |
-| `lambda/revshare-api/code/db.mjs` | DynamoDB wrappers (Partner / Run / AuthFail rows). |
-| `lambda/revshare-api/code/routes/` | login.mjs, partners.mjs, runs.mjs |
+| `lambda/revshare-api/code/db.mjs` | DynamoDB wrappers (Partner / Run rows). |
+| `lambda/revshare-api/code/routes/` | partners.mjs, runs.mjs |
 | `lambda/revshare-api/code/index.mjs` | Lambda entry: auth gate + route dispatch. |
 | `lambda/revshare-api/tests/` | `engine.test.mjs` (25 tests), `csv.test.mjs` (6 tests). |
 | `frontend/index.html` | SPA shell + pre-paint auth gate. |
@@ -83,7 +81,6 @@ Single DDB table `RevsharePartner`. Three row families:
 |---|---|---|
 | `PARTNER` | `META#<partnerId>` | Partner config + frozen rule tree. |
 | `RUN#<partnerId>` | `RUN#<runId>` | One run = one CSV upload + computed result. Includes `ruleSnapshot` (rule frozen at calc time) + `csvRaw` (base64) + `csvParsed` + `result`. |
-| `AUTHFAIL#<ip>` | `TS#<epoch_ms>` | Rate-limit log. TTL field auto-purges after 60s. |
 
 **Rule snapshot per run** is load-bearing: editing a partner's rule does NOT
 retroactively change old run results. Each run's PDF/statement reproduces
@@ -91,12 +88,14 @@ exactly what was computed at the time.
 
 ## 6. Backend routes
 
-All routes require `x-app-password` header except `/healthz` and `/login`.
+**No authentication.** Removed 2026-05-28 — single-user app, the operator
+controls who can reach the API URL by other means (custom domain + IP
+allowlist on CloudFront, or just sharing the URL only with the finance
+team). If auth becomes necessary, see §11.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/healthz` | Liveness probe (no auth) |
-| POST | `/login` | Probe — verify password (no auth header required; password in body or header) |
+| GET | `/healthz` | Liveness probe |
 | GET | `/partners` | List non-archived partners |
 | POST | `/partners` | Create partner |
 | GET | `/partners/:id` | Get partner (incl. rule) |
@@ -144,24 +143,15 @@ REVSHARE_CLOUDFRONT_DIST_ID=EXXXXXX ./infra/deploy-frontend.sh
 
 ## 9. Auth
 
-Single-password gate. The plaintext password from initial setup was written
-once to `/tmp/revshare-pw.txt` (chmod 600) on the operator's Mac at deploy
-time — read it once and save it in a password manager; that file may be
-deleted any time.
-
-To rotate:
-```bash
-node -e "const {scryptSync,randomBytes}=require('crypto'); const s=randomBytes(16); const h=scryptSync(process.argv[1],s,64); console.log('scrypt\$'+s.toString('hex')+'\$'+h.toString('hex'))" 'NEW_PASSWORD'
-aws ssm put-parameter --region ap-northeast-1 --name /revshare/auth-hash --type SecureString --overwrite --value "scrypt\$....\$...."
-```
-
-The 5-minute in-memory hash cache means a rotation takes effect within ~5 min
-on the running Lambda, or you can force a cold start:
-```bash
-aws lambda update-function-configuration --function-name revshare-api \
-  --environment "Variables={REVSHARE_TABLE=RevsharePartner,ROTATED=$(date +%s)}" \
-  --region ap-northeast-1
-```
+**No auth.** Removed 2026-05-28. If you ever want to add it back:
+- The auth-fail rate-limit row family already existed in DDB design — you
+  can resurrect it without a schema change.
+- The pattern from `expense` (scrypt hash in SSM, `x-app-password` header,
+  in-memory cache, IP rate limit) is the right template; check the
+  `expense` project's `lambda/expense-data-api/code/index.mjs` for the
+  current shape.
+- Reapply SSM read to the Lambda IAM role (currently removed —
+  `infra/role-policy.json`).
 
 ## 10. Critical rules — don't break these
 
