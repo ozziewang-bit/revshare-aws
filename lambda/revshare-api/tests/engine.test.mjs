@@ -283,3 +283,36 @@ test('breakdown: tiered_percent records tier hits', () => {
   assert.equal(mr.tiersHit[0].payoutPart, 0);
   assert.equal(mr.tiersHit[1].payoutPart, 3000);
 });
+
+test('negative revenue propagates (refund)', () => {
+  const r = evaluateRun({
+    rule: { type: 'percent', rows: [{ model: 'ALL', percent: 10 }] },
+    rows: [{ storeId: 'A', machineSerial: 'M', model: 'S5', rentals: 0, revenue: -5000 }],
+    aggregationMode: 'whole'
+  });
+  assert.equal(r.totalPayout, -500);
+});
+
+test('empty CSV → totalPayout 0', () => {
+  const r = evaluateRun({
+    rule: { type: 'percent', rows: [{ model: 'ALL', percent: 10 }] },
+    rows: [], aggregationMode: 'whole'
+  });
+  assert.equal(r.totalPayout, 0);
+});
+
+test('empty CSV with flat_per_partner_total still contributes', () => {
+  const r = evaluateRun({
+    rule: { type: 'flat_per_partner_total', amount: 5000 },
+    rows: [], aggregationMode: 'whole'
+  });
+  assert.equal(r.totalPayout, 5000);
+});
+
+test('unknown machine model throws', () => {
+  assert.throws(() => evaluateRun({
+    rule: { type: 'percent', rows: [{ model: 'ALL', percent: 10 }] },
+    rows: [{ storeId: 'A', machineSerial: 'M', model: 'X99', rentals: 0, revenue: 100 }],
+    aggregationMode: 'whole'
+  }), /unknown machine model/);
+});
