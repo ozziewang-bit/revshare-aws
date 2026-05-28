@@ -47,3 +47,4 @@ form input, form select { margin-left: 8px; font-size: 14px; padding: 4px 8px; b
 .leaf-tbl input { width: 100%; border: none; font-family: var(--font-mono); font-size: 11px; padding: 2px 4px; }
 .tier-block { background: #f8fafc; padding: 8px 10px; border-radius: 6px; margin-bottom: 8px; }
 .addbtn { border: 1.5px dashed var(--border); border-radius: 8px; padding: 10px 14px; cursor: pointer; color: var(--text2); background: transparent; width: 100%; }
+.hero { font-size: 38px; font-weight: 700; margin: 14px 0; }
