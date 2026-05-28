@@ -25,3 +25,14 @@ body:not(.no-auth) .login-screen { display: none; }
 }
 .brand { font-weight: 700; font-size: 16px; }
 #main { padding: 20px 24px; max-width: 1200px; margin: 0 auto; }
+
+.page-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+.btn-primary { background: var(--acc); color: #fff; border: none; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+.ts table, table.ts { width: 100%; border-collapse: collapse; background: var(--surface); }
+table.ts th, table.ts td { padding: 8px 12px; border-bottom: 1px solid var(--border); text-align: left; font-size: 13px; }
+table.ts thead th { background: #f1f5f9; color: var(--text2); font-weight: 600; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; }
+.row-clickable { cursor: pointer; }
+.row-clickable:hover { background: #f8fafc; }
+form label { display: block; margin-bottom: 10px; }
+form input, form select { margin-left: 8px; font-size: 14px; padding: 4px 8px; border-radius: 4px; border: 1px solid var(--border); }
+.muted { color: var(--text3); }
