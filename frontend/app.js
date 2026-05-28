@@ -1,5 +1,30 @@
 // === API ===
 const API_URL = window.REVSHARE_API_URL || '';   // injected by deploy script
+
+const CURRENCIES = ['TWD', 'USD', 'HKD', 'JPY', 'IDR', 'THB'];
+
+// Friendly display labels + descriptions for the four leaf types.
+// Used by the rule-editor type pill and the add-component picker.
+const LEAF_META = {
+  flat_per_machine:       { label: 'Per-machine fee',     desc: 'Pay a fixed amount per machine deployed (vary by model).' },
+  flat_per_partner_total: { label: 'Lump-sum fee',        desc: 'One flat amount per period — admin fees, minimum floors.' },
+  percent:                { label: 'Flat percent',        desc: 'A fixed % of revenue (vary by model).' },
+  tiered_percent:         { label: 'Tiered percent',      desc: 'Brackets on rentals or revenue with rising %s.' },
+};
+
+const COMBINATOR_META = {
+  max: { label: 'Whichever is higher', desc: 'Pay the largest of two or more branches — a minimum-guarantee floor.' },
+};
+
+// Presets — shortcuts that add multiple leaves at once. The underlying rule
+// shape is still a sum of leaves; this is just a one-click convenience.
+const PRESET_META = {
+  fix_plus_percent: {
+    label: 'Per-machine fee + Revenue share',
+    desc: 'A fixed fee per machine plus a flat % of revenue — added together, neither tiered.',
+    leaves: ['flat_per_machine', 'percent']
+  }
+};
 async function api(path, opts = {}) {
   const headers = { 'content-type': 'application/json', ...(opts.headers || {}) };
   const res = await fetch(API_URL + path, { ...opts, headers });
@@ -50,20 +75,23 @@ async function renderPartnersList() {
 function renderNewPartnerForm() {
   const main = document.getElementById('main');
   main.innerHTML = `
+    <button class="back-link" id="back">← Partners</button>
     <h2>New partner</h2>
+    <p class="muted" style="margin-bottom:18px;">Currency and aggregation mode are fixed once set. The rule can be edited on the partner detail page after creation.</p>
     <form id="new-partner-form">
       <label>Name <input name="name" required></label>
       <label>Currency
-        <select name="currency"><option>TWD</option><option>USD</option><option>HKD</option><option>JPY</option><option>IDR</option></select>
+        <select name="currency">${CURRENCIES.map(c => `<option>${c}</option>`).join('')}</select>
       </label>
-      <label>Aggregation
-        <select name="aggregationMode"><option value="per_store">per store</option><option value="whole">whole partner</option></select>
+      <label>Aggregation mode
+        <select name="aggregationMode"><option value="per_store">per store (one calc per store, summed)</option><option value="whole">whole partner (one calc over all rows)</option></select>
       </label>
-      <div style="margin-top:14px;">
-        <button type="submit" class="btn-primary">Create</button>
+      <div>
+        <button type="submit" class="btn-primary">Create partner</button>
         <button type="button" id="cancel-new">Cancel</button>
       </div>
     </form>`;
+  document.getElementById('back').addEventListener('click', renderPartnersList);
   document.getElementById('cancel-new').addEventListener('click', renderPartnersList);
   document.getElementById('new-partner-form').addEventListener('submit', async (ev) => {
     ev.preventDefault();
@@ -84,22 +112,25 @@ async function renderPartnerDetail(partnerId) {
   // Normalize partner.rule to a top-level SUM for editing
   let editorRule = (p.rule && p.rule.type === 'sum') ? p.rule : { type: 'sum', children: p.rule ? [p.rule] : [] };
 
+  let pickerOpen = false;
+
   function render() {
     main.innerHTML = `
-      <button id="back">← Partners</button>
+      <button class="back-link" id="back">← Partners</button>
       <div class="page-head">
         <div>
-          <h2>${escape(p.name)} <span class="muted" style="font-weight:400;font-size:14px;">— ${escape(p.currency)} · ${escape(p.aggregationMode)}</span></h2>
+          <h2>${escape(p.name)}</h2>
+          <div class="muted" style="font-size:13px;margin-top:2px;">${escape(p.currency)} · ${escape(p.aggregationMode)}</div>
         </div>
         <div>
-          <button id="run-new" class="btn-primary">+ Run calculation</button>
           <button id="save-rule">Save rule</button>
+          <button id="run-new" class="btn-primary">+ Run calculation</button>
         </div>
       </div>
-      <div class="muted" style="font-size:11px;letter-spacing:.04em;margin-bottom:8px;">RULE COMPONENTS · ALL SUMMED TOGETHER</div>
+      <div class="section-label">Rule components · all summed together</div>
       <div id="leaf-list"></div>
-      <button class="addbtn" id="add-leaf">+ Add component</button>
-      <div class="rule-preview muted" style="margin-top:14px;font-size:12px;">
+      <div id="add-slot"></div>
+      <div class="rule-preview">
         Preview: <code>${escape(rulePreview(editorRule))}</code>
       </div>`;
     document.getElementById('back').addEventListener('click', renderPartnersList);
@@ -109,35 +140,179 @@ async function renderPartnerDetail(partnerId) {
       try { await api('/partners/' + partnerId, { method: 'PUT', body: JSON.stringify({ rule: ruleToSave }) }); alert('Saved'); }
       catch (e) { alert(e.message); }
     });
-    document.getElementById('add-leaf').addEventListener('click', () => pickLeaf());
     document.getElementById('run-new').addEventListener('click', () => renderNewRunForm(partnerId, p));
     renderLeafList();
+    renderAddSlot();
     renderRunsHistory();
+  }
+
+  function renderAddSlot() {
+    const slot = document.getElementById('add-slot');
+    if (!pickerOpen) {
+      slot.innerHTML = `<button class="addbtn" id="open-picker">+ Add a rule component</button>`;
+      document.getElementById('open-picker').addEventListener('click', () => { pickerOpen = true; renderAddSlot(); });
+      return;
+    }
+    const sectionHTML = (title, entries) => `
+      <div class="ap-section-title">${escape(title)}</div>
+      <div class="ap-grid">
+        ${entries.map(([type, meta]) => `
+          <button class="ap-card" data-type="${type}">
+            <div class="ap-name">${escape(meta.label)}</div>
+            <div class="ap-desc">${escape(meta.desc)}</div>
+          </button>`).join('')}
+      </div>`;
+    slot.innerHTML = `
+      <div class="add-picker">
+        <div class="ap-head">
+          <div class="ap-title">Pick a component to add</div>
+          <button class="ap-close" id="close-picker">×</button>
+        </div>
+        ${sectionHTML('Single leaf', Object.entries(LEAF_META))}
+        ${sectionHTML('Combinations', Object.entries(COMBINATOR_META))}
+        ${sectionHTML('Quick presets', Object.entries(PRESET_META))}
+      </div>`;
+    document.getElementById('close-picker').addEventListener('click', () => { pickerOpen = false; renderAddSlot(); });
+    slot.querySelectorAll('.ap-card').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const t = btn.dataset.type;
+        if (PRESET_META[t]) {
+          PRESET_META[t].leaves.forEach(l => editorRule.children.push(makeNode(l)));
+        } else if (COMBINATOR_META[t]) {
+          wrapExistingInCombinator(t);
+        } else {
+          editorRule.children.push(makeNode(t));
+        }
+        pickerOpen = false;
+        render();
+      });
+    });
+  }
+
+  // "Whichever is higher / lower" wraps the user's existing rule as one branch
+  // of the combinator and adds a new comparison branch alongside it. If the rule
+  // is empty, the combinator starts with two placeholder branches.
+  function wrapExistingInCombinator(comboType) {
+    const existing = editorRule.children;
+    const comparison = makeNode('flat_per_partner_total');   // default: a fixed floor/cap
+    let branch1;
+    if (existing.length === 0) {
+      branch1 = makeNode('percent');   // empty rule → start with a percent
+    } else if (existing.length === 1) {
+      branch1 = existing[0];
+    } else {
+      branch1 = { type: 'sum', children: existing.slice() };
+    }
+    editorRule.children = [{ type: comboType, children: [branch1, comparison] }];
   }
 
   function renderLeafList() {
     const root = document.getElementById('leaf-list');
     root.innerHTML = '';
-    editorRule.children.forEach((leaf, i) => {
-      const el = document.createElement('div');
-      el.className = 'leaf-card';
-      el.innerHTML = leafCardMarkup(leaf, i, editorRule.children.length);
-      el.querySelector('.btn-remove')?.addEventListener('click', () => { editorRule.children.splice(i,1); render(); });
-      el.querySelector('.btn-up')?.addEventListener('click', () => { if (i>0) { const [m]=editorRule.children.splice(i,1); editorRule.children.splice(i-1,0,m); render(); }});
-      el.querySelector('.btn-down')?.addEventListener('click', () => { if (i<editorRule.children.length-1) { const [m]=editorRule.children.splice(i,1); editorRule.children.splice(i+1,0,m); render(); }});
-      bindLeafInputs(el, leaf, render);
-      root.appendChild(el);
+    editorRule.children.forEach((node, i) => {
+      root.appendChild(buildChildCard(node, i, editorRule.children));
     });
   }
 
-  function pickLeaf() {
-    const choice = prompt('Component type:\n1) flat_per_machine\n2) flat_per_partner_total\n3) percent\n4) tiered_percent\n\nEnter 1-4:');
-    const map = { '1': { type: 'flat_per_machine', rows: [{ model: 'ALL', amount: 0 }] },
-                  '2': { type: 'flat_per_partner_total', amount: 0 },
-                  '3': { type: 'percent', rows: [{ model: 'ALL', percent: 0 }] },
-                  '4': { type: 'tiered_percent', basis: 'revenue', rows: [{ model: 'ALL', tiers: [{ from: 0, percent: 0 }] }] }};
-    const leaf = map[choice];
-    if (leaf) { editorRule.children.push(leaf); render(); }
+  function buildLeafCard(leaf, i, parentArray) {
+    const el = document.createElement('div');
+    el.className = 'leaf-card';
+    el.innerHTML = leafCardMarkup(leaf, i, parentArray.length);
+    el.querySelector('.btn-remove')?.addEventListener('click', () => { parentArray.splice(i,1); render(); });
+    el.querySelector('.btn-up')?.addEventListener('click', () => { if (i>0) { const [m]=parentArray.splice(i,1); parentArray.splice(i-1,0,m); render(); }});
+    el.querySelector('.btn-down')?.addEventListener('click', () => { if (i<parentArray.length-1) { const [m]=parentArray.splice(i,1); parentArray.splice(i+1,0,m); render(); }});
+    bindLeafInputs(el, leaf, render);
+    return el;
+  }
+
+  function buildCombinatorCard(node, i, parentArray) {
+    const meta = COMBINATOR_META[node.type];
+    const el = document.createElement('div');
+    el.className = 'leaf-card combinator-card';
+    el.innerHTML = `
+      <div class="lh">
+        <div><span class="lt lt-combinator">${escape(meta.label)}</span></div>
+        <div class="controls">
+          <button class="btn-up" ${i===0?'disabled':''}>↑</button>
+          <button class="btn-down" ${i===parentArray.length-1?'disabled':''}>↓</button>
+          <button class="btn-remove">Remove</button>
+        </div>
+      </div>
+      <p class="combinator-desc">${escape(meta.desc)}</p>
+      <div class="combinator-children"></div>
+      <div class="combinator-add"></div>`;
+    el.querySelector('.btn-remove').addEventListener('click', () => { parentArray.splice(i,1); render(); });
+    el.querySelector('.btn-up').addEventListener('click', () => { if (i>0) { const [m]=parentArray.splice(i,1); parentArray.splice(i-1,0,m); render(); }});
+    el.querySelector('.btn-down').addEventListener('click', () => { if (i<parentArray.length-1) { const [m]=parentArray.splice(i,1); parentArray.splice(i+1,0,m); render(); }});
+
+    const childrenContainer = el.querySelector('.combinator-children');
+    node.children.forEach((child, j) => {
+      childrenContainer.appendChild(buildChildCard(child, j, node.children));
+    });
+    renderCombinatorAddSlot(el.querySelector('.combinator-add'), node);
+    return el;
+  }
+
+  // Dispatch on node type — leaves render as leaf cards, nested SUMs render
+  // as a multi-component branch card, nested combinators recurse (rare in v1).
+  function buildChildCard(child, j, parentArray) {
+    if (child.type === 'sum')              return buildSumCard(child, j, parentArray);
+    if (COMBINATOR_META[child.type])       return buildCombinatorCard(child, j, parentArray);
+    return buildLeafCard(child, j, parentArray);
+  }
+
+  // Renders a SUM node — used as a branch of a MAX/MIN combinator when the user
+  // wrapped their existing multi-component rule. Inside, child leaves are
+  // editable inline; "+ Add component" appends another leaf to this branch.
+  function buildSumCard(node, i, parentArray) {
+    const el = document.createElement('div');
+    el.className = 'leaf-card sum-card';
+    el.innerHTML = `
+      <div class="lh">
+        <div><span class="lt lt-sum">Sum of components</span></div>
+        <div class="controls">
+          <button class="btn-remove">Remove this branch</button>
+        </div>
+      </div>
+      <p class="combinator-desc">All components in this branch are added together.</p>
+      <div class="sum-children"></div>
+      <div class="sum-add"></div>`;
+    el.querySelector('.btn-remove').addEventListener('click', () => { parentArray.splice(i,1); render(); });
+    const childrenContainer = el.querySelector('.sum-children');
+    node.children.forEach((child, j) => {
+      childrenContainer.appendChild(buildChildCard(child, j, node.children));
+    });
+    renderCombinatorAddSlot(el.querySelector('.sum-add'), node);
+    return el;
+  }
+
+  function renderCombinatorAddSlot(slot, parentNode, isOpen = false) {
+    if (!isOpen) {
+      slot.innerHTML = `<button class="addbtn-small">+ Add another option</button>`;
+      slot.querySelector('.addbtn-small').addEventListener('click', () => renderCombinatorAddSlot(slot, parentNode, true));
+      return;
+    }
+    slot.innerHTML = `
+      <div class="add-picker">
+        <div class="ap-head">
+          <div class="ap-title">Pick an option to compare</div>
+          <button class="ap-close">×</button>
+        </div>
+        <div class="ap-grid">
+          ${Object.entries(LEAF_META).map(([type, meta]) => `
+            <button class="ap-card" data-type="${type}">
+              <div class="ap-name">${escape(meta.label)}</div>
+              <div class="ap-desc">${escape(meta.desc)}</div>
+            </button>`).join('')}
+        </div>
+      </div>`;
+    slot.querySelector('.ap-close').addEventListener('click', () => renderCombinatorAddSlot(slot, parentNode, false));
+    slot.querySelectorAll('.ap-card').forEach(btn => {
+      btn.addEventListener('click', () => {
+        parentNode.children.push(makeNode(btn.dataset.type));
+        render();
+      });
+    });
   }
 
   // Appended to render() call above — fetches past runs and lists them below the rule editor
@@ -165,14 +340,26 @@ async function renderPartnerDetail(partnerId) {
 
 // ---------- Leaf rendering helpers (top-level functions) ----------
 
+function makeNode(type) {
+  switch (type) {
+    case 'flat_per_machine':       return { type, rows: [{ model: 'ALL', amount: 0 }] };
+    case 'flat_per_partner_total': return { type, amount: 0 };
+    case 'percent':                return { type, rows: [{ model: 'ALL', percent: 0 }] };
+    case 'tiered_percent':         return { type, basis: 'revenue', rows: [{ model: 'ALL', tiers: [{ from: 0, percent: 0 }] }] };
+    case 'max':                    return { type, children: [] };   // populated by wrap logic
+    default: throw new Error('unknown node type: ' + type);
+  }
+}
+
 function leafCardMarkup(leaf, i, total) {
+  const friendlyName = LEAF_META[leaf.type]?.label || leaf.type;
   const head = `
     <div class="lh">
-      <div><span class="lt">${escape(leaf.type)}</span></div>
+      <div><span class="lt">${escape(friendlyName)}</span></div>
       <div class="controls">
         <button class="btn-up" ${i===0?'disabled':''}>↑</button>
         <button class="btn-down" ${i===total-1?'disabled':''}>↓</button>
-        <button class="btn-remove" style="color:#dc2626;">Remove</button>
+        <button class="btn-remove">Remove</button>
       </div>
     </div>`;
   switch (leaf.type) {
@@ -216,10 +403,11 @@ function percentMarkup(leaf) {
 
 function tieredPercentMarkup(leaf) {
   return `
-    <div style="font-size:12px;margin-bottom:8px;">basis:
-      <select data-field="basis">
+    <div class="basis-row">
+      <label for="basis-sel">Tier brackets are based on:</label>
+      <select data-field="basis" id="basis-sel">
         <option value="revenue" ${leaf.basis==='revenue'?'selected':''}>revenue</option>
-        <option value="rentals" ${leaf.basis==='rentals'?'selected':''}>rentals</option>
+        <option value="rentals" ${leaf.basis==='rentals'?'selected':''}>rentals (count)</option>
       </select>
     </div>
     ${leaf.rows.map((r, j) => `
@@ -283,20 +471,56 @@ function escape(s) {
 
 // ---------- Run flow ----------
 
+function downloadSampleCsv() {
+  const csv = [
+    'store_id,machine_serial,model,rentals,revenue',
+    'TPE-001,SN-A100,S5,120,36000',
+    'TPE-001,SN-A101,T35,40,28000',
+    'TPE-002,SN-B200,S5,200,60000',
+    'TPE-002,SN-B201,S5,80,24000',
+    'TPE-002,SN-B202,L20,15,8500',
+    'KHH-001,SN-C300,T35,60,42000',
+    'KHH-001,SN-C301,S10,95,31000',
+  ].join('\n') + '\n';
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'revshare-sample.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 function renderNewRunForm(partnerId, partner) {
   const main = document.getElementById('main');
   main.innerHTML = `
-    <button id="back">← Back</button>
-    <h2>New run — ${escape(partner.name)}</h2>
+    <button class="back-link" id="back">← ${escape(partner.name)}</button>
+    <h2>New calculation run</h2>
+    <p class="muted" style="margin-bottom:18px;">Upload a per-machine CSV. The calculator applies <b>${escape(partner.name)}</b>'s current rule.</p>
     <form id="run-form">
       <label>Period start <input type="date" name="periodStart" required></label>
       <label>Period end <input type="date" name="periodEnd" required></label>
-      <label>CSV file <input type="file" name="file" accept=".csv,text/csv" required></label>
-      <div style="margin-top:14px;">
-        <button type="submit" class="btn-primary">Run</button>
+      <label>
+        <span style="display:flex;justify-content:space-between;align-items:center;">
+          <span>CSV file</span>
+          <button type="button" class="btn-ghost" id="download-sample" style="font-size:12px;padding:2px 8px;">↓ Download sample CSV</button>
+        </span>
+        <input type="file" name="file" accept=".csv,text/csv" required>
+        <span class="muted" style="display:block;margin-top:6px;font-size:11.5px;">
+          Columns: <code style="font-family:var(--font-mono);font-size:11px;">store_id, machine_serial, model, rentals, revenue</code> — one row per machine.
+          Models must be one of: S5, S8, S10, T8, T10, T20, T35, L20, L40.
+        </span>
+      </label>
+      <div>
+        <button type="submit" class="btn-primary">Run calculation</button>
+        <button type="button" id="cancel-run">Cancel</button>
       </div>
     </form>`;
   document.getElementById('back').addEventListener('click', () => renderPartnerDetail(partnerId));
+  document.getElementById('cancel-run').addEventListener('click', () => renderPartnerDetail(partnerId));
+  document.getElementById('download-sample').addEventListener('click', downloadSampleCsv);
   document.getElementById('run-form').addEventListener('submit', async (ev) => {
     ev.preventDefault();
     const fd = new FormData(ev.target);
@@ -315,26 +539,39 @@ function renderNewRunForm(partnerId, partner) {
 
 async function renderRunResult(partnerId, runId) {
   const main = document.getElementById('main');
-  main.innerHTML = '<p>Loading run…</p>';
+  main.innerHTML = '<p class="muted">Loading run…</p>';
   const run = await api('/partners/' + partnerId + '/runs/' + runId);
+  const partner = await api('/partners/' + partnerId);
   const r = run.result;
-  const cur = (n) => Number(n).toLocaleString();
+  const cur = (n) => Number(n).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 });
   const byStore = (r.byStore || []).map(s => `
-    <tr><td>${escape(s.storeId)}</td><td>${cur(s.payout)}</td></tr>`).join('');
+    <tr><td>${escape(s.storeId)}</td><td style="text-align:right;font-family:var(--font-mono);">${cur(s.payout)}</td></tr>`).join('');
   const byComponent = ((r.byPartner?.components) || (r.byStore?.[0]?.components) || []).map(c => `
-    <tr><td>${escape(c.leafType)}</td><td>${cur(c.payout)}</td></tr>`).join('');
+    <tr><td>${escape(LEAF_META[c.leafType]?.label || c.leafType)}</td><td style="text-align:right;font-family:var(--font-mono);">${cur(c.payout)}</td></tr>`).join('');
   main.innerHTML = `
-    <button id="back">← Back</button>
-    <h2>Run result</h2>
-    <p>${escape(run.periodStart)} → ${escape(run.periodEnd)}</p>
-    <div class="hero"><strong>${cur(r.totalPayout)}</strong></div>
-    ${r.byStore ? `<h3>By store</h3><table class="ts"><thead><tr><th>Store</th><th>Payout</th></tr></thead><tbody>${byStore}</tbody></table>` : ''}
-    ${r.topLevel ? `<p>Top-level lump: ${cur(r.topLevel.payout)}</p>` : ''}
+    <button class="back-link" id="back">← ${escape(partner.name)}</button>
+    <div class="page-head">
+      <div>
+        <h2>Run result</h2>
+        <div class="result-meta">
+          <span>${escape(run.periodStart)} → ${escape(run.periodEnd)}</span>
+          <span>Uploaded <b>${escape(run.uploadedAt.split('T')[0])}</b></span>
+        </div>
+      </div>
+      <div>
+        <button id="pdf-btn">Download PDF</button>
+      </div>
+    </div>
+    <div class="section-label">Total payout</div>
+    <div class="hero"><span class="hero-ccy">${escape(partner.currency)}</span>${cur(r.totalPayout)}</div>
+    ${r.byStore ? `<h3>By store</h3><table class="ts"><thead><tr><th>Store</th><th style="text-align:right;">Payout</th></tr></thead><tbody>${byStore}</tbody></table>` : ''}
+    ${r.topLevel ? `<p class="muted" style="margin-top:14px;">Top-level lump-sum: <b style="color:var(--ink);font-family:var(--font-mono);">${escape(partner.currency)} ${cur(r.topLevel.payout)}</b></p>` : ''}
     <h3>By component (first unit)</h3>
-    <table class="ts"><thead><tr><th>Leaf</th><th>Payout</th></tr></thead><tbody>${byComponent}</tbody></table>
-    <button id="pdf-btn">Download PDF statement</button>
-    <pre id="raw" style="margin-top:20px;display:none;">${escape(JSON.stringify(run, null, 2))}</pre>
-    <button id="toggle-raw">Show raw JSON</button>`;
+    <table class="ts"><thead><tr><th>Component</th><th style="text-align:right;">Payout</th></tr></thead><tbody>${byComponent}</tbody></table>
+    <div style="margin-top:22px;">
+      <button id="toggle-raw">Show raw JSON</button>
+    </div>
+    <pre class="raw-json" id="raw" style="display:none;">${escape(JSON.stringify(run, null, 2))}</pre>`;
   document.getElementById('back').addEventListener('click', () => renderPartnerDetail(partnerId));
   document.getElementById('toggle-raw').addEventListener('click', () => {
     const raw = document.getElementById('raw');

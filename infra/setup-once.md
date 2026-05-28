@@ -1,7 +1,7 @@
 # One-time AWS resource setup — revshare
 
 Run these steps once, on the machine that owns this repo. Region: ap-northeast-1.
-Account: 585546485067.
+Account: <YOUR_AWS_ACCOUNT_ID>.
 
 ## 1. DynamoDB table
 
@@ -46,7 +46,7 @@ cd lambda/revshare-api/code && zip -r ../../../_deploy.zip . && cd -
 
 aws lambda create-function --function-name revshare-api \
   --runtime nodejs22.x --handler index.handler \
-  --role arn:aws:iam::585546485067:role/revshare-api-role \
+  --role arn:aws:iam::<YOUR_AWS_ACCOUNT_ID>:role/revshare-api-role \
   --zip-file fileb://_deploy.zip \
   --timeout 30 --memory-size 256 \
   --environment "Variables={REVSHARE_TABLE=RevsharePartner}" \
@@ -57,7 +57,7 @@ rm _deploy.zip
 ## 5. API Gateway HTTP API
 
 aws apigatewayv2 create-api --name revshare-api --protocol-type HTTP \
-  --target arn:aws:lambda:ap-northeast-1:585546485067:function:revshare-api \
+  --target arn:aws:lambda:ap-northeast-1:<YOUR_AWS_ACCOUNT_ID>:function:revshare-api \
   --region ap-northeast-1
 
 aws lambda add-permission --function-name revshare-api \
@@ -69,7 +69,7 @@ Capture the resulting endpoint URL — used in frontend/app.js.
 
 ## 6. S3 bucket + CloudFront
 
-aws s3 mb s3://revshare-frontend-felipetan --region ap-northeast-1
+aws s3 mb s3://<YOUR_S3_BUCKET> --region ap-northeast-1
 
 CloudFront distribution + OAC + ACM cert are easier in Console for now; record
 the distribution ID and domain back here once provisioned.
@@ -77,10 +77,10 @@ the distribution ID and domain back here once provisioned.
 ## Live IDs (provisioned 2026-05-28)
 
 - DynamoDB table: `RevsharePartner` (ap-northeast-1, on-demand, TTL on `ttl`)
-- IAM role: `arn:aws:iam::585546485067:role/revshare-api-role` (DynamoDB read/write only — SSM dropped when auth was removed 2026-05-28)
+- IAM role: `arn:aws:iam::<YOUR_AWS_ACCOUNT_ID>:role/revshare-api-role` (DynamoDB read/write only — SSM dropped when auth was removed 2026-05-28)
 - Lambda: `revshare-api` (Node 22.x, 256MB, 30s timeout, env `REVSHARE_TABLE=RevsharePartner`)
-- API Gateway HTTP API: `mqszkp91di`
-- API endpoint URL: `https://mqszkp91di.execute-api.ap-northeast-1.amazonaws.com`
-- S3 bucket: `revshare-frontend-felipetan` (static website, public read)
-- S3 website URL: `http://revshare-frontend-felipetan.s3-website-ap-northeast-1.amazonaws.com`
+- API Gateway HTTP API: `<YOUR_API_ID>`
+- API endpoint URL: `https://<YOUR_API_ID>.execute-api.<YOUR_REGION>.amazonaws.com`
+- S3 bucket: `<YOUR_S3_BUCKET>` (static website, public read)
+- S3 website URL: `http://<YOUR_S3_BUCKET>.s3-website-ap-northeast-1.amazonaws.com`
 - CloudFront distribution ID: not yet provisioned (set `REVSHARE_CLOUDFRONT_DIST_ID` env var when ready)

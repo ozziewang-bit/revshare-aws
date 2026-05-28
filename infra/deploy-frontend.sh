@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BUCKET="revshare-frontend-felipetan"
-API_URL="https://mqszkp91di.execute-api.ap-northeast-1.amazonaws.com"
+BUCKET="<YOUR_S3_BUCKET>"
+API_URL="https://<YOUR_API_ID>.execute-api.<YOUR_REGION>.amazonaws.com"
 DIST_ID="${REVSHARE_CLOUDFRONT_DIST_ID:-}"   # set this env var once CloudFront is provisioned
 
 # Inject API URL into app.js

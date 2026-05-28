@@ -40,7 +40,7 @@ House style, matching `expense` and `portfolio-aws`:
 - **PWA shell:** service worker for offline-shell + cache busting on
   every shell change (same `CACHE_VERSION` discipline as `expense`).
 
-Domain TBD — `revshare.felipetan.com` is the natural choice.
+Domain TBD — `revshare.example.com` is the natural choice.
 
 ## 3. Data model — DynamoDB single-table
 
@@ -446,7 +446,7 @@ Sheet pops from Partner detail. Fields:
 | Resource | Purpose |
 |---|---|
 | S3 bucket `revshare-frontend` | Hosts SPA static files + service worker + manifest |
-| CloudFront distribution | TLS termination, SPA fallback (`403/404 → /index.html`), aliases `revshare.felipetan.com` |
+| CloudFront distribution | TLS termination, SPA fallback (`403/404 → /index.html`), aliases `revshare.example.com` |
 | ACM cert (us-east-1) | TLS for CloudFront alias |
 | API Gateway HTTP API | Routes requests to Lambda |
 | Lambda `revshare-api` | All backend logic (Node.js 22.x) |
@@ -511,9 +511,9 @@ GET    /healthz                    → liveness probe
 - Project root: `~/Projects/revshare-aws`
 - Repo: a new GitHub repo (to be created)
 - AWS region: `ap-northeast-1` (matches other projects)
-- Account: `585546485067`
+- Account: `<YOUR_AWS_ACCOUNT_ID>`
 - Resource prefix: `revshare-` for Lambda/SSM, `RevsharePartner` for DDB
-- Domain: `revshare.felipetan.com` (proposed)
+- Domain: `revshare.example.com` (proposed)
 - CloudFront distribution: TBD (created at deploy time)
 
 ---

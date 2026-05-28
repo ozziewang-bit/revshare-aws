@@ -18,14 +18,14 @@ Initial implementation plan (33 tasks): [`docs/superpowers/plans/2026-05-28-revs
 
 ## 2. Live URLs and resources
 
-- **Site (S3 website, plain HTTP):** http://revshare-frontend-felipetan.s3-website-ap-northeast-1.amazonaws.com
-- **API:** https://mqszkp91di.execute-api.ap-northeast-1.amazonaws.com (no auth — see §9)
+- **Site (S3 website, plain HTTP):** http://<YOUR_S3_BUCKET>.s3-website-ap-northeast-1.amazonaws.com
+- **API:** https://<YOUR_API_ID>.execute-api.<YOUR_REGION>.amazonaws.com (no auth — see §9)
 - **Lambda:** `revshare-api` (Node 22.x, ap-northeast-1)
 - **DDB table:** `RevsharePartner` (single-table, pk/sk)
 - **CloudFront:** not yet provisioned. Site is HTTP-only via S3 static website
   until you set up CloudFront + ACM + a custom domain.
 
-Account `585546485067`, region `ap-northeast-1`. IAM user `felipe-mac-cli`.
+Account `<YOUR_AWS_ACCOUNT_ID>`, region `ap-northeast-1`. IAM user `<your-iam-user>`.
 
 ## 3. File map
 
@@ -195,9 +195,9 @@ REVSHARE_CLOUDFRONT_DIST_ID=EXXXXXX ./infra/deploy-frontend.sh
 2. Skim recent commits: `git log --oneline -10`.
 3. Verify the deployed app still works:
    ```bash
-   curl -sS https://mqszkp91di.execute-api.ap-northeast-1.amazonaws.com/healthz
+   curl -sS https://<YOUR_API_ID>.execute-api.<YOUR_REGION>.amazonaws.com/healthz
    # → {"ok":true}
-   curl -sS http://revshare-frontend-felipetan.s3-website-ap-northeast-1.amazonaws.com/ | head -5
+   curl -sS http://<YOUR_S3_BUCKET>.s3-website-ap-northeast-1.amazonaws.com/ | head -5
    # → starts with <!doctype html>
    ```
 4. Then propose the work for this session.
