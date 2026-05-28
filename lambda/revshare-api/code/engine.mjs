@@ -18,60 +18,101 @@ function sumByModel(rows, field) {
   return sums;
 }
 
+// Returns { payout, components: [{ leafType, payout, modelRowsContributed }] }
 function evalFlatPerMachine(node, rows) {
   const counts = countByModel(rows);
   const explicit = new Set(node.rows.map(r => r.model).filter(m => m !== 'ALL'));
-  let total = 0;
+  let payout = 0;
+  const modelRowsContributed = [];
   for (const row of node.rows) {
     if (row.model === 'ALL') {
-      for (const [m, c] of Object.entries(counts))
-        if (!explicit.has(m)) total += c * row.amount;
+      for (const [m, c] of Object.entries(counts)) {
+        if (!explicit.has(m)) {
+          const contribution = c * row.amount;
+          payout += contribution;
+          modelRowsContributed.push({ model: m, count: c, amount: row.amount, payout: contribution });
+        }
+      }
     } else {
-      total += (counts[row.model] || 0) * row.amount;
+      const count = counts[row.model] || 0;
+      const contribution = count * row.amount;
+      payout += contribution;
+      modelRowsContributed.push({ model: row.model, count, amount: row.amount, payout: contribution });
     }
   }
-  return total;
+  const component = { leafType: 'flat_per_machine', payout, modelRowsContributed };
+  return { payout, components: [component] };
 }
 
 function applyTiers(amount, tiers) {
   let payout = 0;
+  const tiersHit = [];
   for (const t of tiers) {
-    if (amount <= t.from) break;
+    if (amount <= t.from) {
+      tiersHit.push({ from: t.from, to: t.to, percent: t.percent, payoutPart: 0 });
+      continue;
+    }
     const cap = t.to ?? Infinity;
     const slice = Math.min(amount, cap) - t.from;
-    if (slice > 0) payout += slice * (t.percent / 100);
+    const payoutPart = slice > 0 ? slice * (t.percent / 100) : 0;
+    payout += payoutPart;
+    tiersHit.push({ from: t.from, to: t.to, percent: t.percent, payoutPart });
   }
-  return payout;
+  return { payout, tiersHit };
 }
 
 function evalTieredPercent(node, rows) {
   const sums = sumByModel(rows, node.basis);
   const explicit = new Set(node.rows.map(r => r.model).filter(m => m !== 'ALL'));
-  let total = 0;
+  let payout = 0;
+  const modelRowsContributed = [];
+
   for (const row of node.rows) {
     if (row.model === 'ALL') {
-      for (const [m, s] of Object.entries(sums))
-        if (!explicit.has(m)) total += applyTiers(s, row.tiers);
+      for (const [m, s] of Object.entries(sums)) {
+        if (!explicit.has(m)) {
+          const { payout: rowPayout, tiersHit } = applyTiers(s, row.tiers);
+          payout += rowPayout;
+          modelRowsContributed.push({ model: 'ALL', basis: node.basis, amount: s, tiersHit });
+        }
+      }
     } else {
-      total += applyTiers(sums[row.model] || 0, row.tiers);
+      const amount = sums[row.model] || 0;
+      const { payout: rowPayout, tiersHit } = applyTiers(amount, row.tiers);
+      payout += rowPayout;
+      modelRowsContributed.push({ model: row.model, basis: node.basis, amount, tiersHit });
     }
   }
-  return total;
+
+  const component = { leafType: 'tiered_percent', payout, modelRowsContributed };
+  return { payout, components: [component] };
 }
 
 function evalPercent(node, rows) {
   const sums = sumByModel(rows, 'revenue');
   const explicit = new Set(node.rows.map(r => r.model).filter(m => m !== 'ALL'));
-  let total = 0;
+  let payout = 0;
+  const modelRowsContributed = [];
+
   for (const row of node.rows) {
     if (row.model === 'ALL') {
-      for (const [m, s] of Object.entries(sums))
-        if (!explicit.has(m)) total += s * (row.percent / 100);
+      for (const [m, s] of Object.entries(sums)) {
+        if (!explicit.has(m)) {
+          const contribution = s * (row.percent / 100);
+          payout += contribution;
+          modelRowsContributed.push({ model: m, revenue: s, percent: row.percent, payout: contribution });
+        }
+      }
     } else {
-      total += (sums[row.model] || 0) * (row.percent / 100);
+      const revenue = sums[row.model] || 0;
+      const contribution = revenue * (row.percent / 100);
+      payout += contribution;
+      modelRowsContributed.push({ model: row.model, revenue, percent: row.percent, payout: contribution });
     }
   }
-  return total;
+
+  const component = { leafType: 'percent', payout, modelRowsContributed };
+  return { payout, components: [component] };
 }
 
 // Validate that flat_per_partner_total only appears in allowed positions in per_store mode.
@@ -99,18 +140,29 @@ function evalNode(node, rows) {
       return evalPercent(node, rows);
     case 'tiered_percent':
       return evalTieredPercent(node, rows);
-    case 'flat_per_partner_total':
-      return node.amount;
+    case 'flat_per_partner_total': {
+      const component = { leafType: 'flat_per_partner_total', payout: node.amount, modelRowsContributed: [] };
+      return { payout: node.amount, components: [component] };
+    }
     case 'sum': {
       let total = 0;
-      for (const child of node.children) total += evalNode(child, rows);
-      return total;
+      const allComponents = [];
+      for (const child of node.children) {
+        const { payout, components } = evalNode(child, rows);
+        total += payout;
+        allComponents.push(...components);
+      }
+      return { payout: total, components: allComponents };
     }
     case 'max': {
-      return Math.max(...node.children.map(c => evalNode(c, rows)));
+      const results = node.children.map(c => evalNode(c, rows));
+      const maxResult = results.reduce((best, cur) => cur.payout > best.payout ? cur : best);
+      return maxResult;
     }
     case 'min': {
-      return Math.min(...node.children.map(c => evalNode(c, rows)));
+      const results = node.children.map(c => evalNode(c, rows));
+      const minResult = results.reduce((best, cur) => cur.payout < best.payout ? cur : best);
+      return minResult;
     }
     default:
       throw new Error(`unknown rule type: ${node.type}`);
@@ -157,27 +209,32 @@ export function evaluateRun({ rule, rows, aggregationMode }) {
     const byStore = [];
     let storeTotal = 0;
     for (const [storeId, storeRows] of storeGroups) {
-      const payout = perStoreRule ? evalNode(perStoreRule, storeRows) : 0;
+      const { payout, components } = perStoreRule ? evalNode(perStoreRule, storeRows) : { payout: 0, components: [] };
       storeTotal += payout;
-      byStore.push({ storeId, payout, components: [] });
+      byStore.push({ storeId, payout, components });
     }
 
     // Evaluate top-level leaves once across all rows
     let topLevelPayout = 0;
-    for (const leaf of topLevelLeaves) topLevelPayout += evalNode(leaf, rows);
+    let topLevelComponents = [];
+    for (const leaf of topLevelLeaves) {
+      const { payout, components } = evalNode(leaf, rows);
+      topLevelPayout += payout;
+      topLevelComponents.push(...components);
+    }
 
     const total = storeTotal + topLevelPayout;
     const machineCounts = totalMachineCounts(rows);
     const result = { totalPayout: total, byStore, machineCounts };
     if (topLevelLeaves.length > 0) {
-      result.topLevel = { payout: topLevelPayout, components: [] };
+      result.topLevel = { payout: topLevelPayout, components: topLevelComponents };
     }
     return result;
 
   } else {
     // whole aggregation
-    const payout = evalNode(rule, rows);
+    const { payout, components } = evalNode(rule, rows);
     const machineCounts = totalMachineCounts(rows);
-    return { totalPayout: payout, byPartner: { payout, components: [] }, machineCounts };
+    return { totalPayout: payout, byPartner: { payout, components }, machineCounts };
   }
 }

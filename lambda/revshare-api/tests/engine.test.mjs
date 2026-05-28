@@ -246,3 +246,40 @@ test('flat_per_partner_total in per_store: applied once at top level, recorded i
   assert.equal(result.byStore[0].payout, 100);
   assert.equal(result.topLevel.payout, 5000);
 });
+
+test('breakdown: per_store has per-leaf detail', () => {
+  const result = evaluateRun({
+    rule: { type: 'sum', children: [
+      { type: 'flat_per_machine', rows: [{ model: 'ALL', amount: 100 }] },
+      { type: 'percent', rows: [{ model: 'ALL', percent: 10 }] },
+    ]},
+    rows: [{ storeId: 'A', machineSerial: 'M1', model: 'S5', rentals: 0, revenue: 1000 }],
+    aggregationMode: 'per_store'
+  });
+  const store = result.byStore[0];
+  assert.equal(store.payout, 200);
+  assert.equal(store.components.length, 2);
+  assert.equal(store.components[0].leafType, 'flat_per_machine');
+  assert.equal(store.components[0].payout, 100);
+  assert.equal(store.components[1].leafType, 'percent');
+  assert.equal(store.components[1].payout, 100);
+});
+
+test('breakdown: tiered_percent records tier hits', () => {
+  const result = evaluateRun({
+    rule: { type: 'tiered_percent', basis: 'revenue', rows: [
+      { model: 'ALL', tiers: [{ from: 0, to: 50000, percent: 0 }, { from: 50000, percent: 10 }]}
+    ]},
+    rows: [{ storeId: 'A', machineSerial: 'M1', model: 'S5', rentals: 0, revenue: 80000 }],
+    aggregationMode: 'whole'
+  });
+  const c = result.byPartner.components[0];
+  assert.equal(c.leafType, 'tiered_percent');
+  assert.equal(c.payout, 3000);
+  assert.equal(c.modelRowsContributed.length, 1);
+  const mr = c.modelRowsContributed[0];
+  assert.equal(mr.model, 'ALL');
+  assert.equal(mr.tiersHit.length, 2);
+  assert.equal(mr.tiersHit[0].payoutPart, 0);
+  assert.equal(mr.tiersHit[1].payoutPart, 3000);
+});
