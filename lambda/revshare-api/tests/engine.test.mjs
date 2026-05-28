@@ -159,3 +159,27 @@ test('sum combinator adds child outputs', () => {
   });
   assert.equal(result.totalPayout, 200);  // 100 flat + 100 percent
 });
+
+test('max: minimum-guarantee shape returns the larger', () => {
+  const result = evaluateRun({
+    rule: { type: 'max', children: [
+      { type: 'percent', rows: [{ model: 'ALL', percent: 15 }] },
+      { type: 'flat_per_partner_total', amount: 10000 },
+    ]},
+    rows: [{ storeId: 'A', machineSerial: 'M1', model: 'S5', rentals: 0, revenue: 50000 }],
+    aggregationMode: 'whole'
+  });
+  assert.equal(result.totalPayout, 10000);   // max(7500, 10000)
+});
+
+test('min: cap shape returns the smaller', () => {
+  const result = evaluateRun({
+    rule: { type: 'min', children: [
+      { type: 'percent', rows: [{ model: 'ALL', percent: 20 }] },
+      { type: 'flat_per_partner_total', amount: 5000 },
+    ]},
+    rows: [{ storeId: 'A', machineSerial: 'M1', model: 'S5', rentals: 0, revenue: 100000 }],
+    aggregationMode: 'whole'
+  });
+  assert.equal(result.totalPayout, 5000);    // min(20000, 5000)
+});
