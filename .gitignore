@@ -6,3 +6,4 @@ _deploy.zip
 .aws-sam/
 cdk.out/
 *.log
+lambda/**/node_modules/
