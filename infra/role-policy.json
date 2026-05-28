@@ -1,0 +1,18 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:GetItem","dynamodb:PutItem","dynamodb:UpdateItem",
+        "dynamodb:DeleteItem","dynamodb:Query"
+      ],
+      "Resource": "arn:aws:dynamodb:ap-northeast-1:585546485067:table/RevsharePartner"
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["ssm:GetParameter"],
+      "Resource": "arn:aws:ssm:ap-northeast-1:585546485067:parameter/revshare/*"
+    }
+  ]
+}
