@@ -1,0 +1,8 @@
+.superpowers/
+node_modules/
+*.bak.*
+.DS_Store
+_deploy.zip
+.aws-sam/
+cdk.out/
+*.log
