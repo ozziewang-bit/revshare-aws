@@ -74,9 +74,14 @@ aws s3 mb s3://revshare-frontend-felipetan --region ap-northeast-1
 CloudFront distribution + OAC + ACM cert are easier in Console for now; record
 the distribution ID and domain back here once provisioned.
 
-## Live IDs (fill in after setup completes)
+## Live IDs (provisioned 2026-05-28)
 
-- API endpoint URL: TBD
-- CloudFront distribution ID: TBD
-- CloudFront domain: TBD
-- S3 bucket: revshare-frontend-felipetan
+- DynamoDB table: `RevsharePartner` (ap-northeast-1, on-demand, TTL on `ttl`)
+- SSM password hash: `/revshare/auth-hash` (SecureString, scrypt)
+- IAM role: `arn:aws:iam::585546485067:role/revshare-api-role`
+- Lambda: `revshare-api` (Node 22.x, 256MB, 30s timeout, env `REVSHARE_TABLE=RevsharePartner`)
+- API Gateway HTTP API: `mqszkp91di`
+- API endpoint URL: `https://mqszkp91di.execute-api.ap-northeast-1.amazonaws.com`
+- S3 bucket: `revshare-frontend-felipetan` (static website, public read)
+- S3 website URL: `http://revshare-frontend-felipetan.s3-website-ap-northeast-1.amazonaws.com`
+- CloudFront distribution ID: not yet provisioned (set `REVSHARE_CLOUDFRONT_DIST_ID` env var when ready)

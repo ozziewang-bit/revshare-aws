@@ -2,8 +2,8 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUCKET="revshare-frontend-felipetan"
-API_URL="https://YOUR-API-ID.execute-api.ap-northeast-1.amazonaws.com"   # update after setup
-DIST_ID="YOUR-CLOUDFRONT-DIST-ID"
+API_URL="https://mqszkp91di.execute-api.ap-northeast-1.amazonaws.com"
+DIST_ID="${REVSHARE_CLOUDFRONT_DIST_ID:-}"   # set this env var once CloudFront is provisioned
 
 # Inject API URL into app.js
 TMP="$(mktemp)"
@@ -21,5 +21,7 @@ rm "$TMP"
 
 aws s3 cp "$ROOT/frontend/lib/" "s3://$BUCKET/lib/" --recursive --content-type "application/javascript" --cache-control "public,max-age=86400"
 
-aws cloudfront create-invalidation --distribution-id "$DIST_ID" --paths "/*" --query 'Invalidation.Status' --output text
-echo "deployed"
+if [ -n "$DIST_ID" ]; then
+  aws cloudfront create-invalidation --distribution-id "$DIST_ID" --paths "/*" --query 'Invalidation.Status' --output text
+fi
+echo "deployed → http://${BUCKET}.s3-website-ap-northeast-1.amazonaws.com"
