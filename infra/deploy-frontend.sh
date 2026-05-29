@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BUCKET="<YOUR_S3_BUCKET>"
-API_URL="https://<YOUR_API_ID>.execute-api.<YOUR_REGION>.amazonaws.com"
-DIST_ID="${REVSHARE_CLOUDFRONT_DIST_ID:-}"   # set this env var once CloudFront is provisioned
+BUCKET="revshare-ozziemac-sea7"
+API_URL="https://7z269nmx74.execute-api.ap-southeast-7.amazonaws.com/prod"
+DIST_ID="${REVSHARE_CLOUDFRONT_DIST_ID:-E3JLOVJXN5DI24}"
 
 # Inject API URL into app.js
 TMP="$(mktemp)"
@@ -24,4 +24,4 @@ aws s3 cp "$ROOT/frontend/lib/" "s3://$BUCKET/lib/" --recursive --content-type "
 if [ -n "$DIST_ID" ]; then
   aws cloudfront create-invalidation --distribution-id "$DIST_ID" --paths "/*" --query 'Invalidation.Status' --output text
 fi
-echo "deployed → http://${BUCKET}.s3-website-ap-northeast-1.amazonaws.com"
+echo "deployed → https://d2t76jfby056ul.cloudfront.net"

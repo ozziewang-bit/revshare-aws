@@ -7,7 +7,7 @@ zip -r ../../../_deploy.zip . -x 'node_modules/.cache/*' >/dev/null
 aws lambda update-function-code \
   --function-name revshare-api \
   --zip-file "fileb://$ROOT/_deploy.zip" \
-  --region ap-northeast-1 \
+  --region ap-southeast-7 \
   --output text >/dev/null
 rm -f "$ROOT/_deploy.zip"
 echo "deployed revshare-api"
