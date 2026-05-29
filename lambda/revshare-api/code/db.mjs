@@ -70,8 +70,8 @@ export { ulid };
 export async function listMerchants() {
   const out = await ddb.send(new QueryCommand({
     TableName: TABLE,
-    KeyConditionExpression: 'pk = :p AND begins_with(sk, :s)',
-    ExpressionAttributeValues: { ':p': 'MERCHANT', ':s': 'MERCHANT#' },
+    KeyConditionExpression: 'pk = :p',
+    ExpressionAttributeValues: { ':p': 'MERCHANT' },
   }));
   return out.Items || [];
 }
@@ -116,10 +116,9 @@ export async function putBulkRun(bulkRun) {
 export async function listBulkRuns() {
   const out = await ddb.send(new QueryCommand({
     TableName: TABLE,
-    KeyConditionExpression: 'pk = :p AND begins_with(sk, :s)',
-    ExpressionAttributeValues: { ':p': 'BULKRUN', ':s': 'BULKRUN#' },
-    ScanIndexForward: false,
-    ProjectionExpression: 'runId, periodStart, periodEnd, uploadedAt, orderCount, merchantCount, partnerCount, unmatchedCount'
+    KeyConditionExpression: 'pk = :p',
+    ExpressionAttributeValues: { ':p': 'BULKRUN' },
+    ScanIndexForward: false
   }));
   return out.Items || [];
 }
