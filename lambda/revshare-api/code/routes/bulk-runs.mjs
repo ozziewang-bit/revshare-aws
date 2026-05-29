@@ -1,4 +1,4 @@
-import { listMerchants, listPartners, getPartner, putBulkRun, listBulkRuns, getBulkRun, ulid } from '../db.mjs';
+import { listMerchants, listPartners, getPartner, putBulkRun, listBulkRuns, getBulkRun, listMachineModels, ulid } from '../db.mjs';
 import { evaluateRun } from '../engine.mjs';
 
 export function groupOrders(orders, merchantMap) {
@@ -23,7 +23,8 @@ export async function createBulkRunRoute(event) {
   if (!periodStart || !periodEnd) return resp(400, { error: 'missing_fields', required: ['periodStart','periodEnd'] });
   if (!orders.length) return resp(400, { error: 'no_orders' });
 
-  const [allMerchants, allPartners] = await Promise.all([listMerchants(), listPartners()]);
+  const [allMerchants, allPartners, machineModelsList] = await Promise.all([listMerchants(), listPartners(), listMachineModels()]);
+  const allowedModels = new Set(machineModelsList.map(m => m.code));
   const merchantMap = Object.fromEntries(allMerchants.map(m => [m.nameLower, m]));
   const partnerMap = Object.fromEntries(allPartners.map(p => [p.partnerId, p]));
 
@@ -48,7 +49,7 @@ export async function createBulkRunRoute(event) {
 
     let result;
     try {
-      result = evaluateRun({ rule: partner.rule, rows: engineRows, aggregationMode: partner.aggregationMode });
+      result = evaluateRun({ rule: partner.rule, rows: engineRows, aggregationMode: partner.aggregationMode, allowedModels });
     } catch (e) {
       warnings.push(`Partner "${partner.name}" calculation error: ${e.message}`);
       continue;
