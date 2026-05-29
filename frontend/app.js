@@ -429,7 +429,7 @@ async function renderPartnerDetail(partnerId) {
       <h2>${escape(p.name)}</h2>
     </div>
     <p class="muted">Currency: ${escape(p.currency)} · Aggregation: ${escape(p.aggregationMode)}</p>
-    <div class="tabs" style="margin-bottom:16px;">
+    <div class="tabs">
       <button id="tab-merchants" class="tab active">Merchants (<span id="merchant-count">…</span>)</button>
       <button id="tab-rule" class="tab">Rule</button>
       <button id="tab-runs" class="tab">Runs</button>

@@ -223,6 +223,44 @@ table.ts tbody tr:last-child td { border-bottom: none; }
 .row-clickable { cursor: pointer; transition: background .12s; }
 .row-clickable:hover { background: var(--surface-muted); }
 
+/* ============ IN-PAGE TABS ============ */
+.tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 22px;
+}
+
+.tab {
+  padding: 9px 16px;
+  border-radius: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink-soft);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  box-shadow: none;
+  white-space: nowrap;
+  transition: color .12s;
+}
+
+.tab:hover:not(.active) {
+  color: var(--ink);
+  background: none;
+  border: none;
+  border-bottom: 2px solid var(--border-strong);
+  margin-bottom: -1px;
+}
+
+.tab.active {
+  color: var(--ink);
+  font-weight: 600;
+  border-bottom: 2px solid var(--ink);
+  margin-bottom: -1px;
+}
+
 /* ============ LEAF CARDS ============ */
 .leaf-card {
   background: var(--surface);
