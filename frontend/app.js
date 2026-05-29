@@ -99,29 +99,45 @@ async function renderPartnersList() {
       <h2>Partners</h2>
       <button id="new-partner" class="btn-primary">+ New partner</button>
     </div>
+    <input id="partner-search" class="search-input" placeholder="Search partners…" autocomplete="off">
     <div id="partners-out">Loading…</div>`;
   document.getElementById('new-partner').addEventListener('click', () => renderNewPartnerForm());
   try {
     const [partners, merchants] = await Promise.all([api('/partners'), api('/merchants')]);
     const countByPartner = {};
     merchants.forEach(m => { countByPartner[m.partnerId] = (countByPartner[m.partnerId] || 0) + 1; });
-    const out = document.getElementById('partners-out');
-    if (!partners.length) { out.innerHTML = '<p class="muted">No partners yet.</p>'; return; }
-    out.innerHTML = `
-      <table class="ts">
-        <thead><tr><th>Name</th><th>Currency</th><th>Aggregation</th><th>Merchants</th></tr></thead>
-        <tbody>${partners.map(p => `
-          <tr class="row-clickable" data-id="${escape(p.partnerId)}">
-            <td>${escape(p.name)}</td>
-            <td><span class="badge badge-neutral">${escape(p.currency)}</span></td>
-            <td>${escape(p.aggregationMode)}</td>
-            <td>${countByPartner[p.partnerId] || 0}</td>
-          </tr>`).join('')}
-        </tbody>
-      </table>`;
-    out.querySelectorAll('.row-clickable').forEach(tr => {
-      tr.addEventListener('click', () => renderPartnerDetail(tr.dataset.id));
+
+    function renderTable(list) {
+      const out = document.getElementById('partners-out');
+      if (!list.length) {
+        const q = document.getElementById('partner-search')?.value;
+        out.innerHTML = `<p class="muted">${q ? 'No partners match your search.' : 'No partners yet.'}</p>`;
+        return;
+      }
+      out.innerHTML = `
+        <table class="ts">
+          <thead><tr><th>Name</th><th>Currency</th><th>Aggregation</th><th>Merchants</th></tr></thead>
+          <tbody>${list.map(p => `
+            <tr class="row-clickable" data-id="${escape(p.partnerId)}">
+              <td>${escape(p.name)}</td>
+              <td><span class="badge badge-neutral">${escape(p.currency)}</span></td>
+              <td>${escape(p.aggregationMode)}</td>
+              <td>${countByPartner[p.partnerId] || 0}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>`;
+      out.querySelectorAll('.row-clickable').forEach(tr => {
+        tr.addEventListener('click', () => renderPartnerDetail(tr.dataset.id));
+      });
+    }
+
+    renderTable(partners);
+
+    document.getElementById('partner-search').addEventListener('input', e => {
+      const q = e.target.value.toLowerCase();
+      renderTable(q ? partners.filter(p => p.name.toLowerCase().includes(q)) : partners);
     });
+
   } catch (e) {
     document.getElementById('partners-out').innerHTML = `<p class="error">${escape(e.message)}</p>`;
   }
