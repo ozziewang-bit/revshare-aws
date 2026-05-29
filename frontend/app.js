@@ -747,7 +747,10 @@ async function renderMerchantsTab(partnerId) {
   const merchants = all.filter(m => m.partnerId === partnerId);
   container.innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-      <span>${merchants.length} merchant${merchants.length !== 1 ? 's' : ''}</span>
+      <div style="display:flex;align-items:center;gap:10px;">
+        <span>${merchants.length} merchant${merchants.length !== 1 ? 's' : ''}</span>
+        ${merchants.length > 0 ? `<button id="export-terms-btn" class="btn" style="font-size:12px;padding:5px 12px;">↓ Export terms</button>` : ''}
+      </div>
       <div style="display:flex;gap:6px;">
         <button id="batch-csv-btn" class="btn">↑ CSV upload</button>
         <button id="batch-rows-btn" class="btn">+ Add rows</button>
@@ -771,6 +774,20 @@ async function renderMerchantsTab(partnerId) {
 
   container.querySelector('#add-merchant-btn')?.addEventListener('click', () => {
     showMerchantForm(partnerId, null, machineModels, () => renderMerchantsTab(partnerId));
+  });
+
+  container.querySelector('#export-terms-btn')?.addEventListener('click', () => {
+    const partnerName = document.querySelector('.page-head h2')?.textContent || 'partner';
+    const header = 'store_id,machine_serial,model,rentals,revenue';
+    const rows = merchants.map(m => `${m.name},,${m.machineModel || ''},0,0`);
+    const csv = [header, ...rows].join('\n') + '\n';
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${partnerName}-share-terms.csv`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   });
 
   const batchSlot = container.querySelector('#batch-panel-slot');
