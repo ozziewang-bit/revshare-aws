@@ -171,12 +171,21 @@ async function renderImportScreen() {
   main.innerHTML = `
     <div class="page-head"><h2>Import from KA Excel</h2></div>
     <p class="muted">Upload the <strong>KA cost rate</strong> Excel file (Rev Share sheet). New partners will be created; existing partners are skipped. Merchants are upserted by name.</p>
-    <input id="import-file" type="file" accept=".xlsx">
+    <input id="import-file" type="file" accept=".xlsx" style="display:none">
+    <div id="import-file-zone" class="upload-zone" style="cursor:pointer;max-width:520px;margin-top:16px;">
+      <p>Choose the KA cost rate Excel file or drag it here</p>
+      <button type="button" id="import-choose" class="btn">Choose file</button>
+      <div id="import-file-name" class="upload-hint"></div>
+    </div>
     <div id="import-preview" style="margin-top:16px;"></div>`;
 
+  document.getElementById('import-choose').addEventListener('click', () => document.getElementById('import-file').click());
+  document.getElementById('import-file-zone').addEventListener('click', e => { if (e.target.id !== 'import-choose') document.getElementById('import-file').click(); });
   document.getElementById('import-file').addEventListener('change', async e => {
     const file = e.target.files[0];
     if (!file) return;
+    const nameEl = document.getElementById('import-file-name');
+    if (nameEl) nameEl.textContent = file.name;
     const preview = document.getElementById('import-preview');
     preview.innerHTML = 'Parsing…';
     try {
@@ -399,11 +408,23 @@ function renderNewBulkRunForm() {
         ${MONTHS.map((m, i) => `<option value="${i+1}" ${i===now.getMonth()?'selected':''}>${m}</option>`).join('')}
       </select>
     </label>
-    <label style="margin-top:12px;">Order report (.xlsx)<br><input type="file" id="br-file" accept=".xlsx"></label>
+    <div style="margin-top:12px;">
+      <div style="font-size:12.5px;color:var(--ink-soft);margin-bottom:8px;">Order report (.xlsx)</div>
+      <input type="file" id="br-file" accept=".xlsx" style="display:none">
+      <div id="br-file-zone" class="upload-zone" style="cursor:pointer;">
+        <p>Choose an Excel file or drag it here</p>
+        <button type="button" id="br-choose" class="btn">Choose file</button>
+        <div id="br-file-name" class="upload-hint"></div>
+      </div>
+    </div>
     <div id="br-status" style="margin-top:16px;"></div>`;
   document.getElementById('back').addEventListener('click', renderBulkRunsList);
+  document.getElementById('br-choose').addEventListener('click', () => document.getElementById('br-file').click());
+  document.getElementById('br-file-zone').addEventListener('click', e => { if (e.target.id !== 'br-choose') document.getElementById('br-file').click(); });
   document.getElementById('br-file').addEventListener('change', async e => {
     const file = e.target.files[0];
+    const nameEl = document.getElementById('br-file-name');
+    if (nameEl && file) nameEl.textContent = file.name;
     const year = Number(document.getElementById('br-year').value);
     const month = Number(document.getElementById('br-month').value);
     if (!file || !year || !month) { alert('Select a year, month and file'); return; }
@@ -1114,14 +1135,18 @@ function renderNewRunForm(partnerId, partner) {
       <label>Period start <input type="date" name="periodStart" required></label>
       <label>Period end <input type="date" name="periodEnd" required></label>
       <label>
-        <span style="display:flex;justify-content:space-between;align-items:center;">
+        <span style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
           <span>CSV file</span>
           <button type="button" class="btn-ghost" id="download-sample" style="font-size:12px;padding:2px 8px;">↓ Download sample CSV</button>
         </span>
-        <input type="file" name="file" accept=".csv,text/csv" required>
+        <input type="file" id="run-file" name="file" accept=".csv,text/csv" style="display:none">
+        <div id="run-file-zone" class="upload-zone" style="cursor:pointer;">
+          <p>Choose a CSV file or drag it here</p>
+          <button type="button" id="run-choose" class="btn">Choose file</button>
+          <div id="run-file-name" class="upload-hint"></div>
+        </div>
         <span class="muted" style="display:block;margin-top:6px;font-size:11.5px;">
           Columns: <code style="font-family:var(--font-mono);font-size:11px;">store_id, machine_serial, model, rentals, revenue</code> — one row per machine.
-          Models must be one of: S5, S8, S10, T8, T10, T20, T35, L20, L40.
         </span>
       </label>
       <div>
@@ -1132,10 +1157,18 @@ function renderNewRunForm(partnerId, partner) {
   document.getElementById('back').addEventListener('click', () => renderPartnerDetail(partnerId));
   document.getElementById('cancel-run').addEventListener('click', () => renderPartnerDetail(partnerId));
   document.getElementById('download-sample').addEventListener('click', downloadSampleCsv);
+  document.getElementById('run-choose').addEventListener('click', () => document.getElementById('run-file').click());
+  document.getElementById('run-file-zone').addEventListener('click', e => { if (e.target.id !== 'run-choose') document.getElementById('run-file').click(); });
+  document.getElementById('run-file').addEventListener('change', e => {
+    const f = e.target.files[0];
+    const nameEl = document.getElementById('run-file-name');
+    if (nameEl && f) nameEl.textContent = f.name;
+  });
   document.getElementById('run-form').addEventListener('submit', async (ev) => {
     ev.preventDefault();
     const fd = new FormData(ev.target);
     const file = fd.get('file');
+    if (!file || !file.size) { alert('Please select a CSV file.'); return; }
     const text = await file.text();
     const csvBase64 = btoa(unescape(encodeURIComponent(text)));
     try {
