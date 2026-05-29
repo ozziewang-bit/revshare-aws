@@ -59,7 +59,7 @@ export async function importRevShareRoute(event) {
     const nameKey = (m.name || '').toLowerCase().trim();
     const existing = merchantByName[nameKey];
     await putMerchant({ merchantId: existing?.merchantId || ulid(), createdAt: existing?.createdAt, name: m.name, partnerId, machineModel: model, externalId: m.externalId || null, notes: '' });
-    created.merchants++;
+    if (!existing) created.merchants++;
   }
 
   return resp(200, { created, skipped, warnings });
