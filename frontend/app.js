@@ -625,9 +625,8 @@ async function renderPartnerDetail(partnerId) {
 async function renderMerchantsTab(partnerId) {
   const container = document.getElementById('merchants-tab-content');
   container.innerHTML = 'Loading…';
-  const all = await api('/merchants');
+  const [all, machineModels] = await Promise.all([api('/merchants'), api('/machine-models')]);
   const merchants = all.filter(m => m.partnerId === partnerId);
-  const MODELS = ['S5','S8','S10','T8','T10','T20','T35','L20','L40'];
   container.innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
       <span>${merchants.length} merchant${merchants.length !== 1 ? 's' : ''}</span>
@@ -653,25 +652,25 @@ async function renderMerchantsTab(partnerId) {
     <div id="merchant-form-slot"></div>`;
 
   container.querySelector('#add-merchant-btn')?.addEventListener('click', () => {
-    showMerchantForm(partnerId, null, MODELS, () => renderMerchantsTab(partnerId));
+    showMerchantForm(partnerId, null, machineModels, () => renderMerchantsTab(partnerId));
   });
 
   const batchSlot = container.querySelector('#batch-panel-slot');
   container.querySelector('#batch-csv-btn').addEventListener('click', () => {
     const isOpen = batchSlot.dataset.panel === 'csv';
     batchSlot.dataset.panel = isOpen ? '' : 'csv';
-    isOpen ? (batchSlot.innerHTML = '') : showBatchCsvPanel(partnerId, MODELS, () => renderMerchantsTab(partnerId));
+    isOpen ? (batchSlot.innerHTML = '') : showBatchCsvPanel(partnerId, machineModels, () => renderMerchantsTab(partnerId));
   });
   container.querySelector('#batch-rows-btn').addEventListener('click', () => {
     const isOpen = batchSlot.dataset.panel === 'rows';
     batchSlot.dataset.panel = isOpen ? '' : 'rows';
-    isOpen ? (batchSlot.innerHTML = '') : showBatchRowsPanel(partnerId, MODELS, () => renderMerchantsTab(partnerId));
+    isOpen ? (batchSlot.innerHTML = '') : showBatchRowsPanel(partnerId, machineModels, () => renderMerchantsTab(partnerId));
   });
 
   container.querySelectorAll('.edit-m').forEach(btn => {
     btn.addEventListener('click', () => {
       const m = merchants.find(x => x.merchantId === btn.dataset.id);
-      showMerchantForm(partnerId, m, MODELS, () => renderMerchantsTab(partnerId));
+      showMerchantForm(partnerId, m, machineModels, () => renderMerchantsTab(partnerId));
     });
   });
   container.querySelectorAll('.del-m').forEach(btn => {
@@ -683,7 +682,7 @@ async function renderMerchantsTab(partnerId) {
   });
 }
 
-function showMerchantForm(partnerId, existing, MODELS, onDone) {
+function showMerchantForm(partnerId, existing, machineModels, onDone) {
   const slot = document.getElementById('merchant-form-slot');
   slot.innerHTML = `
     <div class="modal-bg"><div class="modal">
@@ -692,7 +691,7 @@ function showMerchantForm(partnerId, existing, MODELS, onDone) {
       <label>Machine model
         <select id="mf-model">
           <option value="">— select —</option>
-          ${MODELS.map(m => `<option ${existing?.machineModel===m?'selected':''} value="${m}">${m}</option>`).join('')}
+          ${machineModels.map(m => `<option ${existing?.machineModel===m.code?'selected':''} value="${m.code}">${escape(m.displayName)}</option>`).join('')}
         </select>
       </label>
       <div style="margin-top:16px;display:flex;gap:8px;">
@@ -715,10 +714,10 @@ function showMerchantForm(partnerId, existing, MODELS, onDone) {
   });
 }
 
-function parseMerchantCsv(text) {
+function parseMerchantCsv(text, validCodes) {
   const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
   if (!lines.length) return [];
-  const MODELS_SET = new Set(['S5','S8','S10','T8','T10','T20','T35','L20','L40']);
+  const MODELS_SET = validCodes instanceof Set ? validCodes : new Set(['S5','S8','S10','T8','T10','T20','T35','L20','L40','M10']);
   let dataLines = lines;
   if (lines[0].toLowerCase().includes('name')) dataLines = lines.slice(1);
   return dataLines
@@ -731,7 +730,7 @@ function parseMerchantCsv(text) {
     .filter(r => r.name);
 }
 
-function showBatchCsvPanel(partnerId, MODELS, onDone) {
+function showBatchCsvPanel(partnerId, machineModels, onDone) {
   const slot = document.getElementById('batch-panel-slot');
   slot.innerHTML = `
     <div class="batch-panel">
@@ -770,7 +769,8 @@ function showBatchCsvPanel(partnerId, MODELS, onDone) {
     status.innerHTML = 'Parsing…';
     try {
       const text = await file.text();
-      const allRows = parseMerchantCsv(text);
+      const validCodes = new Set(machineModels.map(m => m.code));
+      const allRows = parseMerchantCsv(text, validCodes);
       const validRows = allRows.filter(r => r.model);
       const skipped = allRows.length - validRows.length;
       if (!validRows.length) { status.innerHTML = '<span style="color:var(--loss);">No rows with a valid model found. Check the file format.</span>'; return; }
@@ -785,7 +785,7 @@ function showBatchCsvPanel(partnerId, MODELS, onDone) {
   });
 }
 
-function showBatchRowsPanel(partnerId, MODELS, onDone) {
+function showBatchRowsPanel(partnerId, machineModels, onDone) {
   const slot = document.getElementById('batch-panel-slot');
   let rows = [{ name: '', model: '' }];
 
@@ -808,7 +808,7 @@ function showBatchRowsPanel(partnerId, MODELS, onDone) {
                 <td><input class="rf-name" data-i="${i}" value="${escape(r.name)}" placeholder="Merchant name…"></td>
                 <td><select class="rf-model" data-i="${i}">
                   <option value="">— select —</option>
-                  ${MODELS.map(m => `<option ${r.model===m?'selected':''} value="${m}">${m}</option>`).join('')}
+                  ${machineModels.map(m => `<option ${r.model===m.code?'selected':''} value="${m.code}">${escape(m.displayName)}</option>`).join('')}
                 </select></td>
                 <td style="text-align:center"><button class="btn-sm rf-del" data-i="${i}" style="color:var(--loss)">✕</button></td>
               </tr>`).join('')}
