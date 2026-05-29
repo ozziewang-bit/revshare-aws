@@ -157,6 +157,7 @@ export async function putMachineModel({ code, displayName }) {
     TableName: TABLE,
     Item: { pk: 'CONFIG', sk: `MODEL#${code}`, code, displayName }
   }));
+  return { code, displayName };
 }
 
 export async function deleteMachineModel(code) {
