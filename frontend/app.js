@@ -3,6 +3,57 @@ const API_URL = window.REVSHARE_API_URL || '';   // injected by deploy script
 
 const CURRENCIES = ['TWD', 'USD', 'HKD', 'JPY', 'IDR', 'THB'];
 
+// ── Rule form helpers ──────────────────────────────────────────────────────
+
+function compileRule({ gpPercent, mgEnabled, mgAmount, electricity, placement, others }) {
+  const children = [];
+  const gpLeaf = { type: 'percent', rows: [{ model: 'ALL', percent: Number(gpPercent) }] };
+  if (mgEnabled && Number(mgAmount) > 0) {
+    children.push({ type: 'max', children: [gpLeaf, { type: 'flat_per_machine', rows: [{ model: 'ALL', amount: Number(mgAmount) }] }] });
+  } else {
+    children.push(gpLeaf);
+  }
+  if (Number(electricity) > 0) children.push({ type: 'flat_per_partner_total', amount: Number(electricity) });
+  if (Number(placement) > 0) children.push({ type: 'flat_per_partner_total', amount: Number(placement) });
+  if (Number(others) > 0) children.push({ type: 'flat_per_partner_total', amount: Number(others) });
+  if (children.length === 1) return children[0];
+  return { type: 'sum', children };
+}
+
+function decompileRule(rule) {
+  if (!rule) return { gpPercent: 0, mgEnabled: false, mgAmount: 0, electricity: 0, placement: 0, others: 0 };
+  const nodes = rule.type === 'sum' ? (rule.children || []) : [rule];
+  let gpPercent = 0, mgEnabled = false, mgAmount = 0;
+  const flatAmounts = [];
+  for (const node of nodes) {
+    if (node.type === 'percent') {
+      gpPercent = node.rows?.[0]?.percent ?? 0;
+    } else if (node.type === 'max') {
+      const pc = node.children?.find(c => c.type === 'percent');
+      const fc = node.children?.find(c => c.type === 'flat_per_machine');
+      if (pc) gpPercent = pc.rows?.[0]?.percent ?? 0;
+      if (fc) { mgEnabled = true; mgAmount = fc.rows?.[0]?.amount ?? 0; }
+    } else if (node.type === 'flat_per_partner_total') {
+      flatAmounts.push(node.amount ?? 0);
+    }
+  }
+  return { gpPercent, mgEnabled, mgAmount, electricity: flatAmounts[0] ?? 0, placement: flatAmounts[1] ?? 0, others: flatAmounts[2] ?? 0 };
+}
+
+function readExcel(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = e => {
+      try {
+        const wb = XLSX.read(e.target.result, { type: 'binary' });
+        resolve(wb);
+      } catch (err) { reject(err); }
+    };
+    reader.onerror = reject;
+    reader.readAsBinaryString(file);
+  });
+}
+
 // Friendly display labels + descriptions for the four leaf types.
 // Used by the rule-editor type pill and the add-component picker.
 const LEAF_META = {
@@ -104,218 +155,99 @@ function renderNewPartnerForm() {
   });
 }
 
+function renderStructuredRuleEditor(container, initialRule) {
+  let form = decompileRule(initialRule);
+  let rawMode = false;
+  let rawJson = JSON.stringify(initialRule || { type: 'sum', children: [] }, null, 2);
+
+  function draw() {
+    container.innerHTML = `
+      <div class="rule-form">
+        <div class="rf-row"><label>GP Share %</label>
+          <input id="rf-gp" type="number" min="0" max="100" step="0.1" value="${form.gpPercent}" ${rawMode?'disabled':''}></div>
+        <div class="rf-row">
+          <label><input id="rf-mg-toggle" type="checkbox" ${form.mgEnabled?'checked':''} ${rawMode?'disabled':''}> Minimum guarantee (THB / machine / month)</label>
+          <input id="rf-mg-amt" type="number" min="0" value="${form.mgAmount}" ${(!form.mgEnabled||rawMode)?'disabled':''}></div>
+        <div class="rf-row"><label>Monthly electricity (THB)</label>
+          <input id="rf-elec" type="number" min="0" value="${form.electricity}" ${rawMode?'disabled':''}></div>
+        <div class="rf-row"><label>Monthly placement (THB)</label>
+          <input id="rf-place" type="number" min="0" value="${form.placement}" ${rawMode?'disabled':''}></div>
+        <div class="rf-row"><label>Monthly others (THB)</label>
+          <input id="rf-others" type="number" min="0" value="${form.others}" ${rawMode?'disabled':''}></div>
+        <details ${rawMode?'open':''}>
+          <summary style="cursor:pointer;color:#868e96;font-size:13px;">Advanced (raw JSON)</summary>
+          <textarea id="rf-json" rows="10" style="width:100%;font-family:monospace;font-size:12px;">${escape(rawJson)}</textarea>
+          <label style="font-size:13px;"><input id="rf-raw-mode" type="checkbox" ${rawMode?'checked':''}> Use raw JSON (overrides form above)</label>
+        </details>
+      </div>`;
+
+    container.querySelector('#rf-mg-toggle')?.addEventListener('change', e => {
+      form.mgEnabled = e.target.checked;
+      draw();
+    });
+    container.querySelector('#rf-raw-mode')?.addEventListener('change', e => {
+      rawMode = e.target.checked;
+      if (!rawMode) {
+        try { form = decompileRule(JSON.parse(container.querySelector('#rf-json').value)); } catch(_) {}
+      }
+      draw();
+    });
+  }
+
+  draw();
+
+  return {
+    getRule() {
+      if (rawMode) {
+        const ta = container.querySelector('#rf-json');
+        return JSON.parse(ta.value);
+      }
+      form.gpPercent   = Number(container.querySelector('#rf-gp')?.value    || 0);
+      form.mgEnabled   = container.querySelector('#rf-mg-toggle')?.checked  || false;
+      form.mgAmount    = Number(container.querySelector('#rf-mg-amt')?.value || 0);
+      form.electricity = Number(container.querySelector('#rf-elec')?.value   || 0);
+      form.placement   = Number(container.querySelector('#rf-place')?.value  || 0);
+      form.others      = Number(container.querySelector('#rf-others')?.value || 0);
+      return compileRule(form);
+    }
+  };
+}
+
 async function renderPartnerDetail(partnerId) {
   const main = document.getElementById('main');
   main.innerHTML = '<p>Loading partner…</p>';
   const p = await api('/partners/' + partnerId);
 
-  // Normalize partner.rule to a top-level SUM for editing
-  let editorRule = (p.rule && p.rule.type === 'sum') ? p.rule : { type: 'sum', children: p.rule ? [p.rule] : [] };
-
-  let pickerOpen = false;
-
-  function render() {
-    main.innerHTML = `
-      <button class="back-link" id="back">← Partners</button>
-      <div class="page-head">
-        <div>
-          <h2>${escape(p.name)}</h2>
-          <div class="muted" style="font-size:13px;margin-top:2px;">${escape(p.currency)} · ${escape(p.aggregationMode)}</div>
-        </div>
-        <div>
-          <button id="save-rule">Save rule</button>
-          <button id="run-new" class="btn-primary">+ Run calculation</button>
-        </div>
+  main.innerHTML = `
+    <button class="back-link" id="back">← Partners</button>
+    <div class="page-head">
+      <div>
+        <h2>${escape(p.name)}</h2>
+        <div class="muted" style="font-size:13px;margin-top:2px;">${escape(p.currency)} · ${escape(p.aggregationMode)}</div>
       </div>
-      <div class="section-label">Rule components · all summed together</div>
-      <div id="leaf-list"></div>
-      <div id="add-slot"></div>
-      <div class="rule-preview">
-        Preview: <code>${escape(rulePreview(editorRule))}</code>
-      </div>`;
-    document.getElementById('back').addEventListener('click', renderPartnersList);
-    document.getElementById('save-rule').addEventListener('click', async () => {
-      // Unwrap solo SUM
-      const ruleToSave = editorRule.children.length === 1 ? editorRule.children[0] : editorRule;
-      try { await api('/partners/' + partnerId, { method: 'PUT', body: JSON.stringify({ rule: ruleToSave }) }); alert('Saved'); }
-      catch (e) { alert(e.message); }
-    });
-    document.getElementById('run-new').addEventListener('click', () => renderNewRunForm(partnerId, p));
-    renderLeafList();
-    renderAddSlot();
-    renderRunsHistory();
-  }
-
-  function renderAddSlot() {
-    const slot = document.getElementById('add-slot');
-    if (!pickerOpen) {
-      slot.innerHTML = `<button class="addbtn" id="open-picker">+ Add a rule component</button>`;
-      document.getElementById('open-picker').addEventListener('click', () => { pickerOpen = true; renderAddSlot(); });
-      return;
-    }
-    const sectionHTML = (title, entries) => `
-      <div class="ap-section-title">${escape(title)}</div>
-      <div class="ap-grid">
-        ${entries.map(([type, meta]) => `
-          <button class="ap-card" data-type="${type}">
-            <div class="ap-name">${escape(meta.label)}</div>
-            <div class="ap-desc">${escape(meta.desc)}</div>
-          </button>`).join('')}
-      </div>`;
-    slot.innerHTML = `
-      <div class="add-picker">
-        <div class="ap-head">
-          <div class="ap-title">Pick a component to add</div>
-          <button class="ap-close" id="close-picker">×</button>
-        </div>
-        ${sectionHTML('Single leaf', Object.entries(LEAF_META))}
-        ${sectionHTML('Combinations', Object.entries(COMBINATOR_META))}
-        ${sectionHTML('Quick presets', Object.entries(PRESET_META))}
-      </div>`;
-    document.getElementById('close-picker').addEventListener('click', () => { pickerOpen = false; renderAddSlot(); });
-    slot.querySelectorAll('.ap-card').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const t = btn.dataset.type;
-        if (PRESET_META[t]) {
-          PRESET_META[t].leaves.forEach(l => editorRule.children.push(makeNode(l)));
-        } else if (COMBINATOR_META[t]) {
-          wrapExistingInCombinator(t);
-        } else {
-          editorRule.children.push(makeNode(t));
-        }
-        pickerOpen = false;
-        render();
-      });
-    });
-  }
-
-  // "Whichever is higher / lower" wraps the user's existing rule as one branch
-  // of the combinator and adds a new comparison branch alongside it. If the rule
-  // is empty, the combinator starts with two placeholder branches.
-  function wrapExistingInCombinator(comboType) {
-    const existing = editorRule.children;
-    const comparison = makeNode('flat_per_partner_total');   // default: a fixed floor/cap
-    let branch1;
-    if (existing.length === 0) {
-      branch1 = makeNode('percent');   // empty rule → start with a percent
-    } else if (existing.length === 1) {
-      branch1 = existing[0];
-    } else {
-      branch1 = { type: 'sum', children: existing.slice() };
-    }
-    editorRule.children = [{ type: comboType, children: [branch1, comparison] }];
-  }
-
-  function renderLeafList() {
-    const root = document.getElementById('leaf-list');
-    root.innerHTML = '';
-    editorRule.children.forEach((node, i) => {
-      root.appendChild(buildChildCard(node, i, editorRule.children));
-    });
-  }
-
-  function buildLeafCard(leaf, i, parentArray) {
-    const el = document.createElement('div');
-    el.className = 'leaf-card';
-    el.innerHTML = leafCardMarkup(leaf, i, parentArray.length);
-    el.querySelector('.btn-remove')?.addEventListener('click', () => { parentArray.splice(i,1); render(); });
-    el.querySelector('.btn-up')?.addEventListener('click', () => { if (i>0) { const [m]=parentArray.splice(i,1); parentArray.splice(i-1,0,m); render(); }});
-    el.querySelector('.btn-down')?.addEventListener('click', () => { if (i<parentArray.length-1) { const [m]=parentArray.splice(i,1); parentArray.splice(i+1,0,m); render(); }});
-    bindLeafInputs(el, leaf, render);
-    return el;
-  }
-
-  function buildCombinatorCard(node, i, parentArray) {
-    const meta = COMBINATOR_META[node.type];
-    const el = document.createElement('div');
-    el.className = 'leaf-card combinator-card';
-    el.innerHTML = `
-      <div class="lh">
-        <div><span class="lt lt-combinator">${escape(meta.label)}</span></div>
-        <div class="controls">
-          <button class="btn-up" ${i===0?'disabled':''}>↑</button>
-          <button class="btn-down" ${i===parentArray.length-1?'disabled':''}>↓</button>
-          <button class="btn-remove">Remove</button>
-        </div>
+      <div>
+        <button id="run-new" class="btn-primary">+ Run calculation</button>
       </div>
-      <p class="combinator-desc">${escape(meta.desc)}</p>
-      <div class="combinator-children"></div>
-      <div class="combinator-add"></div>`;
-    el.querySelector('.btn-remove').addEventListener('click', () => { parentArray.splice(i,1); render(); });
-    el.querySelector('.btn-up').addEventListener('click', () => { if (i>0) { const [m]=parentArray.splice(i,1); parentArray.splice(i-1,0,m); render(); }});
-    el.querySelector('.btn-down').addEventListener('click', () => { if (i<parentArray.length-1) { const [m]=parentArray.splice(i,1); parentArray.splice(i+1,0,m); render(); }});
+    </div>
+    <h3>Rule</h3>
+    <div id="rule-editor-container"></div>
+    <button id="save-rule" class="btn-primary" style="margin-top:12px;">Save rule</button>`;
 
-    const childrenContainer = el.querySelector('.combinator-children');
-    node.children.forEach((child, j) => {
-      childrenContainer.appendChild(buildChildCard(child, j, node.children));
-    });
-    renderCombinatorAddSlot(el.querySelector('.combinator-add'), node);
-    return el;
-  }
+  document.getElementById('back').addEventListener('click', renderPartnersList);
+  document.getElementById('run-new').addEventListener('click', () => renderNewRunForm(partnerId, p));
 
-  // Dispatch on node type — leaves render as leaf cards, nested SUMs render
-  // as a multi-component branch card, nested combinators recurse (rare in v1).
-  function buildChildCard(child, j, parentArray) {
-    if (child.type === 'sum')              return buildSumCard(child, j, parentArray);
-    if (COMBINATOR_META[child.type])       return buildCombinatorCard(child, j, parentArray);
-    return buildLeafCard(child, j, parentArray);
-  }
+  const ruleContainer = document.getElementById('rule-editor-container');
+  const editor = renderStructuredRuleEditor(ruleContainer, p.rule);
 
-  // Renders a SUM node — used as a branch of a MAX/MIN combinator when the user
-  // wrapped their existing multi-component rule. Inside, child leaves are
-  // editable inline; "+ Add component" appends another leaf to this branch.
-  function buildSumCard(node, i, parentArray) {
-    const el = document.createElement('div');
-    el.className = 'leaf-card sum-card';
-    el.innerHTML = `
-      <div class="lh">
-        <div><span class="lt lt-sum">Sum of components</span></div>
-        <div class="controls">
-          <button class="btn-remove">Remove this branch</button>
-        </div>
-      </div>
-      <p class="combinator-desc">All components in this branch are added together.</p>
-      <div class="sum-children"></div>
-      <div class="sum-add"></div>`;
-    el.querySelector('.btn-remove').addEventListener('click', () => { parentArray.splice(i,1); render(); });
-    const childrenContainer = el.querySelector('.sum-children');
-    node.children.forEach((child, j) => {
-      childrenContainer.appendChild(buildChildCard(child, j, node.children));
-    });
-    renderCombinatorAddSlot(el.querySelector('.sum-add'), node);
-    return el;
-  }
+  document.getElementById('save-rule').addEventListener('click', async () => {
+    let rule;
+    try { rule = editor.getRule(); } catch(e) { alert('Invalid JSON: ' + e.message); return; }
+    await api('/partners/' + partnerId, { method: 'PUT', body: JSON.stringify({ rule }) });
+    alert('Saved');
+    renderPartnerDetail(partnerId);
+  });
 
-  function renderCombinatorAddSlot(slot, parentNode, isOpen = false) {
-    if (!isOpen) {
-      slot.innerHTML = `<button class="addbtn-small">+ Add another option</button>`;
-      slot.querySelector('.addbtn-small').addEventListener('click', () => renderCombinatorAddSlot(slot, parentNode, true));
-      return;
-    }
-    slot.innerHTML = `
-      <div class="add-picker">
-        <div class="ap-head">
-          <div class="ap-title">Pick an option to compare</div>
-          <button class="ap-close">×</button>
-        </div>
-        <div class="ap-grid">
-          ${Object.entries(LEAF_META).map(([type, meta]) => `
-            <button class="ap-card" data-type="${type}">
-              <div class="ap-name">${escape(meta.label)}</div>
-              <div class="ap-desc">${escape(meta.desc)}</div>
-            </button>`).join('')}
-        </div>
-      </div>`;
-    slot.querySelector('.ap-close').addEventListener('click', () => renderCombinatorAddSlot(slot, parentNode, false));
-    slot.querySelectorAll('.ap-card').forEach(btn => {
-      btn.addEventListener('click', () => {
-        parentNode.children.push(makeNode(btn.dataset.type));
-        render();
-      });
-    });
-  }
-
-  // Appended to render() call above — fetches past runs and lists them below the rule editor
+  // Appended below — fetches past runs and lists them below the rule editor
   async function renderRunsHistory() {
     const runs = await api('/partners/' + partnerId + '/runs');
     const wrap = document.createElement('div');
@@ -335,7 +267,7 @@ async function renderPartnerDetail(partnerId) {
     });
   }
 
-  render();
+  renderRunsHistory();
 }
 
 // ---------- Leaf rendering helpers (top-level functions) ----------
