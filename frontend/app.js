@@ -526,8 +526,13 @@ async function renderMerchantsTab(partnerId) {
   container.innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
       <span>${merchants.length} merchant${merchants.length !== 1 ? 's' : ''}</span>
-      <button id="add-merchant-btn" class="btn-primary">+ Add merchant</button>
+      <div style="display:flex;gap:6px;">
+        <button id="batch-csv-btn" class="btn">↑ CSV upload</button>
+        <button id="batch-rows-btn" class="btn">+ Add rows</button>
+        <button id="add-merchant-btn" class="btn-primary">+ Add one</button>
+      </div>
     </div>
+    <div id="batch-panel-slot"></div>
     ${merchants.length === 0 ? '<p class="muted">No merchants yet. Add one or import from Excel.</p>' : `
     <table class="ts"><thead><tr><th>Name</th><th>Model</th><th></th></tr></thead><tbody>
       ${merchants.map(m => `
@@ -545,6 +550,19 @@ async function renderMerchantsTab(partnerId) {
   container.querySelector('#add-merchant-btn')?.addEventListener('click', () => {
     showMerchantForm(partnerId, null, MODELS, () => renderMerchantsTab(partnerId));
   });
+
+  const batchSlot = container.querySelector('#batch-panel-slot');
+  container.querySelector('#batch-csv-btn').addEventListener('click', () => {
+    const isOpen = batchSlot.dataset.panel === 'csv';
+    batchSlot.dataset.panel = isOpen ? '' : 'csv';
+    isOpen ? (batchSlot.innerHTML = '') : showBatchCsvPanel(partnerId, MODELS, () => renderMerchantsTab(partnerId));
+  });
+  container.querySelector('#batch-rows-btn').addEventListener('click', () => {
+    const isOpen = batchSlot.dataset.panel === 'rows';
+    batchSlot.dataset.panel = isOpen ? '' : 'rows';
+    isOpen ? (batchSlot.innerHTML = '') : showBatchRowsPanel(partnerId, MODELS, () => renderMerchantsTab(partnerId));
+  });
+
   container.querySelectorAll('.edit-m').forEach(btn => {
     btn.addEventListener('click', () => {
       const m = merchants.find(x => x.merchantId === btn.dataset.id);
