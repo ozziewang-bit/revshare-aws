@@ -197,9 +197,9 @@ function totalMachineCounts(rows) {
   return countByModel(rows);
 }
 
-function validateRows(rows) {
+function validateRows(rows, models) {
   for (const row of rows) {
-    if (!MACHINE_MODELS.has(row.model))
+    if (!models.has(row.model))
       throw new Error(`unknown machine model: ${row.model}`);
     if (!Number.isInteger(row.rentals) || row.rentals < 0)
       throw new Error(`rentals must be a non-negative integer, got: ${row.rentals}`);
@@ -208,11 +208,12 @@ function validateRows(rows) {
   }
 }
 
-export function evaluateRun({ rule, rows, aggregationMode }) {
+export function evaluateRun({ rule, rows, aggregationMode, allowedModels }) {
   if (!rule || typeof rule !== 'object' || !rule.type)
     throw new Error('rule must be a node with a type field');
 
-  validateRows(rows);
+  const models = allowedModels instanceof Set ? allowedModels : MACHINE_MODELS;
+  validateRows(rows, models);
 
   if (aggregationMode === 'per_store') {
     validatePerStoreTree(rule);

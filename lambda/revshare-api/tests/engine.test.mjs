@@ -7,6 +7,24 @@ test('MACHINE_MODELS enum contains all ten models', () => {
     ['L20','L40','M10','S10','S5','S8','T10','T20','T35','T8']);
 });
 
+test('evaluateRun respects allowedModels override', () => {
+  const customModels = new Set(['CUSTOM']);
+  const rule = { type: 'percent', rows: [{ model: 'ALL', percent: 10 }] };
+  const rows = [{ storeId: 's1', machineSerial: 'x', model: 'CUSTOM', rentals: 1, revenue: 100 }];
+  const result = evaluateRun({ rule, rows, aggregationMode: 'whole', allowedModels: customModels });
+  assert.strictEqual(result.totalPayout, 10);
+});
+
+test('evaluateRun rejects unknown model when allowedModels provided', () => {
+  const customModels = new Set(['CUSTOM']);
+  const rule = { type: 'percent', rows: [{ model: 'ALL', percent: 10 }] };
+  const rows = [{ storeId: 's1', machineSerial: 'x', model: 'S5', rentals: 1, revenue: 100 }];
+  assert.throws(
+    () => evaluateRun({ rule, rows, aggregationMode: 'whole', allowedModels: customModels }),
+    /unknown machine model: S5/
+  );
+});
+
 test('evaluateRun with bad rule throws', () => {
   assert.throws(() => evaluateRun({ rule: null, rows: [], aggregationMode: 'whole' }),
     /rule must be a node/);
