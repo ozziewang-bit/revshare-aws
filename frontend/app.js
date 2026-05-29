@@ -219,22 +219,30 @@ async function renderPartnerDetail(partnerId) {
   const p = await api('/partners/' + partnerId);
 
   main.innerHTML = `
-    <button class="back-link" id="back">← Partners</button>
     <div class="page-head">
-      <div>
-        <h2>${escape(p.name)}</h2>
-        <div class="muted" style="font-size:13px;margin-top:2px;">${escape(p.currency)} · ${escape(p.aggregationMode)}</div>
-      </div>
-      <div>
-        <button id="run-new" class="btn-primary">+ Run calculation</button>
-      </div>
+      <button id="back" class="btn-ghost">← Partners</button>
+      <h2>${escape(p.name)}</h2>
     </div>
-    <h3>Rule</h3>
-    <div id="rule-editor-container"></div>
-    <button id="save-rule" class="btn-primary" style="margin-top:12px;">Save rule</button>`;
+    <p class="muted">Currency: ${escape(p.currency)} · Aggregation: ${escape(p.aggregationMode)}</p>
+    <button id="new-run" class="btn-primary" style="margin-bottom:16px;">+ New run</button>
+    <div class="tabs" style="margin-bottom:16px;">
+      <button id="tab-rule" class="tab active">Rule</button>
+      <button id="tab-merchants" class="tab">Merchants (<span id="merchant-count">…</span>)</button>
+      <button id="tab-runs" class="tab">Runs</button>
+    </div>
+    <div id="tab-rule-content">
+      <div id="rule-editor-container"></div>
+      <button id="save-rule" class="btn-primary" style="margin-top:12px;">Save rule</button>
+    </div>
+    <div id="tab-merchants-content" style="display:none">
+      <div id="merchants-tab-content">Loading…</div>
+    </div>
+    <div id="tab-runs-content" style="display:none">
+      <div id="runs-history"></div>
+    </div>`;
 
   document.getElementById('back').addEventListener('click', renderPartnersList);
-  document.getElementById('run-new').addEventListener('click', () => renderNewRunForm(partnerId, p));
+  document.getElementById('new-run').addEventListener('click', () => renderNewRunForm(partnerId, p));
 
   const ruleContainer = document.getElementById('rule-editor-container');
   const editor = renderStructuredRuleEditor(ruleContainer, p.rule);
@@ -247,11 +255,28 @@ async function renderPartnerDetail(partnerId) {
     renderPartnerDetail(partnerId);
   });
 
-  // Appended below — fetches past runs and lists them below the rule editor
+  ['rule','merchants','runs'].forEach(t => {
+    document.getElementById(`tab-${t}`).addEventListener('click', () => {
+      ['rule','merchants','runs'].forEach(x => {
+        document.getElementById(`tab-${x}`).classList.toggle('active', x === t);
+        document.getElementById(`tab-${x}-content`).style.display = x === t ? '' : 'none';
+      });
+      if (t === 'merchants') renderMerchantsTab(partnerId);
+      if (t === 'runs') renderRunsHistory();
+    });
+  });
+
+  api('/merchants').then(all => {
+    const el = document.getElementById('merchant-count');
+    if (el) el.textContent = all.filter(m => m.partnerId === partnerId).length;
+  });
+
+  // Nested closure — renders past runs into #runs-history inside tab-runs-content
   async function renderRunsHistory() {
+    const runsHistory = document.getElementById('runs-history');
+    runsHistory.innerHTML = '<p class="muted">Loading…</p>';
     const runs = await api('/partners/' + partnerId + '/runs');
-    const wrap = document.createElement('div');
-    wrap.innerHTML = `
+    runsHistory.innerHTML = `
       <h3 style="margin-top:30px;">Run history</h3>
       ${runs.length === 0 ? '<p class="muted">No runs yet.</p>' : `
         <table class="ts"><thead><tr><th>Period</th><th>Uploaded</th><th>Total</th></tr></thead><tbody>
@@ -261,13 +286,85 @@ async function renderPartnerDetail(partnerId) {
           <td>${Number(r.result.totalPayout).toLocaleString()}</td>
         </tr>`).join('')}
         </tbody></table>`}`;
-    document.getElementById('main').appendChild(wrap);
-    wrap.querySelectorAll('.row-clickable').forEach(tr => {
+    runsHistory.querySelectorAll('.row-clickable').forEach(tr => {
       tr.addEventListener('click', () => renderRunResult(partnerId, tr.dataset.runid));
     });
   }
+}
 
-  renderRunsHistory();
+async function renderMerchantsTab(partnerId) {
+  const container = document.getElementById('merchants-tab-content');
+  container.innerHTML = 'Loading…';
+  const all = await api('/merchants');
+  const merchants = all.filter(m => m.partnerId === partnerId);
+  const MODELS = ['S5','S8','S10','T8','T10','T20','T35','L20','L40'];
+  container.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+      <span>${merchants.length} merchant${merchants.length !== 1 ? 's' : ''}</span>
+      <button id="add-merchant-btn" class="btn-primary">+ Add merchant</button>
+    </div>
+    ${merchants.length === 0 ? '<p class="muted">No merchants yet. Add one or import from Excel.</p>' : `
+    <table class="ts"><thead><tr><th>Name</th><th>Model</th><th></th></tr></thead><tbody>
+      ${merchants.map(m => `
+        <tr>
+          <td>${escape(m.name)}</td>
+          <td>${escape(m.machineModel || '—')}</td>
+          <td>
+            <button class="btn-ghost edit-m" data-id="${m.merchantId}">Edit</button>
+            <button class="btn-ghost del-m" data-id="${m.merchantId}">Delete</button>
+          </td>
+        </tr>`).join('')}
+    </tbody></table>`}
+    <div id="merchant-form-slot"></div>`;
+
+  container.querySelector('#add-merchant-btn')?.addEventListener('click', () => {
+    showMerchantForm(partnerId, null, MODELS, () => renderMerchantsTab(partnerId));
+  });
+  container.querySelectorAll('.edit-m').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const m = merchants.find(x => x.merchantId === btn.dataset.id);
+      showMerchantForm(partnerId, m, MODELS, () => renderMerchantsTab(partnerId));
+    });
+  });
+  container.querySelectorAll('.del-m').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('Delete this merchant?')) return;
+      await api('/merchants/' + btn.dataset.id, { method: 'DELETE' });
+      renderMerchantsTab(partnerId);
+    });
+  });
+}
+
+function showMerchantForm(partnerId, existing, MODELS, onDone) {
+  const slot = document.getElementById('merchant-form-slot');
+  slot.innerHTML = `
+    <div class="modal-bg"><div class="modal">
+      <h3>${existing ? 'Edit' : 'Add'} merchant</h3>
+      <label>Name<input id="mf-name" value="${escape(existing?.name || '')}"></label>
+      <label>Machine model
+        <select id="mf-model">
+          <option value="">— select —</option>
+          ${MODELS.map(m => `<option ${existing?.machineModel===m?'selected':''} value="${m}">${m}</option>`).join('')}
+        </select>
+      </label>
+      <div style="margin-top:16px;display:flex;gap:8px;">
+        <button id="mf-save" class="btn-primary">${existing ? 'Save' : 'Create'}</button>
+        <button id="mf-cancel" class="btn-ghost">Cancel</button>
+      </div>
+    </div></div>`;
+  slot.querySelector('#mf-cancel').addEventListener('click', () => { slot.innerHTML = ''; });
+  slot.querySelector('#mf-save').addEventListener('click', async () => {
+    const name  = slot.querySelector('#mf-name').value.trim();
+    const model = slot.querySelector('#mf-model').value || null;
+    if (!name) { alert('Name is required'); return; }
+    if (existing) {
+      await api('/merchants/' + existing.merchantId, { method: 'PUT', body: JSON.stringify({ name, machineModel: model, partnerId }) });
+    } else {
+      await api('/merchants', { method: 'POST', body: JSON.stringify({ name, machineModel: model, partnerId }) });
+    }
+    slot.innerHTML = '';
+    onDone();
+  });
 }
 
 // ---------- Leaf rendering helpers (top-level functions) ----------
