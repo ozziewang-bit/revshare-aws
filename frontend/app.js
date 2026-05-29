@@ -608,6 +608,45 @@ function parseMerchantCsv(text) {
     .filter(r => r.name);
 }
 
+function showBatchCsvPanel(partnerId, MODELS, onDone) {
+  const slot = document.getElementById('batch-panel-slot');
+  slot.innerHTML = `
+    <div class="batch-panel">
+      <div class="batch-panel-head">
+        <div>
+          <div class="batch-panel-title">Upload merchants via CSV</div>
+          <div class="batch-panel-sub">Columns: <code>name</code> (required), <code>model</code> (optional — S5/S8/S10/T8/T10/T20/T35/L20/L40). Existing names are updated, not duplicated.</div>
+        </div>
+        <button id="bp-close" class="btn-ghost">✕</button>
+      </div>
+      <div class="upload-zone">
+        <p>Choose a CSV file or drag it here</p>
+        <input type="file" id="bp-csv-file" accept=".csv,text/csv" style="display:none">
+        <button id="bp-choose" class="btn">Choose file</button>
+        <div class="upload-hint">After upload, merchants are saved immediately.</div>
+      </div>
+      <div id="bp-status" style="margin-top:12px;font-size:13px;"></div>
+    </div>`;
+  slot.querySelector('#bp-close').addEventListener('click', () => { slot.innerHTML = ''; slot.dataset.panel = ''; });
+  slot.querySelector('#bp-choose').addEventListener('click', () => slot.querySelector('#bp-csv-file').click());
+  slot.querySelector('#bp-csv-file').addEventListener('change', async e => {
+    const file = e.target.files[0]; if (!file) return;
+    const status = slot.querySelector('#bp-status');
+    status.innerHTML = 'Parsing…';
+    try {
+      const text = await file.text();
+      const rows = parseMerchantCsv(text);
+      if (!rows.length) { status.innerHTML = '<span style="color:var(--loss);">No valid rows found in file.</span>'; return; }
+      status.innerHTML = `Parsed ${rows.length} merchant(s) — saving…`;
+      await Promise.all(rows.map(r => api('/merchants', { method: 'POST', body: JSON.stringify({ name: r.name, machineModel: r.model || null, partnerId }) })));
+      status.innerHTML = `<span style="color:var(--gain);">Saved ${rows.length} merchant(s).</span>`;
+      setTimeout(onDone, 800);
+    } catch (err) {
+      status.innerHTML = `<span style="color:var(--loss);">Error: ${escape(err.message)}</span>`;
+    }
+  });
+}
+
 // ---------- Leaf rendering helpers (top-level functions) ----------
 
 function makeNode(type) {
