@@ -17,7 +17,7 @@ export async function createPartnerRoute(event) {
   const partner = {
     partnerId: ulid(),
     name, currency, aggregationMode,
-    rule: { type: 'sum', children: [] },
+    rule: body.rule || { type: 'sum', children: [] },
     notes: '',
     archived: false
   };
