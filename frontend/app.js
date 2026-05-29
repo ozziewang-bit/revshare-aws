@@ -710,7 +710,7 @@ async function renderPartnerDetail(partnerId) {
         ${runs.map(r => `<tr class="row-clickable" data-runid="${escape(r.runId)}">
           <td>${escape(r.periodStart)} → ${escape(r.periodEnd)}</td>
           <td>${escape(r.uploadedAt.split('T')[0])}</td>
-          <td>${Number(r.result.totalPayout).toLocaleString()}</td>
+          <td>${Number(r.result.totalPayout).toLocaleString('en-US')}</td>
         </tr>`).join('')}
         </tbody></table>`}`;
     runsHistory.querySelectorAll('.row-clickable').forEach(tr => {
@@ -1154,7 +1154,7 @@ async function renderRunResult(partnerId, runId) {
   const run = await api('/partners/' + partnerId + '/runs/' + runId);
   const partner = await api('/partners/' + partnerId);
   const r = run.result;
-  const cur = (n) => Number(n).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+  const cur = (n) => Number(n).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
   const byStore = (r.byStore || []).map(s => `
     <tr><td>${escape(s.storeId)}</td><td style="text-align:right;font-family:var(--font-mono);">${cur(s.payout)}</td></tr>`).join('');
   const byComponent = ((r.byPartner?.components) || (r.byStore?.[0]?.components) || []).map(c => `
@@ -1194,7 +1194,7 @@ async function renderRunResult(partnerId, runId) {
 async function downloadPdf(run) {
   // Render an off-screen statement HTML, capture via html2canvas, build A4 PDF via jsPDF.
   const partner = await api('/partners/' + run.partnerId);
-  const cur = (n) => Number(n).toLocaleString();
+  const cur = (n) => Number(n).toLocaleString('en-US');
   const statement = document.createElement('div');
   statement.style.cssText = `
     width: 794px; background: #fafaf9; padding: 36px 44px;
@@ -1206,7 +1206,7 @@ async function downloadPdf(run) {
         <div style="font-size:24px;font-weight:700;">Revenue-Share Statement</div>
         <div style="font-size:13px;color:#475569;">${escape(partner.name)}</div>
       </div>
-      <div style="font-size:11px;color:#64748b;">${escape(run.periodStart)} → ${escape(run.periodEnd)}<br>Generated ${escape(new Date().toLocaleString())}</div>
+      <div style="font-size:11px;color:#64748b;">${escape(run.periodStart)} → ${escape(run.periodEnd)}<br>Generated ${escape(new Date().toLocaleString('en-US'))}</div>
     </div>
     <div style="margin-top:18px;font-size:11px;letter-spacing:.04em;color:#64748b;">TOTAL PAYOUT</div>
     <div style="font-size:42px;font-weight:800;">${escape(partner.currency)} ${cur(run.result.totalPayout)}</div>
