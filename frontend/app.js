@@ -147,7 +147,7 @@ function renderNav() {
   const nav = document.getElementById('topnav');
   nav.innerHTML = `
     <button id="nav-partners" class="nav-btn active">Partners</button>
-    <button id="nav-bulk-runs" class="nav-btn">Bulk Runs</button>
+    <button id="nav-bulk-runs" class="nav-btn">Share Calculation</button>
     <button id="nav-import" class="nav-btn">Import</button>`;
   nav.querySelector('#nav-partners').addEventListener('click', () => { setActiveNav('nav-partners'); renderPartnersList(); });
   nav.querySelector('#nav-bulk-runs').addEventListener('click', () => { setActiveNav('nav-bulk-runs'); renderBulkRunsList(); });
@@ -255,11 +255,11 @@ async function parseKaExcel(file) {
 
 async function renderBulkRunsList() {
   const main = document.getElementById('main');
-  main.innerHTML = `<div class="page-head"><h2>Bulk Runs</h2><button id="new-bulk-run" class="btn-primary">+ New bulk run</button></div><div id="bulk-runs-out">Loading…</div>`;
+  main.innerHTML = `<div class="page-head"><h2>Share Calculation</h2><button id="new-bulk-run" class="btn-primary">+ New calculation</button></div><div id="bulk-runs-out">Loading…</div>`;
   document.getElementById('new-bulk-run').addEventListener('click', renderNewBulkRunForm);
   const runs = await api('/bulk-runs');
   const out = document.getElementById('bulk-runs-out');
-  if (!runs.length) { out.innerHTML = '<p class="muted">No bulk runs yet.</p>'; return; }
+  if (!runs.length) { out.innerHTML = '<p class="muted">No calculations yet.</p>'; return; }
   out.innerHTML = `<table class="ts"><thead><tr><th>Period</th><th>Uploaded</th><th>Partners</th><th>Total payout</th><th>Unmatched</th></tr></thead>
     <tbody>${runs.map(r => `<tr data-id="${r.runId}" style="cursor:pointer;">
       <td>${escape(r.periodStart)} – ${escape(r.periodEnd)}</td>
@@ -278,7 +278,7 @@ function renderNewBulkRunForm() {
   main.innerHTML = `
     <div class="page-head">
       <button id="back" class="btn-ghost">← Back</button>
-      <h2>New Bulk Run</h2>
+      <h2>New Share Calculation</h2>
     </div>
     <label>Period start <input type="date" id="br-start"></label>
     <label>Period end <input type="date" id="br-end"></label>
@@ -319,7 +319,7 @@ async function parseOrderReport(file) {
 
 async function renderBulkRunDetail(runId) {
   const main = document.getElementById('main');
-  main.innerHTML = `<div class="page-head"><button id="back" class="btn-ghost">← Back</button><h2>Bulk Run</h2></div><div id="br-detail">Loading…</div>`;
+  main.innerHTML = `<div class="page-head"><button id="back" class="btn-ghost">← Back</button><h2>Share Calculation</h2></div><div id="br-detail">Loading…</div>`;
   document.getElementById('back').addEventListener('click', renderBulkRunsList);
   const run = await api('/bulk-runs/' + runId);
   const el = document.getElementById('br-detail');
