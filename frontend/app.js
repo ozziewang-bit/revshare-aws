@@ -647,6 +647,73 @@ function showBatchCsvPanel(partnerId, MODELS, onDone) {
   });
 }
 
+function showBatchRowsPanel(partnerId, MODELS, onDone) {
+  const slot = document.getElementById('batch-panel-slot');
+  let rows = [{ name: '', model: '' }];
+
+  function draw() {
+    const validCount = rows.filter(r => r.name.trim()).length;
+    slot.innerHTML = `
+      <div class="batch-panel">
+        <div class="batch-panel-head">
+          <div>
+            <div class="batch-panel-title">Add multiple merchants</div>
+            <div class="batch-panel-sub">Fill in names and optional models, then save all at once.</div>
+          </div>
+          <button id="bp-close" class="btn-ghost">✕</button>
+        </div>
+        <table class="row-form">
+          <thead><tr><th style="width:55%">Name</th><th style="width:30%">Model (optional)</th><th style="width:15%"></th></tr></thead>
+          <tbody>
+            ${rows.map((r, i) => `
+              <tr>
+                <td><input class="rf-name" data-i="${i}" value="${escape(r.name)}" placeholder="Merchant name…"></td>
+                <td><select class="rf-model" data-i="${i}">
+                  <option value="">— none —</option>
+                  ${MODELS.map(m => `<option ${r.model===m?'selected':''} value="${m}">${m}</option>`).join('')}
+                </select></td>
+                <td style="text-align:center"><button class="btn-sm rf-del" data-i="${i}" style="color:var(--loss)">✕</button></td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+        <button id="bp-add-row" class="add-row-btn">+ Add row</button>
+        <div style="display:flex;gap:8px;">
+          <button id="bp-save" class="btn-primary" ${validCount===0?'disabled':''}>Save ${validCount} merchant${validCount!==1?'s':''}</button>
+          <button id="bp-cancel" class="btn-ghost">Cancel</button>
+        </div>
+        <div id="bp-status" style="margin-top:10px;font-size:13px;"></div>
+      </div>`;
+
+    slot.querySelector('#bp-close').addEventListener('click', () => { slot.innerHTML = ''; slot.dataset.panel = ''; });
+    slot.querySelector('#bp-cancel').addEventListener('click', () => { slot.innerHTML = ''; slot.dataset.panel = ''; });
+    slot.querySelector('#bp-add-row').addEventListener('click', () => { rows.push({ name: '', model: '' }); draw(); });
+    slot.querySelectorAll('.rf-name').forEach(inp => inp.addEventListener('input', e => { rows[+e.target.dataset.i].name = e.target.value; draw(); }));
+    slot.querySelectorAll('.rf-model').forEach(sel => sel.addEventListener('change', e => { rows[+e.target.dataset.i].model = e.target.value; draw(); }));
+    slot.querySelectorAll('.rf-del').forEach(btn => btn.addEventListener('click', e => {
+      const i = +e.target.dataset.i;
+      if (rows.length === 1) { rows[0] = { name: '', model: '' }; } else { rows.splice(i, 1); }
+      draw();
+    }));
+    slot.querySelector('#bp-save')?.addEventListener('click', async () => {
+      const toSave = rows.filter(r => r.name.trim());
+      const status = slot.querySelector('#bp-status');
+      slot.querySelector('#bp-save').disabled = true;
+      slot.querySelector('#bp-save').textContent = 'Saving…';
+      try {
+        await Promise.all(toSave.map(r => api('/merchants', { method: 'POST', body: JSON.stringify({ name: r.name.trim(), machineModel: r.model || null, partnerId }) })));
+        slot.innerHTML = '';
+        onDone();
+      } catch (err) {
+        status.innerHTML = `<span style="color:var(--loss);">Error: ${escape(err.message)}</span>`;
+        slot.querySelector('#bp-save').disabled = false;
+        slot.querySelector('#bp-save').textContent = `Save ${toSave.length} merchant${toSave.length!==1?'s':''}`;
+      }
+    });
+  }
+
+  draw();
+}
+
 // ---------- Leaf rendering helpers (top-level functions) ----------
 
 function makeNode(type) {
