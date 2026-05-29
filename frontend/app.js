@@ -148,9 +148,11 @@ function renderNav() {
   nav.innerHTML = `
     <button id="nav-partners" class="nav-btn active">Partners</button>
     <button id="nav-bulk-runs" class="nav-btn">Share Calculation</button>
+    <button id="nav-device-types" class="nav-btn">Device Types</button>
     <button id="nav-import" class="nav-btn">Import</button>`;
   nav.querySelector('#nav-partners').addEventListener('click', () => { setActiveNav('nav-partners'); renderPartnersList(); });
   nav.querySelector('#nav-bulk-runs').addEventListener('click', () => { setActiveNav('nav-bulk-runs'); renderBulkRunsList(); });
+  nav.querySelector('#nav-device-types').addEventListener('click', () => { setActiveNav('nav-device-types'); renderDeviceTypesScreen(); });
   nav.querySelector('#nav-import').addEventListener('click', () => { setActiveNav('nav-import'); renderImportScreen(); });
 }
 
@@ -201,6 +203,109 @@ async function renderImportScreen() {
       preview.innerHTML = `<p style="color:#f03e3e;">Parse error: ${escape(err.message)}</p>`;
     }
   });
+}
+
+async function renderDeviceTypesScreen() {
+  const main = document.getElementById('main');
+  main.innerHTML = `
+    <div class="page-head">
+      <h2>Device Types</h2>
+      <button id="add-model-btn" class="btn-primary">+ Add device type</button>
+    </div>
+    <div id="model-form-slot"></div>
+    <div id="models-out">Loading…</div>`;
+
+  document.getElementById('add-model-btn').addEventListener('click', showAddModelForm);
+
+  async function loadModels() {
+    const out = document.getElementById('models-out');
+    if (!out) return;
+    const models = await api('/machine-models');
+    if (!models.length) { out.innerHTML = '<p class="muted">No device types yet.</p>'; return; }
+    out.innerHTML = `
+      <table class="ts">
+        <thead><tr><th>Display Name</th><th>Code</th><th></th></tr></thead>
+        <tbody>
+          ${models.map(m => `
+            <tr id="model-row-${escape(m.code)}">
+              <td>${escape(m.displayName)}</td>
+              <td><span class="badge badge-neutral">${escape(m.code)}</span></td>
+              <td>
+                <button class="btn-ghost edit-model" data-code="${escape(m.code)}" data-dn="${escape(m.displayName)}">Edit</button>
+                <button class="btn-ghost del-model" data-code="${escape(m.code)}" style="color:var(--loss)">Delete</button>
+              </td>
+            </tr>`).join('')}
+        </tbody>
+      </table>`;
+    out.querySelectorAll('.edit-model').forEach(btn => {
+      btn.addEventListener('click', () => showEditModelForm(btn.dataset.code, btn.dataset.dn));
+    });
+    out.querySelectorAll('.del-model').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        if (!confirm(`Delete device type "${btn.dataset.code}"? Merchants with this model will keep their existing value.`)) return;
+        await api('/machine-models/' + btn.dataset.code, { method: 'DELETE' });
+        loadModels();
+      });
+    });
+  }
+
+  function showAddModelForm() {
+    const slot = document.getElementById('model-form-slot');
+    slot.innerHTML = `
+      <div class="batch-panel" style="max-width:480px;margin-bottom:16px;">
+        <div class="batch-panel-head">
+          <div class="batch-panel-title">Add device type</div>
+          <button id="mf-close" class="btn-ghost">✕</button>
+        </div>
+        <label style="display:block;margin-bottom:10px;font-size:12.5px;color:var(--ink-soft);">Display name
+          <input id="mf-dn" style="display:block;margin-top:4px;width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);font-size:13.5px;" placeholder="e.g. Advertising Player-S5">
+        </label>
+        <label style="display:block;margin-bottom:14px;font-size:12.5px;color:var(--ink-soft);">Code (immutable)
+          <input id="mf-code" style="display:block;margin-top:4px;width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);font-size:13.5px;font-family:var(--font-mono);" placeholder="e.g. S5">
+        </label>
+        <div style="display:flex;gap:8px;">
+          <button id="mf-save" class="btn-primary">Save</button>
+          <button id="mf-cancel" class="btn-ghost">Cancel</button>
+        </div>
+        <div id="mf-err" style="margin-top:8px;font-size:13px;color:var(--loss);"></div>
+      </div>`;
+    slot.querySelector('#mf-close').addEventListener('click', () => { slot.innerHTML = ''; });
+    slot.querySelector('#mf-cancel').addEventListener('click', () => { slot.innerHTML = ''; });
+    slot.querySelector('#mf-save').addEventListener('click', async () => {
+      const displayName = slot.querySelector('#mf-dn').value.trim();
+      const code = slot.querySelector('#mf-code').value.trim().toUpperCase();
+      const err = slot.querySelector('#mf-err');
+      if (!displayName || !code) { err.textContent = 'Both fields are required.'; return; }
+      try {
+        await api('/machine-models', { method: 'POST', body: JSON.stringify({ code, displayName }) });
+        slot.innerHTML = '';
+        loadModels();
+      } catch (e) {
+        err.textContent = e.message.includes('409') ? 'Code already exists.' : escape(e.message);
+      }
+    });
+  }
+
+  function showEditModelForm(code, currentDn) {
+    const row = document.getElementById(`model-row-${code}`);
+    if (!row) return;
+    row.innerHTML = `
+      <td><input id="mf-edit-dn" style="width:100%;padding:6px 9px;border:1px solid var(--border);border-radius:var(--radius-sm);font-size:13px;" value="${escape(currentDn)}"></td>
+      <td><span class="badge badge-neutral">${escape(code)}</span></td>
+      <td style="display:flex;gap:4px;">
+        <button id="mf-edit-save" class="btn-primary" style="padding:5px 12px;font-size:12px;">Save</button>
+        <button id="mf-edit-cancel" class="btn-ghost" style="padding:5px 12px;font-size:12px;">Cancel</button>
+      </td>`;
+    row.querySelector('#mf-edit-cancel').addEventListener('click', () => loadModels());
+    row.querySelector('#mf-edit-save').addEventListener('click', async () => {
+      const displayName = row.querySelector('#mf-edit-dn').value.trim();
+      if (!displayName) return;
+      await api('/machine-models/' + code, { method: 'PUT', body: JSON.stringify({ displayName }) });
+      loadModels();
+    });
+  }
+
+  loadModels();
 }
 
 async function parseKaExcel(file) {
