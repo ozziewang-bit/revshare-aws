@@ -89,8 +89,8 @@ export async function putMerchant(merchant) {
   const item = {
     pk: 'MERCHANT',
     sk: `MERCHANT#${merchant.merchantId}`,
-    nameLower: (merchant.name || '').toLowerCase().trim(),
     ...merchant,
+    nameLower: (merchant.name || '').toLowerCase().trim(),
     updatedAt: now,
     createdAt: merchant.createdAt || now
   };
