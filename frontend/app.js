@@ -487,43 +487,85 @@ function renderNewPartnerForm() {
   });
 }
 
-function renderStructuredRuleEditor(container, initialRule) {
+function renderStructuredRuleEditor(container, initialRule, machineModels, { readOnly = false } = {}) {
   let form = decompileRule(initialRule);
   let rawMode = false;
   let rawJson = JSON.stringify(initialRule || { type: 'sum', children: [] }, null, 2);
+
+  function d(cond) { return (readOnly || cond) ? 'disabled' : ''; }
+
+  function syncPlacement() {
+    const models = container.querySelectorAll('.pl-model');
+    const amts   = container.querySelectorAll('.pl-amt');
+    form.placementRows = Array.from(models).map((sel, i) => ({
+      model: sel.value,
+      amount: Number(amts[i]?.value || 0)
+    }));
+  }
 
   function draw() {
     container.innerHTML = `
       <div class="rule-form">
         <div class="rf-row"><label>GP Share %</label>
-          <input id="rf-gp" type="number" min="0" max="100" step="0.1" value="${form.gpPercent}" ${rawMode?'disabled':''}></div>
+          <input id="rf-gp" type="number" min="0" max="100" step="0.1" value="${form.gpPercent}" ${d(rawMode)}></div>
         <div class="rf-row">
-          <label><input id="rf-mg-toggle" type="checkbox" ${form.mgEnabled?'checked':''} ${rawMode?'disabled':''}> Minimum guarantee (THB / machine / month)</label>
-          <input id="rf-mg-amt" type="number" min="0" value="${form.mgAmount}" ${(!form.mgEnabled||rawMode)?'disabled':''}></div>
+          <label><input id="rf-mg-toggle" type="checkbox" ${form.mgEnabled?'checked':''} ${d(rawMode)}> Minimum guarantee (THB / machine / month)</label>
+          <input id="rf-mg-amt" type="number" min="0" value="${form.mgAmount}" ${d(!form.mgEnabled||rawMode)}></div>
         <div class="rf-row"><label>Monthly electricity (THB)</label>
-          <input id="rf-elec" type="number" min="0" value="${form.electricity}" ${rawMode?'disabled':''}></div>
-        <div class="rf-row"><label>Monthly placement (THB)</label>
-          <input id="rf-place" type="number" min="0" value="${form.placement}" ${rawMode?'disabled':''}></div>
+          <input id="rf-elec" type="number" min="0" value="${form.electricity}" ${d(rawMode)}></div>
+        <div style="margin:10px 0 6px"><label style="font-size:12.5px;color:var(--ink-soft);">Monthly placement — per machine type</label></div>
+        <table class="row-form">
+          <thead><tr>
+            <th style="width:50%">Device type</th>
+            <th style="width:35%">Amount (THB/month)</th>
+            ${readOnly ? '' : '<th style="width:15%"></th>'}
+          </tr></thead>
+          <tbody>
+            ${(form.placementRows || []).map((r, i) => `<tr>
+              <td><select class="pl-model" data-i="${i}" ${d(rawMode)}>
+                <option value="">— select —</option>
+                ${(machineModels || []).map(m => `<option value="${escape(m.code)}" ${r.model===m.code?'selected':''}>${escape(m.displayName)}</option>`).join('')}
+              </select></td>
+              <td><input class="pl-amt" data-i="${i}" type="number" min="0" value="${r.amount||0}" ${d(rawMode)}></td>
+              ${readOnly ? '' : `<td style="text-align:center"><button class="pl-del btn-ghost" data-i="${i}" style="color:var(--loss);padding:4px 8px;font-size:13px;" ${rawMode?'disabled':''}>✕</button></td>`}
+            </tr>`).join('')}
+            ${(!readOnly && !rawMode) ? '<tr><td colspan="3" style="padding-top:4px"><button id="pl-add" class="add-row-btn">+ Add device type</button></td></tr>' : ''}
+          </tbody>
+        </table>
         <div class="rf-row"><label>Monthly others (THB)</label>
-          <input id="rf-others" type="number" min="0" value="${form.others}" ${rawMode?'disabled':''}></div>
-        <details ${rawMode?'open':''}>
+          <input id="rf-others" type="number" min="0" value="${form.others}" ${d(rawMode)}></div>
+        ${readOnly ? '' : `<details ${rawMode?'open':''}>
           <summary style="cursor:pointer;color:#868e96;font-size:13px;">Advanced (raw JSON)</summary>
           <textarea id="rf-json" rows="10" style="width:100%;font-family:monospace;font-size:12px;">${escape(rawJson)}</textarea>
           <label style="font-size:13px;"><input id="rf-raw-mode" type="checkbox" ${rawMode?'checked':''}> Use raw JSON (overrides form above)</label>
-        </details>
+        </details>`}
       </div>`;
 
+    if (readOnly) return;
+
     container.querySelector('#rf-mg-toggle')?.addEventListener('change', e => {
+      syncPlacement();
       form.mgEnabled = e.target.checked;
       draw();
     });
     container.querySelector('#rf-raw-mode')?.addEventListener('change', e => {
+      syncPlacement();
       rawMode = e.target.checked;
       if (!rawMode) {
         try { form = decompileRule(JSON.parse(container.querySelector('#rf-json').value)); } catch(_) {}
       }
       draw();
     });
+    container.querySelector('#pl-add')?.addEventListener('click', () => {
+      syncPlacement();
+      form.placementRows.push({ model: '', amount: 0 });
+      draw();
+    });
+    container.querySelectorAll('.pl-del').forEach(btn => btn.addEventListener('click', e => {
+      syncPlacement();
+      form.placementRows.splice(+e.target.dataset.i, 1);
+      draw();
+    }));
   }
 
   draw();
@@ -538,8 +580,8 @@ function renderStructuredRuleEditor(container, initialRule) {
       form.mgEnabled   = container.querySelector('#rf-mg-toggle')?.checked  || false;
       form.mgAmount    = Number(container.querySelector('#rf-mg-amt')?.value || 0);
       form.electricity = Number(container.querySelector('#rf-elec')?.value   || 0);
-      form.placement   = Number(container.querySelector('#rf-place')?.value  || 0);
       form.others      = Number(container.querySelector('#rf-others')?.value || 0);
+      syncPlacement();
       return compileRule(form);
     }
   };
