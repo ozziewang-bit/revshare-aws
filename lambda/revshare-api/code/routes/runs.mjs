@@ -1,4 +1,4 @@
-import { getPartner, putRun, listRuns, getRun, ulid } from '../db.mjs';
+import { getPartner, putRun, listRuns, getRun, listMachineModels, ulid } from '../db.mjs';
 import { parseCsv } from '../csv.mjs';
 import { evaluateRun } from '../engine.mjs';
 
@@ -18,12 +18,16 @@ export async function createRunRoute(event) {
   try { parsed = parseCsv(csvText); }
   catch (e) { return resp(400, { error: 'csv_parse', message: e.message }); }
 
+  const machineModels = await listMachineModels();
+  const allowedModels = new Set(machineModels.map(m => m.code));
+
   let result;
   try {
     result = evaluateRun({
       rule: partner.rule,
       rows: parsed,
-      aggregationMode: partner.aggregationMode
+      aggregationMode: partner.aggregationMode,
+      allowedModels
     });
   } catch (e) {
     return resp(400, { error: 'eval', message: e.message });
@@ -67,10 +71,15 @@ export async function rerunRoute(event) {
 
   const csvText = Buffer.from(prev.csvRaw, 'base64').toString('utf-8');
   const parsed = parseCsv(csvText);
+
+  const machineModels = await listMachineModels();
+  const allowedModels = new Set(machineModels.map(m => m.code));
+
   const result = evaluateRun({
     rule: partner.rule,
     rows: parsed,
-    aggregationMode: partner.aggregationMode
+    aggregationMode: partner.aggregationMode,
+    allowedModels
   });
   const run = {
     runId: ulid(),
