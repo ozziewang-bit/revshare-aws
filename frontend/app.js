@@ -88,6 +88,7 @@ async function api(path, opts = {}) {
 
 // === router + screens ===
 function initApp() {
+  renderNav();
   renderPartnersList();
 }
 
@@ -121,6 +122,116 @@ async function renderPartnersList() {
   } catch (e) {
     document.getElementById('partners-out').innerHTML = `<p class="error">${escape(e.message)}</p>`;
   }
+}
+
+function renderNav() {
+  const nav = document.getElementById('topnav');
+  nav.innerHTML = `
+    <button id="nav-partners" class="nav-btn active">Partners</button>
+    <button id="nav-bulk-runs" class="nav-btn">Bulk Runs</button>
+    <button id="nav-import" class="nav-btn">Import</button>`;
+  nav.querySelector('#nav-partners').addEventListener('click', () => { setActiveNav('nav-partners'); renderPartnersList(); });
+  nav.querySelector('#nav-bulk-runs').addEventListener('click', () => { setActiveNav('nav-bulk-runs'); renderBulkRunsList(); });
+  nav.querySelector('#nav-import').addEventListener('click', () => { setActiveNav('nav-import'); renderImportScreen(); });
+}
+
+function setActiveNav(id) {
+  document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.id === id));
+}
+
+async function renderImportScreen() {
+  const main = document.getElementById('main');
+  main.innerHTML = `
+    <div class="page-head"><h2>Import from KA Excel</h2></div>
+    <p class="muted">Upload the <strong>KA cost rate</strong> Excel file (Rev Share sheet). New partners will be created; existing partners are skipped. Merchants are upserted by name.</p>
+    <input id="import-file" type="file" accept=".xlsx">
+    <div id="import-preview" style="margin-top:16px;"></div>`;
+
+  document.getElementById('import-file').addEventListener('change', async e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const preview = document.getElementById('import-preview');
+    preview.innerHTML = 'Parsing…';
+    try {
+      const { partners, merchants, warnings } = await parseKaExcel(file);
+      preview.innerHTML = `
+        <h3>Preview</h3>
+        <p>${partners.length} partner(s) to create, ${merchants.length} merchant(s) to upsert.</p>
+        ${warnings.length ? `<p style="color:#f03e3e;">Warnings: ${warnings.map(escape).join(', ')}</p>` : ''}
+        <table class="ts"><thead><tr><th>Partner (TAG)</th><th>GP%</th><th>MG</th><th>Electricity</th><th>Placement</th></tr></thead>
+        <tbody>${partners.map(p => `<tr>
+          <td>${escape(p.name)}</td>
+          <td>${p.gpPercent}%</td>
+          <td>${p.mgEnabled ? p.mgAmount + ' THB' : '—'}</td>
+          <td>${p.electricity || 0}</td>
+          <td>${p.placement || 0}</td>
+        </tr>`).join('')}</tbody></table>
+        <button id="confirm-import" class="btn-primary" style="margin-top:16px;">Confirm import</button>`;
+
+      document.getElementById('confirm-import').addEventListener('click', async () => {
+        document.getElementById('confirm-import').disabled = true;
+        document.getElementById('confirm-import').textContent = 'Importing…';
+        const result = await api('/import/rev-share', { method: 'POST', body: JSON.stringify({ partners, merchants }) });
+        preview.innerHTML = `
+          <div style="color:#2f9e44;font-weight:600;">Import complete</div>
+          <p>Partners created: ${result.created.partners} | Skipped (already exist): ${result.skipped.partners.length}</p>
+          <p>Merchants upserted: ${result.created.merchants}</p>
+          ${result.warnings.length ? `<p style="color:#f03e3e;">${result.warnings.map(escape).join('<br>')}</p>` : ''}`;
+      });
+    } catch (err) {
+      preview.innerHTML = `<p style="color:#f03e3e;">Parse error: ${escape(err.message)}</p>`;
+    }
+  });
+}
+
+async function parseKaExcel(file) {
+  const wb = await readExcel(file);
+  const ws = wb.Sheets['Rev Share'];
+  if (!ws) throw new Error('Sheet "Rev Share" not found');
+  const rows = XLSX.utils.sheet_to_json(ws, { defval: null });
+
+  const partnerMap = {};
+  const merchants = [];
+  const warnings = [];
+
+  for (const row of rows) {
+    const tag        = row['Merchant label (TAG)'];
+    const name       = row['merchant name.'];
+    const deviceType = row['Device Type'];
+    const gpPercent  = Number(row['Rev share %'] || 0) * 100;
+    const triggerType= row['Trigger Type'];
+    const placement  = Number(row['Placement (monthly)'] || 0);
+    const electricity= Number(row['Electricity (monthly)'] || 0);
+    const externalId = row['ID'] ? String(row['ID']) : null;
+
+    if (!tag || !name) continue;
+
+    let machineModel = null;
+    if (deviceType) {
+      const m = String(deviceType).match(/-(S5|S8|S10|T8|T10|T20|T35|LL?20|LL?40)$/i);
+      if (m) machineModel = m[1].toUpperCase().replace('LL', 'L');
+      else warnings.push(`Unrecognised device type: "${deviceType}" for "${name}"`);
+    }
+
+    const tagKey = String(tag).toLowerCase().trim();
+    if (!partnerMap[tagKey]) {
+      partnerMap[tagKey] = {
+        name: String(tag),
+        gpPercent,
+        mgEnabled: triggerType === 'B',
+        mgAmount: triggerType === 'B' ? placement : 0,
+        electricity: triggerType === 'B' ? electricity : 0,
+        placement: triggerType !== 'B' ? placement : 0,
+        others: 0,
+        aggregationMode: 'whole',
+        currency: 'THB'
+      };
+    }
+
+    merchants.push({ name: String(name), partnerName: String(tag), machineModel, externalId });
+  }
+
+  return { partners: Object.values(partnerMap), merchants, warnings };
 }
 
 function renderNewPartnerForm() {
