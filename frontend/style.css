@@ -556,6 +556,74 @@ table.ts tbody tr:last-child td { border-bottom: none; }
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
+/* ============ BATCH MERCHANT PANEL ============ */
+.batch-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 18px 20px;
+  margin-bottom: 16px;
+  box-shadow: 0 1px 3px rgba(15,23,42,.05);
+}
+
+.batch-panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 14px;
+}
+
+.batch-panel-title {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.batch-panel-sub {
+  font-size: 12px;
+  color: var(--ink-soft);
+  margin-top: 3px;
+}
+
+.upload-zone {
+  border: 1.5px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+  padding: 24px;
+  text-align: center;
+  background: var(--surface-muted);
+}
+
+.upload-zone p { font-size: 13px; color: var(--ink-soft); margin-bottom: 10px; }
+.upload-hint { font-size: 11.5px; color: var(--ink-faint); margin-top: 8px; }
+
+.row-form { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-bottom: 10px; }
+.row-form thead th {
+  color: var(--ink-faint);
+  font-size: 10.5px; font-weight: 600;
+  letter-spacing: .06em; text-transform: uppercase;
+  padding: 0 6px 8px; text-align: left;
+}
+.row-form tbody td { padding: 3px 4px; }
+.row-form input, .row-form select {
+  width: 100%; padding: 6px 9px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  font-size: 12.5px; font-family: var(--font-ui);
+  background: var(--surface); color: var(--ink);
+}
+.row-form input:focus, .row-form select:focus {
+  outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.add-row-btn {
+  font-size: 12px; color: var(--accent);
+  background: transparent;
+  border: 1px dashed var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 5px 12px; margin-bottom: 12px;
+  cursor: pointer; display: block;
+}
+.add-row-btn:hover { background: var(--accent-soft); }
+
 /* ============ HERO (big payout number) ============ */
 .hero {
   font-family: var(--font-display);
