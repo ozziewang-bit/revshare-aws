@@ -425,10 +425,13 @@ async function renderPartnerDetail(partnerId) {
 
   main.innerHTML = `
     <div class="page-head">
-      <button id="back" class="btn-ghost">← Partners</button>
-      <h2>${escape(p.name)}</h2>
+      <div>
+        <button id="back" class="btn-ghost" style="padding:0;margin-bottom:6px;">← Partners</button>
+        <h2>${escape(p.name)}</h2>
+      </div>
+      <button id="new-run" class="btn-primary">+ New run</button>
     </div>
-    <p class="muted">Currency: ${escape(p.currency)} · Aggregation: ${escape(p.aggregationMode)}</p>
+    <p class="muted" style="margin-bottom:18px;">Currency: ${escape(p.currency)} · Aggregation: ${escape(p.aggregationMode)}</p>
     <div class="tabs">
       <button id="tab-merchants" class="tab active">Merchants (<span id="merchant-count">…</span>)</button>
       <button id="tab-rule" class="tab">Rule</button>
@@ -446,6 +449,7 @@ async function renderPartnerDetail(partnerId) {
     </div>`;
 
   document.getElementById('back').addEventListener('click', renderPartnersList);
+  document.getElementById('new-run').addEventListener('click', () => renderNewRunForm(partnerId, p));
 
   const ruleContainer = document.getElementById('rule-editor-container');
   const editor = renderStructuredRuleEditor(ruleContainer, p.rule);
