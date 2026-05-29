@@ -592,6 +592,22 @@ function showMerchantForm(partnerId, existing, MODELS, onDone) {
   });
 }
 
+function parseMerchantCsv(text) {
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  if (!lines.length) return [];
+  const MODELS_SET = new Set(['S5','S8','S10','T8','T10','T20','T35','L20','L40']);
+  let dataLines = lines;
+  if (lines[0].toLowerCase().includes('name')) dataLines = lines.slice(1);
+  return dataLines
+    .map(line => {
+      const [rawName, rawModel] = line.split(',');
+      const name = (rawName || '').trim();
+      const model = (rawModel || '').trim().toUpperCase();
+      return { name, model: MODELS_SET.has(model) ? model : null };
+    })
+    .filter(r => r.name);
+}
+
 // ---------- Leaf rendering helpers (top-level functions) ----------
 
 function makeNode(type) {
