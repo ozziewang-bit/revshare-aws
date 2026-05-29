@@ -113,7 +113,7 @@ async function renderPartnersList() {
         <tbody>${partners.map(p => `
           <tr class="row-clickable" data-id="${escape(p.partnerId)}">
             <td>${escape(p.name)}</td>
-            <td>${escape(p.currency)}</td>
+            <td><span class="badge badge-neutral">${escape(p.currency)}</span></td>
             <td>${escape(p.aggregationMode)}</td>
             <td>${countByPartner[p.partnerId] || 0}</td>
           </tr>`).join('')}
