@@ -429,25 +429,23 @@ async function renderPartnerDetail(partnerId) {
       <h2>${escape(p.name)}</h2>
     </div>
     <p class="muted">Currency: ${escape(p.currency)} · Aggregation: ${escape(p.aggregationMode)}</p>
-    <button id="new-run" class="btn-primary" style="margin-bottom:16px;">+ New run</button>
     <div class="tabs" style="margin-bottom:16px;">
-      <button id="tab-rule" class="tab active">Rule</button>
-      <button id="tab-merchants" class="tab">Merchants (<span id="merchant-count">…</span>)</button>
+      <button id="tab-merchants" class="tab active">Merchants (<span id="merchant-count">…</span>)</button>
+      <button id="tab-rule" class="tab">Rule</button>
       <button id="tab-runs" class="tab">Runs</button>
     </div>
-    <div id="tab-rule-content">
+    <div id="tab-merchants-content">
+      <div id="merchants-tab-content">Loading…</div>
+    </div>
+    <div id="tab-rule-content" style="display:none">
       <div id="rule-editor-container"></div>
       <button id="save-rule" class="btn-primary" style="margin-top:12px;">Save rule</button>
-    </div>
-    <div id="tab-merchants-content" style="display:none">
-      <div id="merchants-tab-content">Loading…</div>
     </div>
     <div id="tab-runs-content" style="display:none">
       <div id="runs-history"></div>
     </div>`;
 
   document.getElementById('back').addEventListener('click', renderPartnersList);
-  document.getElementById('new-run').addEventListener('click', () => renderNewRunForm(partnerId, p));
 
   const ruleContainer = document.getElementById('rule-editor-container');
   const editor = renderStructuredRuleEditor(ruleContainer, p.rule);
@@ -470,6 +468,8 @@ async function renderPartnerDetail(partnerId) {
       if (t === 'runs') renderRunsHistory();
     });
   });
+
+  renderMerchantsTab(partnerId);
 
   api('/merchants').then(all => {
     const el = document.getElementById('merchant-count');
