@@ -5,53 +5,96 @@ import {
 import {
   createRunRoute, listRunsRoute, getRunRoute, rerunRoute
 } from './routes/runs.mjs';
+import {
+  listMerchantsRoute, createMerchantRoute, getMerchantRoute,
+  updateMerchantRoute, deleteMerchantRoute
+} from './routes/merchants.mjs';
+import { importRevShareRoute } from './routes/import.mjs';
+import { createBulkRunRoute, listBulkRunsRoute, getBulkRunRoute } from './routes/bulk-runs.mjs';
 
 export const handler = async (event) => {
   try {
-    const method = event.requestContext?.http?.method;
-    const path = event.requestContext?.http?.path || event.rawPath || '';
+    const method = event.requestContext?.http?.method ?? event.httpMethod;
+    const path = event.requestContext?.http?.path ?? event.rawPath ?? event.path ?? '';
 
-    // API Gateway HTTP-API CORS injects the right headers; just return 204.
-    if (method === 'OPTIONS') return { statusCode: 204, headers: {}, body: '' };
+    if (method === 'OPTIONS') return {
+      statusCode: 204,
+      headers: {
+        'access-control-allow-origin': '*',
+        'access-control-allow-methods': 'GET,POST,PUT,DELETE,OPTIONS',
+        'access-control-allow-headers': 'content-type,x-app-password',
+      },
+      body: ''
+    };
 
     if (method === 'GET' && path === '/healthz') return ok({ ok: true });
 
-    if (method === 'GET'    && path === '/partners')                                         return await listPartnersRoute();
-    if (method === 'POST'   && path === '/partners')                                         return await createPartnerRoute(event);
-    if (method === 'GET'    && /^\/partners\/[^/]+$/.test(path))                             return await routePartner(event, getPartnerRoute);
-    if (method === 'PUT'    && /^\/partners\/[^/]+$/.test(path))                             return await routePartner(event, updatePartnerRoute);
-    if (method === 'DELETE' && /^\/partners\/[^/]+$/.test(path))                             return await routePartner(event, archivePartnerRoute);
-    if (method === 'POST'   && /^\/partners\/[^/]+\/runs$/.test(path))                       return await routePartner(event, createRunRoute);
-    if (method === 'GET'    && /^\/partners\/[^/]+\/runs$/.test(path))                       return await routePartner(event, listRunsRoute);
-    if (method === 'GET'    && /^\/partners\/[^/]+\/runs\/[^/]+$/.test(path))                return await routePartnerRun(event, getRunRoute);
-    if (method === 'POST'   && /^\/partners\/[^/]+\/runs\/[^/]+\/rerun$/.test(path))         return await routePartnerRun(event, rerunRoute);
+    let result;
+    // Partners
+    if      (method === 'GET'    && path === '/partners')                                        result = await listPartnersRoute();
+    else if (method === 'POST'   && path === '/partners')                                        result = await createPartnerRoute(event);
+    else if (method === 'GET'    && /^\/partners\/[^/]+$/.test(path))                           result = await routePartner(event, getPartnerRoute);
+    else if (method === 'PUT'    && /^\/partners\/[^/]+$/.test(path))                           result = await routePartner(event, updatePartnerRoute);
+    else if (method === 'DELETE' && /^\/partners\/[^/]+$/.test(path))                           result = await routePartner(event, archivePartnerRoute);
+    // Runs
+    else if (method === 'POST'   && /^\/partners\/[^/]+\/runs$/.test(path))                     result = await routePartner(event, createRunRoute);
+    else if (method === 'GET'    && /^\/partners\/[^/]+\/runs$/.test(path))                     result = await routePartner(event, listRunsRoute);
+    else if (method === 'GET'    && /^\/partners\/[^/]+\/runs\/[^/]+$/.test(path))              result = await routePartnerRun(event, getRunRoute);
+    else if (method === 'POST'   && /^\/partners\/[^/]+\/runs\/[^/]+\/rerun$/.test(path))       result = await routePartnerRun(event, rerunRoute);
+    // Merchants
+    else if (method === 'GET'    && path === '/merchants')                                       result = await listMerchantsRoute();
+    else if (method === 'POST'   && path === '/merchants')                                       result = await createMerchantRoute(event);
+    else if (method === 'GET'    && /^\/merchants\/[^/]+$/.test(path))                          result = await routeMerchant(event, getMerchantRoute);
+    else if (method === 'PUT'    && /^\/merchants\/[^/]+$/.test(path))                          result = await routeMerchant(event, updateMerchantRoute);
+    else if (method === 'DELETE' && /^\/merchants\/[^/]+$/.test(path))                          result = await routeMerchant(event, deleteMerchantRoute);
+    // Import
+    else if (method === 'POST'   && path === '/import/rev-share')                               result = await importRevShareRoute(event);
+    // Bulk runs
+    else if (method === 'POST'   && path === '/bulk-runs')                                      result = await createBulkRunRoute(event);
+    else if (method === 'GET'    && path === '/bulk-runs')                                      result = await listBulkRunsRoute();
+    else if (method === 'GET'    && /^\/bulk-runs\/[^/]+$/.test(path))                         result = await routeBulkRun(event, getBulkRunRoute);
+    else result = resp(404, { error: 'not_found', path, method });
 
-    return resp(404, { error: 'not_found', path, method });
+    return cors(result);
   } catch (e) {
     console.error('handler exception', e);
-    return resp(500, { error: 'internal', message: e.message });
+    return cors(resp(500, { error: 'internal', message: e.message }));
   }
 };
 
-async function routePartner(event, handlerFn) {
-  const path = event.requestContext?.http?.path || event.rawPath || '';
-  const m = path.match(/\/partners\/([^/]+)/);
-  event.pathParameters = { ...(event.pathParameters || {}), partnerId: m && m[1] };
-  return await handlerFn(event);
+function cors(r) {
+  return { ...r, headers: { ...r.headers, 'access-control-allow-origin': '*' } };
 }
 
-async function routePartnerRun(event, handlerFn) {
-  const path = event.requestContext?.http?.path || event.rawPath || '';
+async function routePartner(event, fn) {
+  const path = event.requestContext?.http?.path ?? event.rawPath ?? event.path ?? '';
+  const m = path.match(/\/partners\/([^/]+)/);
+  event.pathParameters = { ...(event.pathParameters || {}), partnerId: m?.[1] };
+  return fn(event);
+}
+
+async function routePartnerRun(event, fn) {
+  const path = event.requestContext?.http?.path ?? event.rawPath ?? event.path ?? '';
   const m = path.match(/\/partners\/([^/]+)\/runs\/([^/]+)/);
-  event.pathParameters = { partnerId: m && m[1], runId: m && m[2] };
-  return await handlerFn(event);
+  event.pathParameters = { partnerId: m?.[1], runId: m?.[2] };
+  return fn(event);
+}
+
+async function routeMerchant(event, fn) {
+  const path = event.requestContext?.http?.path ?? event.rawPath ?? event.path ?? '';
+  const m = path.match(/\/merchants\/([^/]+)/);
+  event.pathParameters = { ...(event.pathParameters || {}), merchantId: m?.[1] };
+  return fn(event);
+}
+
+async function routeBulkRun(event, fn) {
+  const path = event.requestContext?.http?.path ?? event.rawPath ?? event.path ?? '';
+  const m = path.match(/\/bulk-runs\/([^/]+)/);
+  event.pathParameters = { runId: m?.[1] };
+  return fn(event);
 }
 
 function ok(b) { return resp(200, b); }
 function resp(statusCode, body) {
-  return {
-    statusCode,
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body)
-  };
+  return { statusCode, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) };
 }
