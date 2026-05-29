@@ -1,6 +1,6 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import {
-  DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand
+  DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand, DeleteCommand
 } from '@aws-sdk/lib-dynamodb';
 import { ulid } from 'ulid';
 
@@ -64,3 +64,70 @@ export async function getRun(partnerId, runId) {
 }
 
 export { ulid };
+
+// ── Merchants ─────────────────────────────────────────────────────────────
+
+export async function listMerchants() {
+  const out = await ddb.send(new QueryCommand({
+    TableName: TABLE,
+    KeyConditionExpression: 'pk = :p AND begins_with(sk, :s)',
+    ExpressionAttributeValues: { ':p': 'MERCHANT', ':s': 'MERCHANT#' },
+  }));
+  return out.Items || [];
+}
+
+export async function getMerchant(merchantId) {
+  const out = await ddb.send(new GetCommand({
+    TableName: TABLE,
+    Key: { pk: 'MERCHANT', sk: `MERCHANT#${merchantId}` }
+  }));
+  return out.Item || null;
+}
+
+export async function putMerchant(merchant) {
+  const now = new Date().toISOString();
+  const item = {
+    pk: 'MERCHANT',
+    sk: `MERCHANT#${merchant.merchantId}`,
+    nameLower: (merchant.name || '').toLowerCase().trim(),
+    ...merchant,
+    updatedAt: now,
+    createdAt: merchant.createdAt || now
+  };
+  await ddb.send(new PutCommand({ TableName: TABLE, Item: item }));
+  return item;
+}
+
+export async function deleteMerchant(merchantId) {
+  await ddb.send(new DeleteCommand({
+    TableName: TABLE,
+    Key: { pk: 'MERCHANT', sk: `MERCHANT#${merchantId}` }
+  }));
+}
+
+// ── Bulk Runs ─────────────────────────────────────────────────────────────
+
+export async function putBulkRun(bulkRun) {
+  const item = { pk: 'BULKRUN', sk: `BULKRUN#${bulkRun.runId}`, ...bulkRun };
+  await ddb.send(new PutCommand({ TableName: TABLE, Item: item }));
+  return item;
+}
+
+export async function listBulkRuns() {
+  const out = await ddb.send(new QueryCommand({
+    TableName: TABLE,
+    KeyConditionExpression: 'pk = :p AND begins_with(sk, :s)',
+    ExpressionAttributeValues: { ':p': 'BULKRUN', ':s': 'BULKRUN#' },
+    ScanIndexForward: false,
+    ProjectionExpression: 'runId, periodStart, periodEnd, uploadedAt, orderCount, merchantCount, partnerCount, unmatchedCount'
+  }));
+  return out.Items || [];
+}
+
+export async function getBulkRun(runId) {
+  const out = await ddb.send(new GetCommand({
+    TableName: TABLE,
+    Key: { pk: 'BULKRUN', sk: `BULKRUN#${runId}` }
+  }));
+  return out.Item || null;
+}
