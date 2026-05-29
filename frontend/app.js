@@ -633,31 +633,46 @@ function showBatchCsvPanel(partnerId, MODELS, onDone) {
       <div class="batch-panel-head">
         <div>
           <div class="batch-panel-title">Upload merchants via CSV</div>
-          <div class="batch-panel-sub">Columns: <code>name</code> (required), <code>model</code> (optional — S5/S8/S10/T8/T10/T20/T35/L20/L40). Existing names are updated, not duplicated.</div>
+          <div class="batch-panel-sub">Columns: <code>name</code> (required), <code>model</code> (required — S5/S8/S10/T8/T10/T20/T35/L20/L40). Rows with missing or unknown model are skipped.</div>
         </div>
         <button id="bp-close" class="btn-ghost">✕</button>
       </div>
       <div class="upload-zone">
         <p>Choose a CSV file or drag it here</p>
         <input type="file" id="bp-csv-file" accept=".csv,text/csv" style="display:none">
-        <button id="bp-choose" class="btn">Choose file</button>
-        <div class="upload-hint">After upload, merchants are saved immediately.</div>
+        <div style="display:flex;gap:8px;justify-content:center;">
+          <button id="bp-choose" class="btn">Choose file</button>
+          <button id="bp-sample" class="btn">↓ Sample CSV</button>
+        </div>
+        <div class="upload-hint">After upload, merchants are saved immediately. Existing names are updated, not duplicated.</div>
       </div>
       <div id="bp-status" style="margin-top:12px;font-size:13px;"></div>
     </div>`;
   slot.querySelector('#bp-close').addEventListener('click', () => { slot.innerHTML = ''; slot.dataset.panel = ''; });
   slot.querySelector('#bp-choose').addEventListener('click', () => slot.querySelector('#bp-csv-file').click());
+  slot.querySelector('#bp-sample').addEventListener('click', () => {
+    const csv = 'name,model\nBigC Ladphrao,S10\nTops Silom,T35\nVilla Market Sukhumvit,L20\n';
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'merchants-sample.csv';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  });
   slot.querySelector('#bp-csv-file').addEventListener('change', async e => {
     const file = e.target.files[0]; if (!file) return;
     const status = slot.querySelector('#bp-status');
     status.innerHTML = 'Parsing…';
     try {
       const text = await file.text();
-      const rows = parseMerchantCsv(text);
-      if (!rows.length) { status.innerHTML = '<span style="color:var(--loss);">No valid rows found in file.</span>'; return; }
-      status.innerHTML = `Parsed ${rows.length} merchant(s) — saving…`;
-      await Promise.all(rows.map(r => api('/merchants', { method: 'POST', body: JSON.stringify({ name: r.name, machineModel: r.model || null, partnerId }) })));
-      status.innerHTML = `<span style="color:var(--gain);">Saved ${rows.length} merchant(s).</span>`;
+      const allRows = parseMerchantCsv(text);
+      const validRows = allRows.filter(r => r.model);
+      const skipped = allRows.length - validRows.length;
+      if (!validRows.length) { status.innerHTML = '<span style="color:var(--loss);">No rows with a valid model found. Check the file format.</span>'; return; }
+      const skipNote = skipped > 0 ? ` (${skipped} skipped — missing/unknown model)` : '';
+      status.innerHTML = `Parsed ${validRows.length} merchant(s)${skipNote} — saving…`;
+      await Promise.all(validRows.map(r => api('/merchants', { method: 'POST', body: JSON.stringify({ name: r.name, machineModel: r.model, partnerId }) })));
+      status.innerHTML = `<span style="color:var(--gain);">Saved ${validRows.length} merchant(s).${skipped > 0 ? ` ${skipped} row(s) skipped (missing/unknown model).` : ''}</span>`;
       setTimeout(onDone, 800);
     } catch (err) {
       status.innerHTML = `<span style="color:var(--loss);">Error: ${escape(err.message)}</span>`;
@@ -670,24 +685,24 @@ function showBatchRowsPanel(partnerId, MODELS, onDone) {
   let rows = [{ name: '', model: '' }];
 
   function draw() {
-    const validCount = rows.filter(r => r.name.trim()).length;
+    const validCount = rows.filter(r => r.name.trim() && r.model).length;
     slot.innerHTML = `
       <div class="batch-panel">
         <div class="batch-panel-head">
           <div>
             <div class="batch-panel-title">Add multiple merchants</div>
-            <div class="batch-panel-sub">Fill in names and optional models, then save all at once.</div>
+            <div class="batch-panel-sub">Both name and machine model are required for each row.</div>
           </div>
           <button id="bp-close" class="btn-ghost">✕</button>
         </div>
         <table class="row-form">
-          <thead><tr><th style="width:55%">Name</th><th style="width:30%">Model (optional)</th><th style="width:15%"></th></tr></thead>
+          <thead><tr><th style="width:55%">Name</th><th style="width:30%">Model</th><th style="width:15%"></th></tr></thead>
           <tbody>
             ${rows.map((r, i) => `
               <tr>
                 <td><input class="rf-name" data-i="${i}" value="${escape(r.name)}" placeholder="Merchant name…"></td>
                 <td><select class="rf-model" data-i="${i}">
-                  <option value="">— none —</option>
+                  <option value="">— select —</option>
                   ${MODELS.map(m => `<option ${r.model===m?'selected':''} value="${m}">${m}</option>`).join('')}
                 </select></td>
                 <td style="text-align:center"><button class="btn-sm rf-del" data-i="${i}" style="color:var(--loss)">✕</button></td>
@@ -713,7 +728,7 @@ function showBatchRowsPanel(partnerId, MODELS, onDone) {
       draw();
     }));
     slot.querySelector('#bp-save')?.addEventListener('click', async () => {
-      const toSave = rows.filter(r => r.name.trim());
+      const toSave = rows.filter(r => r.name.trim() && r.model);
       const status = slot.querySelector('#bp-status');
       slot.querySelector('#bp-save').disabled = true;
       slot.querySelector('#bp-save').textContent = 'Saving…';
