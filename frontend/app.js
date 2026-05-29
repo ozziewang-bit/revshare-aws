@@ -610,8 +610,8 @@ async function renderPartnerDetail(partnerId) {
       <div id="merchants-tab-content">Loading…</div>
     </div>
     <div id="tab-rule-content" style="display:none">
+      <div id="rule-edit-bar" style="display:flex;justify-content:flex-end;margin-bottom:14px;"></div>
       <div id="rule-editor-container"></div>
-      <button id="save-rule" class="btn-primary" style="margin-top:12px;">Save rule</button>
     </div>
     <div id="tab-runs-content" style="display:none">
       <div id="runs-history"></div>
@@ -620,17 +620,6 @@ async function renderPartnerDetail(partnerId) {
   document.getElementById('back').addEventListener('click', renderPartnersList);
   document.getElementById('new-run').addEventListener('click', () => renderNewRunForm(partnerId, p));
 
-  const ruleContainer = document.getElementById('rule-editor-container');
-  const editor = renderStructuredRuleEditor(ruleContainer, p.rule);
-
-  document.getElementById('save-rule').addEventListener('click', async () => {
-    let rule;
-    try { rule = editor.getRule(); } catch(e) { alert('Invalid JSON: ' + e.message); return; }
-    await api('/partners/' + partnerId, { method: 'PUT', body: JSON.stringify({ rule }) });
-    alert('Saved');
-    renderPartnerDetail(partnerId);
-  });
-
   ['rule','merchants','runs'].forEach(t => {
     document.getElementById(`tab-${t}`).addEventListener('click', () => {
       ['rule','merchants','runs'].forEach(x => {
@@ -638,11 +627,48 @@ async function renderPartnerDetail(partnerId) {
         document.getElementById(`tab-${x}-content`).style.display = x === t ? '' : 'none';
       });
       if (t === 'merchants') renderMerchantsTab(partnerId);
+      if (t === 'rule') renderRuleTab();
       if (t === 'runs') renderRunsHistory();
     });
   });
 
   renderMerchantsTab(partnerId);
+
+  async function renderRuleTab() {
+    const machineModels = await api('/machine-models');
+    showRuleView(machineModels);
+  }
+
+  function showRuleView(machineModels) {
+    const bar = document.getElementById('rule-edit-bar');
+    const ruleContainer = document.getElementById('rule-editor-container');
+    if (!bar || !ruleContainer) return;
+    bar.innerHTML = `
+      <span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--ink-soft);background:var(--surface-muted);border:1px solid var(--border);border-radius:99px;padding:4px 12px;margin-right:8px;">👁 View only</span>
+      <button id="edit-rule-btn" class="btn-primary" style="padding:6px 14px;font-size:12.5px;">Edit rule</button>`;
+    renderStructuredRuleEditor(ruleContainer, p.rule, machineModels, { readOnly: true });
+    document.getElementById('edit-rule-btn').addEventListener('click', () => showRuleEdit(machineModels));
+  }
+
+  function showRuleEdit(machineModels) {
+    const bar = document.getElementById('rule-edit-bar');
+    const ruleContainer = document.getElementById('rule-editor-container');
+    if (!bar || !ruleContainer) return;
+    const editor = renderStructuredRuleEditor(ruleContainer, p.rule, machineModels, { readOnly: false });
+    bar.innerHTML = `
+      <button id="cancel-rule-btn" class="btn-ghost" style="margin-right:6px;">Cancel</button>
+      <button id="save-rule-btn" class="btn-primary" style="padding:6px 14px;font-size:12.5px;">Save rule</button>`;
+    document.getElementById('cancel-rule-btn').addEventListener('click', () => showRuleView(machineModels));
+    document.getElementById('save-rule-btn').addEventListener('click', async () => {
+      let rule;
+      try { rule = editor.getRule(); } catch(e) { alert('Invalid JSON: ' + e.message); return; }
+      const btn = document.getElementById('save-rule-btn');
+      btn.disabled = true; btn.textContent = 'Saving…';
+      await api('/partners/' + partnerId, { method: 'PUT', body: JSON.stringify({ rule }) });
+      p.rule = rule;
+      showRuleView(machineModels);
+    });
+  }
 
   api('/merchants').then(all => {
     const el = document.getElementById('merchant-count');
