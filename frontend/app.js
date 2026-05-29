@@ -234,6 +234,97 @@ async function parseKaExcel(file) {
   return { partners: Object.values(partnerMap), merchants, warnings };
 }
 
+async function renderBulkRunsList() {
+  const main = document.getElementById('main');
+  main.innerHTML = `<div class="page-head"><h2>Bulk Runs</h2><button id="new-bulk-run" class="btn-primary">+ New bulk run</button></div><div id="bulk-runs-out">Loading…</div>`;
+  document.getElementById('new-bulk-run').addEventListener('click', renderNewBulkRunForm);
+  const runs = await api('/bulk-runs');
+  const out = document.getElementById('bulk-runs-out');
+  if (!runs.length) { out.innerHTML = '<p class="muted">No bulk runs yet.</p>'; return; }
+  out.innerHTML = `<table class="ts"><thead><tr><th>Period</th><th>Uploaded</th><th>Partners</th><th>Total payout</th><th>Unmatched</th></tr></thead>
+    <tbody>${runs.map(r => `<tr data-id="${r.runId}" style="cursor:pointer;">
+      <td>${escape(r.periodStart)} – ${escape(r.periodEnd)}</td>
+      <td>${escape(r.uploadedAt?.split('T')[0] || '')}</td>
+      <td>${r.partnerCount}</td>
+      <td>${(r.totalPayout || 0).toFixed(2)}</td>
+      <td>${r.unmatchedCount > 0 ? `<span style="color:#f03e3e;">${r.unmatchedCount}</span>` : '0'}</td>
+    </tr>`).join('')}</tbody></table>`;
+  out.querySelectorAll('tr[data-id]').forEach(tr => {
+    tr.addEventListener('click', () => renderBulkRunDetail(tr.dataset.id));
+  });
+}
+
+function renderNewBulkRunForm() {
+  const main = document.getElementById('main');
+  main.innerHTML = `
+    <div class="page-head">
+      <button id="back" class="btn-ghost">← Back</button>
+      <h2>New Bulk Run</h2>
+    </div>
+    <label>Period start <input type="date" id="br-start"></label>
+    <label>Period end <input type="date" id="br-end"></label>
+    <label style="margin-top:12px;">Order report (.xlsx)<br><input type="file" id="br-file" accept=".xlsx"></label>
+    <div id="br-status" style="margin-top:16px;"></div>`;
+  document.getElementById('back').addEventListener('click', renderBulkRunsList);
+  document.getElementById('br-file').addEventListener('change', async e => {
+    const file = e.target.files[0];
+    const start = document.getElementById('br-start').value;
+    const end = document.getElementById('br-end').value;
+    if (!file || !start || !end) { alert('Fill in period dates and select a file'); return; }
+    const status = document.getElementById('br-status');
+    status.innerHTML = 'Parsing Excel…';
+    try {
+      const orders = await parseOrderReport(file);
+      status.innerHTML = `Parsed ${orders.length} paid orders. <button id="run-bulk" class="btn-primary">Run calculation</button>`;
+      document.getElementById('run-bulk').addEventListener('click', async () => {
+        document.getElementById('run-bulk').disabled = true;
+        document.getElementById('run-bulk').textContent = 'Running…';
+        const run = await api('/bulk-runs', { method: 'POST', body: JSON.stringify({ orders, periodStart: start, periodEnd: end }) });
+        renderBulkRunDetail(run.runId);
+      });
+    } catch (err) {
+      status.innerHTML = `<p style="color:#f03e3e;">Error: ${escape(err.message)}</p>`;
+    }
+  });
+}
+
+async function parseOrderReport(file) {
+  const wb = await readExcel(file);
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(ws, { defval: null });
+  return rows
+    .filter(r => String(r['Payment Status'] || '').trim() === 'Paid')
+    .map(r => ({ merchantName: String(r['Rental Merchant'] || '').trim(), netAmount: Number(r['Net Amount'] || 0) }))
+    .filter(r => r.merchantName);
+}
+
+async function renderBulkRunDetail(runId) {
+  const main = document.getElementById('main');
+  main.innerHTML = `<div class="page-head"><button id="back" class="btn-ghost">← Back</button><h2>Bulk Run</h2></div><div id="br-detail">Loading…</div>`;
+  document.getElementById('back').addEventListener('click', renderBulkRunsList);
+  const run = await api('/bulk-runs/' + runId);
+  const el = document.getElementById('br-detail');
+  el.innerHTML = `
+    <p class="muted">Period: <strong>${escape(run.periodStart)}</strong> – <strong>${escape(run.periodEnd)}</strong> · Uploaded: ${escape(run.uploadedAt?.split('T')[0])} · ${run.orderCount} orders · ${run.partnerCount} partners</p>
+    ${run.warnings?.length ? `<p style="color:#e67700;">${run.warnings.map(escape).join('<br>')}</p>` : ''}
+    <table class="ts"><thead><tr><th>Partner</th><th>Merchants</th><th>Rentals</th><th>Revenue</th><th>Payout</th></tr></thead>
+    <tbody>${(run.results || []).sort((a,b) => b.payout - a.payout).map(r => `<tr>
+      <td>${escape(r.partnerName)}</td>
+      <td>${r.merchantCount}</td>
+      <td>${r.rentals}</td>
+      <td>${Number(r.revenue).toFixed(2)}</td>
+      <td><strong>${Number(r.payout).toFixed(2)}</strong></td>
+    </tr>`).join('')}</tbody>
+    <tfoot><tr><td colspan="4"><strong>Total</strong></td><td><strong>${Number(run.totalPayout||0).toFixed(2)}</strong></td></tr></tfoot>
+    </table>
+    ${run.unmatched?.length ? `
+      <div style="margin-top:24px;padding:16px;background:#fff5f5;border-radius:8px;border:1px solid #ffa8a8;">
+        <strong style="color:#c92a2a;">⚠ ${run.unmatched.length} unmatched merchant(s)</strong>
+        <p style="color:#868e96;font-size:13px;">These names were in the order report but not found in the merchant registry. Add them under the correct partner and re-run.</p>
+        <ul style="font-size:13px;">${run.unmatched.map(n => `<li>${escape(n)}</li>`).join('')}</ul>
+      </div>` : ''}`;
+}
+
 function renderNewPartnerForm() {
   const main = document.getElementById('main');
   main.innerHTML = `
