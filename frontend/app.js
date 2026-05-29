@@ -5,7 +5,7 @@ const CURRENCIES = ['TWD', 'USD', 'HKD', 'JPY', 'IDR', 'THB'];
 
 // ── Rule form helpers ──────────────────────────────────────────────────────
 
-function compileRule({ gpPercent, mgEnabled, mgAmount, electricity, placement, others }) {
+function compileRule({ gpPercent, mgEnabled, mgAmount, electricity, placementRows, others }) {
   const children = [];
   const gpLeaf = { type: 'percent', rows: [{ model: 'ALL', percent: Number(gpPercent) }] };
   if (mgEnabled && Number(mgAmount) > 0) {
@@ -14,17 +14,19 @@ function compileRule({ gpPercent, mgEnabled, mgAmount, electricity, placement, o
     children.push(gpLeaf);
   }
   if (Number(electricity) > 0) children.push({ type: 'flat_per_partner_total', amount: Number(electricity) });
-  if (Number(placement) > 0) children.push({ type: 'flat_per_partner_total', amount: Number(placement) });
+  const validPlacement = (placementRows || []).filter(r => r.model && Number(r.amount) > 0);
+  if (validPlacement.length) children.push({ type: 'flat_per_machine', rows: validPlacement.map(r => ({ model: r.model, amount: Number(r.amount) })) });
   if (Number(others) > 0) children.push({ type: 'flat_per_partner_total', amount: Number(others) });
   if (children.length === 1) return children[0];
   return { type: 'sum', children };
 }
 
 function decompileRule(rule) {
-  if (!rule) return { gpPercent: 0, mgEnabled: false, mgAmount: 0, electricity: 0, placement: 0, others: 0 };
+  if (!rule) return { gpPercent: 0, mgEnabled: false, mgAmount: 0, electricity: 0, placementRows: [], others: 0 };
   const nodes = rule.type === 'sum' ? (rule.children || []) : [rule];
   let gpPercent = 0, mgEnabled = false, mgAmount = 0;
   const flatAmounts = [];
+  let placementRows = [];
   for (const node of nodes) {
     if (node.type === 'percent') {
       gpPercent = node.rows?.[0]?.percent ?? 0;
@@ -35,9 +37,13 @@ function decompileRule(rule) {
       if (fc) { mgEnabled = true; mgAmount = fc.rows?.[0]?.amount ?? 0; }
     } else if (node.type === 'flat_per_partner_total') {
       flatAmounts.push(node.amount ?? 0);
+    } else if (node.type === 'flat_per_machine') {
+      placementRows = (node.rows || []).map(r => ({ model: r.model, amount: r.amount ?? 0 }));
     }
   }
-  return { gpPercent, mgEnabled, mgAmount, electricity: flatAmounts[0] ?? 0, placement: flatAmounts[1] ?? 0, others: flatAmounts[2] ?? 0 };
+  const electricity = flatAmounts[0] ?? 0;
+  const others = flatAmounts.length >= 3 ? (flatAmounts[2] ?? 0) : (flatAmounts[1] ?? 0);
+  return { gpPercent, mgEnabled, mgAmount, electricity, placementRows, others };
 }
 
 function readExcel(file) {
