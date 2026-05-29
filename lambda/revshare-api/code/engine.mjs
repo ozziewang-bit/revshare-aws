@@ -1,4 +1,4 @@
-export const MACHINE_MODELS = new Set(['S5','S8','S10','T8','T10','T20','T35','L20','L40']);
+export const MACHINE_MODELS = new Set(['S5','S8','S10','T8','T10','T20','T35','L20','L40','M10']);
 
 // Count machines by model
 function countByModel(rows) {

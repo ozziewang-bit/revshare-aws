@@ -2,9 +2,9 @@ import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { MACHINE_MODELS, evaluateRun } from '../code/engine.mjs';
 
-test('MACHINE_MODELS enum contains all nine models', () => {
+test('MACHINE_MODELS enum contains all ten models', () => {
   assert.deepEqual([...MACHINE_MODELS].sort(),
-    ['L20','L40','S10','S5','S8','T10','T20','T35','T8']);
+    ['L20','L40','M10','S10','S5','S8','T10','T20','T35','T8']);
 });
 
 test('evaluateRun with bad rule throws', () => {
