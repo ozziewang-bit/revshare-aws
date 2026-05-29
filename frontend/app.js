@@ -455,12 +455,12 @@ async function renderBulkRunDetail(runId) {
       </div>` : ''}`;
 }
 
-function renderNewPartnerForm() {
+async function renderNewPartnerForm() {
   const main = document.getElementById('main');
   main.innerHTML = `
     <button class="back-link" id="back">← Partners</button>
     <h2>New partner</h2>
-    <p class="muted" style="margin-bottom:18px;">Currency and aggregation mode are fixed once set. The rule can be edited on the partner detail page after creation.</p>
+    <p class="muted" style="margin-bottom:18px;">Currency and aggregation mode are fixed once set.</p>
     <form id="new-partner-form">
       <label>Name <input name="name" required></label>
       <label>Currency
@@ -469,6 +469,10 @@ function renderNewPartnerForm() {
       <label>Aggregation mode
         <select name="aggregationMode"><option value="per_store">per store (one calc per store, summed)</option><option value="whole">whole partner (one calc over all rows)</option></select>
       </label>
+      <div style="border-top:1px solid var(--border);margin-top:18px;padding-top:16px;">
+        <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:14px;">Revenue rule <span style="font-weight:400;text-transform:none;letter-spacing:0;">(optional — can be set later)</span></div>
+        <div id="new-rule-container"></div>
+      </div>
       <div>
         <button type="submit" class="btn-primary">Create partner</button>
         <button type="button" id="cancel-new">Cancel</button>
@@ -476,10 +480,20 @@ function renderNewPartnerForm() {
     </form>`;
   document.getElementById('back').addEventListener('click', renderPartnersList);
   document.getElementById('cancel-new').addEventListener('click', renderPartnersList);
+
+  const machineModels = await api('/machine-models');
+  const editor = renderStructuredRuleEditor(
+    document.getElementById('new-rule-container'),
+    null,
+    machineModels
+  );
+
   document.getElementById('new-partner-form').addEventListener('submit', async (ev) => {
     ev.preventDefault();
     const fd = new FormData(ev.target);
-    const body = { name: fd.get('name'), currency: fd.get('currency'), aggregationMode: fd.get('aggregationMode') };
+    let rule;
+    try { rule = editor.getRule(); } catch(e) { alert('Invalid rule JSON: ' + e.message); return; }
+    const body = { name: fd.get('name'), currency: fd.get('currency'), aggregationMode: fd.get('aggregationMode'), rule };
     try {
       const p = await api('/partners', { method: 'POST', body: JSON.stringify(body) });
       renderPartnerDetail(p.partnerId);
