@@ -513,7 +513,7 @@ async function renderMerchantsTab(partnerId) {
       ${merchants.map(m => `
         <tr>
           <td>${escape(m.name)}</td>
-          <td>${escape(m.machineModel || '—')}</td>
+          <td>${m.machineModel ? `<span class="badge badge-neutral">${escape(m.machineModel)}</span>` : '—'}</td>
           <td>
             <button class="btn-ghost edit-m" data-id="${m.merchantId}">Edit</button>
             <button class="btn-ghost del-m" data-id="${m.merchantId}">Delete</button>
