@@ -18,12 +18,11 @@ Initial implementation plan (33 tasks): [`docs/superpowers/plans/2026-05-28-revs
 
 ## 2. Live URLs and resources
 
-- **Site (S3 website, plain HTTP):** http://<YOUR_S3_BUCKET>.s3-website-ap-northeast-1.amazonaws.com
-- **API:** https://<YOUR_API_ID>.execute-api.<YOUR_REGION>.amazonaws.com (no auth — see §9)
-- **Lambda:** `revshare-api` (Node 22.x, ap-northeast-1)
+- **Site:** https://d2t76jfby056ul.cloudfront.net
+- **API:** https://7z269nmx74.execute-api.ap-southeast-7.amazonaws.com/prod (no auth — see §9)
+- **Lambda:** `revshare-api` (Node 22.x, ap-southeast-7)
 - **DDB table:** `RevsharePartner` (single-table, pk/sk)
-- **CloudFront:** not yet provisioned. Site is HTTP-only via S3 static website
-  until you set up CloudFront + ACM + a custom domain.
+- **CloudFront:** distribution `E3JLOVJXN5DI24` (ap-southeast-7, HTTP→HTTPS redirect)
 
 Account `<YOUR_AWS_ACCOUNT_ID>`, region `ap-northeast-1`. IAM user `<your-iam-user>`.
 
@@ -36,6 +35,9 @@ Account `<YOUR_AWS_ACCOUNT_ID>`, region `ap-northeast-1`. IAM user `<your-iam-us
 | `lambda/revshare-api/code/db.mjs` | DynamoDB wrappers (Partner / Run rows). |
 | `lambda/revshare-api/code/routes/` | partners.mjs, runs.mjs |
 | `lambda/revshare-api/code/index.mjs` | Lambda entry: auth gate + route dispatch. |
+| `lambda/revshare-api/code/routes/merchants.mjs` | Merchant CRUD routes. |
+| `lambda/revshare-api/code/routes/import.mjs` | POST /import/rev-share — parses KA Excel JSON into partners + merchants. Exports `compileRule`, `parseDeviceType`. |
+| `lambda/revshare-api/code/routes/bulk-runs.mjs` | Bulk run routes. Exports `groupOrders` (pure). |
 | `lambda/revshare-api/tests/` | `engine.test.mjs` (25 tests), `csv.test.mjs` (6 tests). |
 | `frontend/index.html` | SPA shell + pre-paint auth gate. |
 | `frontend/style.css` | All styles (tokenized). |

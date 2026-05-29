@@ -102,17 +102,20 @@ async function renderPartnersList() {
     <div id="partners-out">Loading…</div>`;
   document.getElementById('new-partner').addEventListener('click', () => renderNewPartnerForm());
   try {
-    const partners = await api('/partners');
+    const [partners, merchants] = await Promise.all([api('/partners'), api('/merchants')]);
+    const countByPartner = {};
+    merchants.forEach(m => { countByPartner[m.partnerId] = (countByPartner[m.partnerId] || 0) + 1; });
     const out = document.getElementById('partners-out');
     if (!partners.length) { out.innerHTML = '<p class="muted">No partners yet.</p>'; return; }
     out.innerHTML = `
       <table class="ts">
-        <thead><tr><th>Name</th><th>Currency</th><th>Aggregation</th></tr></thead>
+        <thead><tr><th>Name</th><th>Currency</th><th>Aggregation</th><th>Merchants</th></tr></thead>
         <tbody>${partners.map(p => `
           <tr class="row-clickable" data-id="${escape(p.partnerId)}">
             <td>${escape(p.name)}</td>
             <td>${escape(p.currency)}</td>
             <td>${escape(p.aggregationMode)}</td>
+            <td>${countByPartner[p.partnerId] || 0}</td>
           </tr>`).join('')}
         </tbody>
       </table>`;

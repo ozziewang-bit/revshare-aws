@@ -83,4 +83,4 @@ the distribution ID and domain back here once provisioned.
 - API endpoint URL: `https://<YOUR_API_ID>.execute-api.<YOUR_REGION>.amazonaws.com`
 - S3 bucket: `<YOUR_S3_BUCKET>` (static website, public read)
 - S3 website URL: `http://<YOUR_S3_BUCKET>.s3-website-ap-northeast-1.amazonaws.com`
-- CloudFront distribution ID: not yet provisioned (set `REVSHARE_CLOUDFRONT_DIST_ID` env var when ready)
+- CloudFront distribution ID: `E3JLOVJXN5DI24` — site: https://d2t76jfby056ul.cloudfront.net
