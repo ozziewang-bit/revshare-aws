@@ -201,11 +201,11 @@ table.ts {
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   overflow: hidden;
-  box-shadow: var(--shadow-sm);
+  box-shadow: 0 1px 3px rgba(15,23,42,.05);
 }
 table.ts thead th {
   background: var(--surface-muted);
-  color: var(--ink-soft);
+  color: var(--ink-faint);
   padding: 11px 16px;
   text-align: left;
   font-weight: 600;
