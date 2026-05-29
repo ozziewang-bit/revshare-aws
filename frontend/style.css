@@ -37,11 +37,12 @@ input, select, textarea { font-family: inherit; }
 
 /* ============ TOPBAR ============ */
 .topbar {
-  height: 60px;
+  height: 56px;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
+  box-shadow: 0 1px 4px rgba(15,23,42,.06);
   padding: 0 32px;
-  display: flex; align-items: center;
+  display: flex; align-items: center; justify-content: space-between;
   position: sticky; top: 0; z-index: 20;
 }
 .brand {
