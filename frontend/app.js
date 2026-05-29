@@ -385,22 +385,31 @@ async function renderBulkRunsList() {
 }
 
 function renderNewBulkRunForm() {
+  const now = new Date();
+  const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
   const main = document.getElementById('main');
   main.innerHTML = `
     <div class="page-head">
       <button id="back" class="btn-ghost">← Back</button>
       <h2>New Share Calculation</h2>
     </div>
-    <label>Period start <input type="date" id="br-start"></label>
-    <label>Period end <input type="date" id="br-end"></label>
+    <label>Year <input type="number" id="br-year" min="2020" max="2035" value="${now.getFullYear()}" style="width:100px;margin-left:8px;"></label>
+    <label style="margin-top:12px;">Month
+      <select id="br-month" style="margin-left:8px;">
+        ${MONTHS.map((m, i) => `<option value="${i+1}" ${i===now.getMonth()?'selected':''}>${m}</option>`).join('')}
+      </select>
+    </label>
     <label style="margin-top:12px;">Order report (.xlsx)<br><input type="file" id="br-file" accept=".xlsx"></label>
     <div id="br-status" style="margin-top:16px;"></div>`;
   document.getElementById('back').addEventListener('click', renderBulkRunsList);
   document.getElementById('br-file').addEventListener('change', async e => {
     const file = e.target.files[0];
-    const start = document.getElementById('br-start').value;
-    const end = document.getElementById('br-end').value;
-    if (!file || !start || !end) { alert('Fill in period dates and select a file'); return; }
+    const year = Number(document.getElementById('br-year').value);
+    const month = Number(document.getElementById('br-month').value);
+    if (!file || !year || !month) { alert('Select a year, month and file'); return; }
+    const pad = n => String(n).padStart(2, '0');
+    const start = `${year}-${pad(month)}-01`;
+    const end = `${year}-${pad(month)}-${pad(new Date(year, month, 0).getDate())}`;
     const status = document.getElementById('br-status');
     status.innerHTML = 'Parsing Excel…';
     try {
