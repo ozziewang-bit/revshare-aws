@@ -130,3 +130,38 @@ export async function getBulkRun(runId) {
   }));
   return out.Item || null;
 }
+
+// ── Machine Models ────────────────────────────────────────────────────────
+
+export async function listMachineModels() {
+  const out = await ddb.send(new QueryCommand({
+    TableName: TABLE,
+    KeyConditionExpression: 'pk = :p AND begins_with(sk, :s)',
+    ExpressionAttributeValues: { ':p': 'CONFIG', ':s': 'MODEL#' },
+  }));
+  return (out.Items || [])
+    .map(({ code, displayName }) => ({ code, displayName }))
+    .sort((a, b) => a.code.localeCompare(b.code));
+}
+
+export async function getMachineModel(code) {
+  const out = await ddb.send(new GetCommand({
+    TableName: TABLE,
+    Key: { pk: 'CONFIG', sk: `MODEL#${code}` }
+  }));
+  return out.Item ? { code: out.Item.code, displayName: out.Item.displayName } : null;
+}
+
+export async function putMachineModel({ code, displayName }) {
+  await ddb.send(new PutCommand({
+    TableName: TABLE,
+    Item: { pk: 'CONFIG', sk: `MODEL#${code}`, code, displayName }
+  }));
+}
+
+export async function deleteMachineModel(code) {
+  await ddb.send(new DeleteCommand({
+    TableName: TABLE,
+    Key: { pk: 'CONFIG', sk: `MODEL#${code}` }
+  }));
+}
