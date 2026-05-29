@@ -11,6 +11,10 @@ import {
 } from './routes/merchants.mjs';
 import { importRevShareRoute } from './routes/import.mjs';
 import { createBulkRunRoute, listBulkRunsRoute, getBulkRunRoute } from './routes/bulk-runs.mjs';
+import {
+  listMachineModelsRoute, createMachineModelRoute,
+  updateMachineModelRoute, deleteMachineModelRoute
+} from './routes/machine-models.mjs';
 
 export const handler = async (event) => {
   try {
@@ -53,6 +57,11 @@ export const handler = async (event) => {
     else if (method === 'POST'   && path === '/bulk-runs')                                      result = await createBulkRunRoute(event);
     else if (method === 'GET'    && path === '/bulk-runs')                                      result = await listBulkRunsRoute();
     else if (method === 'GET'    && /^\/bulk-runs\/[^/]+$/.test(path))                         result = await routeBulkRun(event, getBulkRunRoute);
+    // Machine models
+    else if (method === 'GET'    && path === '/machine-models')                         result = await listMachineModelsRoute();
+    else if (method === 'POST'   && path === '/machine-models')                         result = await createMachineModelRoute(event);
+    else if (method === 'PUT'    && /^\/machine-models\/[^/]+$/.test(path))             result = await routeMachineModel(event, updateMachineModelRoute);
+    else if (method === 'DELETE' && /^\/machine-models\/[^/]+$/.test(path))             result = await routeMachineModel(event, deleteMachineModelRoute);
     else result = resp(404, { error: 'not_found', path, method });
 
     return cors(result);
@@ -91,6 +100,13 @@ async function routeBulkRun(event, fn) {
   const path = event.requestContext?.http?.path ?? event.rawPath ?? event.path ?? '';
   const m = path.match(/\/bulk-runs\/([^/]+)/);
   event.pathParameters = { runId: m?.[1] };
+  return fn(event);
+}
+
+async function routeMachineModel(event, fn) {
+  const path = event.requestContext?.http?.path ?? event.rawPath ?? event.path ?? '';
+  const m = path.match(/\/machine-models\/([^/]+)/);
+  event.pathParameters = { ...(event.pathParameters || {}), code: m?.[1] };
   return fn(event);
 }
 
