@@ -535,6 +535,27 @@ table.ts tbody tr:last-child td { border-bottom: none; }
   border: 1px solid var(--border);
 }
 
+/* ============ SEARCH INPUT ============ */
+.search-input {
+  display: block;
+  width: 100%;
+  padding: 9px 12px;
+  margin-bottom: 16px;
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  font-size: 13.5px;
+  font-family: var(--font-ui);
+  transition: border-color .12s, box-shadow .12s;
+}
+
+.search-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
 /* ============ HERO (big payout number) ============ */
 .hero {
   font-family: var(--font-display);
