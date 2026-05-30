@@ -482,7 +482,7 @@ function renderNewBulkRunForm() {
     status.innerHTML = 'Parsing Excel…';
     try {
       const orders = await parseOrderReport(file);
-      status.innerHTML = `Parsed ${orders.length} paid orders. <button id="run-bulk" class="btn-primary">Run calculation</button>`;
+      status.innerHTML = `Parsed ${orders.length} rentals (unpaid excluded). <button id="run-bulk" class="btn-primary">Run calculation</button>`;
       document.getElementById('run-bulk').addEventListener('click', async () => {
         document.getElementById('run-bulk').disabled = true;
         document.getElementById('run-bulk').textContent = 'Running…';
@@ -500,7 +500,8 @@ async function parseOrderReport(file) {
   const ws = wb.Sheets[wb.SheetNames[0]];
   const rows = XLSX.utils.sheet_to_json(ws, { defval: null });
   return rows
-    .filter(r => String(r['Payment Status'] || '').trim() === 'Paid')
+    // Include every rental except unpaid ones (refunded rentals stay in).
+    .filter(r => String(r['Payment Status'] || '').trim().toLowerCase() !== 'unpaid')
     .map(r => ({ merchantName: String(r['Rental Merchant'] || '').trim(), netAmount: Number(r['Net Amount'] || 0) }))
     .filter(r => r.merchantName);
 }
