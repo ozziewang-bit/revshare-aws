@@ -5,45 +5,62 @@ const CURRENCIES = ['TWD', 'USD', 'HKD', 'JPY', 'IDR', 'THB'];
 
 // ── Rule form helpers ──────────────────────────────────────────────────────
 
-function compileRule({ gpPercent, mgEnabled, mgAmount, electricity, placementRows, others }) {
-  const children = [];
-  const gpLeaf = { type: 'percent', rows: [{ model: 'ALL', percent: Number(gpPercent) }] };
-  if (mgEnabled && Number(mgAmount) > 0) {
-    children.push({ type: 'max', children: [gpLeaf, { type: 'flat_per_machine', rows: [{ model: 'ALL', amount: Number(mgAmount) }] }] });
-  } else {
-    children.push(gpLeaf);
-  }
-  if (Number(electricity) > 0) children.push({ type: 'flat_per_partner_total', amount: Number(electricity) });
+// Share model: 'hybrid' (sum of terms) | 'mg' (flat guarantee) | 'higher' (max of terms vs MG).
+// Share terms: GP% (percent of revenue), electricity (lump), placement (per machine type).
+function compileRule({ gpPercent, electricity, placementRows, shareModel, mgAmount, mgEnabled }) {
+  const terms = [];
+  terms.push({ type: 'percent', rows: [{ model: 'ALL', percent: Number(gpPercent) || 0 }] });
+  if (Number(electricity) > 0) terms.push({ type: 'flat_per_partner_total', amount: Number(electricity) });
   const validPlacement = (placementRows || []).filter(r => r.model && Number(r.amount) > 0);
-  if (validPlacement.length) children.push({ type: 'flat_per_machine', rows: validPlacement.map(r => ({ model: r.model, amount: Number(r.amount) })) });
-  if (Number(others) > 0) children.push({ type: 'flat_per_partner_total', amount: Number(others) });
-  if (children.length === 1) return children[0];
-  return { type: 'sum', children };
+  if (validPlacement.length) terms.push({ type: 'flat_per_machine', rows: validPlacement.map(r => ({ model: r.model, amount: Number(r.amount) })) });
+  const sumTerms = terms.length === 1 ? terms[0] : { type: 'sum', children: terms };
+
+  // Explicit shareModel wins; legacy mgEnabled maps to 'higher'.
+  const model = shareModel || (mgEnabled && Number(mgAmount) > 0 ? 'higher' : 'hybrid');
+  const mgLeaf = { type: 'flat_per_machine', rows: [{ model: 'ALL', amount: Number(mgAmount) || 0 }] };
+
+  if (model === 'mg') return mgLeaf;
+  if (model === 'higher') return { type: 'max', children: [sumTerms, mgLeaf] };
+  return sumTerms;   // hybrid
+}
+
+function isMgLeaf(n) {
+  return n && n.type === 'flat_per_machine' && (n.rows || []).length === 1 && n.rows[0].model === 'ALL';
 }
 
 function decompileRule(rule) {
-  if (!rule) return { gpPercent: 0, mgEnabled: false, mgAmount: 0, electricity: 0, placementRows: [], others: 0 };
-  const nodes = rule.type === 'sum' ? (rule.children || []) : [rule];
-  let gpPercent = 0, mgEnabled = false, mgAmount = 0;
-  const flatAmounts = [];
-  let placementRows = [];
+  // mgEnabled/others kept for back-compat with the share-terms CSV export.
+  const compat = f => ({ ...f, mgEnabled: f.shareModel !== 'hybrid', others: 0 });
+  const base = { gpPercent: 0, electricity: 0, placementRows: [], shareModel: 'hybrid', mgAmount: 0 };
+  if (!rule || typeof rule !== 'object') return compat(base);
+
+  // Lone MG leaf → "MG" model.
+  if (isMgLeaf(rule)) return compat({ ...base, shareModel: 'mg', mgAmount: rule.rows?.[0]?.amount ?? 0 });
+
+  let shareModel = 'hybrid', mgAmount = 0, termsNode = rule;
+  if (rule.type === 'max' && Array.isArray(rule.children)) {
+    const mg = rule.children.find(isMgLeaf);
+    if (mg) { shareModel = 'higher'; mgAmount = mg.rows?.[0]?.amount ?? 0; termsNode = rule.children.find(c => c !== mg) || { type: 'sum', children: [] }; }
+  }
+
+  const nodes = termsNode?.type === 'sum' ? (termsNode.children || []) : [termsNode];
+  let gpPercent = 0, electricity = 0; const placementRows = [];
   for (const node of nodes) {
+    if (!node) continue;
     if (node.type === 'percent') {
       gpPercent = node.rows?.[0]?.percent ?? 0;
-    } else if (node.type === 'max') {
+    } else if (node.type === 'max') {                 // legacy max(percent, MG) floor → "higher"
       const pc = node.children?.find(c => c.type === 'percent');
       const fc = node.children?.find(c => c.type === 'flat_per_machine');
       if (pc) gpPercent = pc.rows?.[0]?.percent ?? 0;
-      if (fc) { mgEnabled = true; mgAmount = fc.rows?.[0]?.amount ?? 0; }
+      if (fc) { shareModel = 'higher'; mgAmount = fc.rows?.[0]?.amount ?? 0; }
     } else if (node.type === 'flat_per_partner_total') {
-      flatAmounts.push(node.amount ?? 0);
+      if (!electricity) electricity = node.amount ?? 0;
     } else if (node.type === 'flat_per_machine') {
-      placementRows = (node.rows || []).map(r => ({ model: r.model, amount: r.amount ?? 0 }));
+      (node.rows || []).forEach(r => placementRows.push({ model: r.model, amount: r.amount ?? 0 }));
     }
   }
-  const electricity = flatAmounts[0] ?? 0;
-  const others = flatAmounts.length >= 3 ? (flatAmounts[2] ?? 0) : (flatAmounts[1] ?? 0);
-  return { gpPercent, mgEnabled, mgAmount, electricity, placementRows, others };
+  return compat({ gpPercent, electricity, placementRows, shareModel, mgAmount });
 }
 
 function readExcel(file) {
@@ -801,14 +818,12 @@ function renderStructuredRuleEditor(container, initialRule, machineModels, { rea
   function draw() {
     container.innerHTML = `
       <div class="rule-form">
+        <div class="section-label">Share terms</div>
         <div class="rf-row"><label>GP Share %</label>
           <input id="rf-gp" type="number" min="0" max="100" step="0.1" value="${form.gpPercent}" ${d(rawMode)}></div>
-        <div class="rf-row">
-          <label><input id="rf-mg-toggle" type="checkbox" ${form.mgEnabled?'checked':''} ${d(rawMode)}> Minimum guarantee (THB / machine / month)</label>
-          <input id="rf-mg-amt" type="number" min="0" value="${form.mgAmount}" ${d(!form.mgEnabled||rawMode)}></div>
-        <div class="rf-row"><label>Monthly electricity (THB)</label>
+        <div class="rf-row"><label>Monthly electricity fee (THB)</label>
           <input id="rf-elec" type="number" min="0" value="${form.electricity}" ${d(rawMode)}></div>
-        <div style="margin:10px 0 6px"><label style="font-size:12.5px;color:var(--ink-soft);">Monthly placement — per machine type</label></div>
+        <div style="margin:10px 0 6px"><label style="font-size:12.5px;color:var(--ink-soft);">Placement fee — per machine type</label></div>
         <table class="row-form">
           <thead><tr>
             <th style="width:50%">Device type</th>
@@ -827,8 +842,23 @@ function renderStructuredRuleEditor(container, initialRule, machineModels, { rea
             ${(!readOnly && !rawMode) ? '<tr><td colspan="3" style="padding-top:4px"><button id="pl-add" class="add-row-btn">+ Add device type</button></td></tr>' : ''}
           </tbody>
         </table>
-        <div class="rf-row"><label>Monthly others (THB)</label>
-          <input id="rf-others" type="number" min="0" value="${form.others}" ${d(rawMode)}></div>
+
+        <div class="section-label" style="margin-top:20px;">Share model <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--ink-faint);">— how terms determine the payout</span></div>
+        <div class="model-options">
+          ${[
+            ['hybrid', 'Hybrid', 'Sum of all share terms'],
+            ['mg', 'MG', 'Flat minimum guarantee'],
+            ['higher', 'Whichever is higher', 'max(sum of terms, MG)'],
+          ].map(([val, title, desc]) => `
+            <label class="model-opt">
+              <input type="radio" name="rf-model" value="${val}" ${form.shareModel === val ? 'checked' : ''} ${d(rawMode)}>
+              <span><strong>${title}</strong><br><span class="muted">${desc}</span></span>
+            </label>`).join('')}
+        </div>
+        <div class="rf-row" id="rf-mg-row" ${form.shareModel === 'hybrid' ? 'style="opacity:.5;"' : ''}>
+          <label>Minimum guarantee (THB / machine / month)</label>
+          <input id="rf-mg-amt" type="number" min="0" value="${form.mgAmount}" ${d(form.shareModel === 'hybrid' || rawMode)}></div>
+
         ${readOnly ? '' : `<details ${rawMode?'open':''}>
           <summary style="cursor:pointer;color:#868e96;font-size:13px;">Advanced (raw JSON)</summary>
           <textarea id="rf-json" rows="10" style="width:100%;font-family:monospace;font-size:12px;">${escape(rawJson)}</textarea>
@@ -838,13 +868,13 @@ function renderStructuredRuleEditor(container, initialRule, machineModels, { rea
 
     if (readOnly) return;
 
-    container.querySelector('#rf-mg-toggle')?.addEventListener('change', e => {
-      syncPlacement();
-      form.mgEnabled = e.target.checked;
+    container.querySelectorAll('input[name="rf-model"]').forEach(radio => radio.addEventListener('change', e => {
+      captureInputs();
+      form.shareModel = e.target.value;
       draw();
-    });
+    }));
     container.querySelector('#rf-raw-mode')?.addEventListener('change', e => {
-      syncPlacement();
+      captureInputs();
       rawMode = e.target.checked;
       if (!rawMode) {
         try { form = decompileRule(JSON.parse(container.querySelector('#rf-json').value)); } catch(_) {}
@@ -852,15 +882,23 @@ function renderStructuredRuleEditor(container, initialRule, machineModels, { rea
       draw();
     });
     container.querySelector('#pl-add')?.addEventListener('click', () => {
-      syncPlacement();
+      captureInputs();
       form.placementRows.push({ model: '', amount: 0 });
       draw();
     });
     container.querySelectorAll('.pl-del').forEach(btn => btn.addEventListener('click', e => {
-      syncPlacement();
+      captureInputs();
       form.placementRows.splice(+e.target.dataset.i, 1);
       draw();
     }));
+  }
+
+  // Read current input values into `form` so a redraw doesn't lose edits.
+  function captureInputs() {
+    const gp = container.querySelector('#rf-gp');     if (gp) form.gpPercent   = Number(gp.value || 0);
+    const el = container.querySelector('#rf-elec');   if (el) form.electricity = Number(el.value || 0);
+    const mg = container.querySelector('#rf-mg-amt'); if (mg) form.mgAmount    = Number(mg.value || 0);
+    syncPlacement();
   }
 
   draw();
@@ -871,12 +909,8 @@ function renderStructuredRuleEditor(container, initialRule, machineModels, { rea
         const ta = container.querySelector('#rf-json');
         return JSON.parse(ta.value);
       }
-      form.gpPercent   = Number(container.querySelector('#rf-gp')?.value    || 0);
-      form.mgEnabled   = container.querySelector('#rf-mg-toggle')?.checked  || false;
-      form.mgAmount    = Number(container.querySelector('#rf-mg-amt')?.value || 0);
-      form.electricity = Number(container.querySelector('#rf-elec')?.value   || 0);
-      form.others      = Number(container.querySelector('#rf-others')?.value || 0);
-      syncPlacement();
+      captureInputs();
+      form.shareModel = container.querySelector('input[name="rf-model"]:checked')?.value || form.shareModel || 'hybrid';
       return compileRule(form);
     }
   };
