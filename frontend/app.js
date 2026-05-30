@@ -517,6 +517,81 @@ function periodMonth(periodStart) {
   return String(periodStart || '').slice(0, 7);
 }
 
+// Round up to a "nice" axis maximum (1/2/5 × 10^k).
+function niceCeil(v) {
+  if (v <= 0) return 1;
+  const base = Math.pow(10, Math.floor(Math.log10(v)));
+  const f = v / base;
+  const nice = f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10;
+  return nice * base;
+}
+
+// Compact money label: 1.17M, 8.5k, 420
+function fmtCompact(v) {
+  const n = Number(v) || 0, a = Math.abs(n);
+  if (a >= 1e6) return (n / 1e6).toFixed(a >= 1e7 ? 0 : 1) + 'M';
+  if (a >= 1e3) return (n / 1e3).toFixed(a >= 1e4 ? 0 : 1) + 'k';
+  return n.toFixed(0);
+}
+
+// Combo chart: clustered Revenue/Payout bars (left THB axis) + a revenue-share-%
+// line (right % axis), with a data label on every bar and point.
+// data: [{ month, revenue, payout, sharePct }]
+function revsharePathChartSvg(data) {
+  const W = 760, H = 380, padL = 64, padR = 54, padT = 28, padB = 66;
+  const plotW = W - padL - padR, plotH = H - padT - padB, baseY = padT + plotH;
+  const n = data.length, slotW = plotW / n, barW = Math.min(30, slotW * 0.30);
+  const moneyMax = niceCeil(Math.max(1, ...data.map(d => Math.max(d.revenue, d.payout))));
+  const pctMax = niceCeil(Math.max(1, ...data.map(d => d.sharePct)));
+  const yMoney = v => baseY - plotH * (v / moneyMax);
+  const yPct = v => baseY - plotH * (v / pctMax);
+  const cx = i => padL + slotW * (i + 0.5);
+  const REV = '#3b5bdb', PAY = '#20c997', LINE = '#f59f00', GRID = '#e5e7eb', TXT = '#64748b', INK = '#334155';
+  const ticks = 4;
+
+  let grid = '';
+  for (let t = 0; t <= ticks; t++) {
+    const y = baseY - plotH * (t / ticks);
+    grid += `<line x1="${padL}" y1="${y}" x2="${padL + plotW}" y2="${y}" stroke="${GRID}" stroke-width="1"/>`;
+    grid += `<text x="${padL - 8}" y="${y + 3}" text-anchor="end" font-size="10" fill="${TXT}">${fmtCompact(moneyMax * t / ticks)}</text>`;
+    grid += `<text x="${padL + plotW + 8}" y="${y + 3}" text-anchor="start" font-size="10" fill="${LINE}">${(pctMax * t / ticks).toFixed(0)}%</text>`;
+  }
+
+  let bars = '';
+  data.forEach((d, i) => {
+    const c = cx(i), rx = c - barW - 2, px = c + 2;
+    bars += `<rect x="${rx}" y="${yMoney(d.revenue)}" width="${barW}" height="${plotH * (d.revenue / moneyMax)}" fill="${REV}" rx="2"/>`;
+    bars += `<rect x="${px}" y="${yMoney(d.payout)}" width="${barW}" height="${plotH * (d.payout / moneyMax)}" fill="${PAY}" rx="2"/>`;
+    bars += `<text x="${rx + barW / 2}" y="${yMoney(d.revenue) - 4}" text-anchor="middle" font-size="9.5" fill="${REV}">${fmtCompact(d.revenue)}</text>`;
+    bars += `<text x="${px + barW / 2}" y="${yMoney(d.payout) - 4}" text-anchor="middle" font-size="9.5" fill="${PAY}">${fmtCompact(d.payout)}</text>`;
+    bars += `<text x="${c}" y="${baseY + 16}" text-anchor="middle" font-size="10.5" fill="${INK}">${escape(d.month)}</text>`;
+  });
+
+  let pts = '';
+  data.forEach((d, i) => {
+    const c = cx(i), y = yPct(d.sharePct);
+    pts += `<circle cx="${c}" cy="${y}" r="3.5" fill="${LINE}"/>`;
+    pts += `<text x="${c}" y="${y - 8}" text-anchor="middle" font-size="9.5" font-weight="600" fill="${LINE}">${d.sharePct.toFixed(1)}%</text>`;
+  });
+  const line = n > 1
+    ? `<path d="${data.map((d, i) => `${i ? 'L' : 'M'}${cx(i)},${yPct(d.sharePct)}`).join(' ')}" fill="none" stroke="${LINE}" stroke-width="2"/>`
+    : '';
+
+  const ly = H - 14;
+  const legend = `
+    <rect x="${padL}" y="${ly - 9}" width="11" height="11" fill="${REV}" rx="2"/><text x="${padL + 16}" y="${ly}" font-size="11" fill="${INK}">Revenue</text>
+    <rect x="${padL + 90}" y="${ly - 9}" width="11" height="11" fill="${PAY}" rx="2"/><text x="${padL + 106}" y="${ly}" font-size="11" fill="${INK}">Payout</text>
+    <line x1="${padL + 180}" y1="${ly - 4}" x2="${padL + 196}" y2="${ly - 4}" stroke="${LINE}" stroke-width="2"/><circle cx="${padL + 188}" cy="${ly - 4}" r="3" fill="${LINE}"/><text x="${padL + 202}" y="${ly}" font-size="11" fill="${INK}">Revenue share %</text>`;
+
+  return `<div style="overflow-x:auto;"><svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:${W}px;font-family:inherit;">
+    <text x="${padL - 8}" y="${padT - 12}" text-anchor="end" font-size="10" fill="${TXT}">THB</text>
+    <text x="${padL + plotW + 8}" y="${padT - 12}" text-anchor="start" font-size="10" fill="${LINE}">%</text>
+    ${grid}
+    <line x1="${padL}" y1="${baseY}" x2="${padL + plotW}" y2="${baseY}" stroke="#cbd5e1" stroke-width="1"/>
+    ${bars}${line}${pts}${legend}
+  </svg></div>`;
+}
+
 function sanitizeFilename(s) {
   return String(s).replace(/[\/\\:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim() || 'partner';
 }
@@ -893,24 +968,32 @@ async function renderPartnerDetail(partnerId) {
     if (el) el.textContent = all.filter(m => m.partnerId === partnerId).length;
   });
 
-  // Nested closure — renders past runs into #runs-history inside tab-runs-content
+  // Nested closure — renders this partner's monthly revshare path (from bulk runs)
   async function renderRunsHistory() {
     const runsHistory = document.getElementById('runs-history');
     runsHistory.innerHTML = '<p class="muted">Loading…</p>';
-    const runs = await api('/partners/' + partnerId + '/runs');
-    runsHistory.innerHTML = `
-      <h3 style="margin-top:30px;">Run history</h3>
-      ${runs.length === 0 ? '<p class="muted">No runs yet.</p>' : `
-        <table class="ts"><thead><tr><th>Period</th><th>Uploaded</th><th>Total</th></tr></thead><tbody>
-        ${runs.map(r => `<tr class="row-clickable" data-runid="${escape(r.runId)}">
-          <td>${escape(r.periodStart)} → ${escape(r.periodEnd)}</td>
-          <td>${escape(r.uploadedAt.split('T')[0])}</td>
-          <td>${Number(r.result.totalPayout).toLocaleString('en-US')}</td>
-        </tr>`).join('')}
-        </tbody></table>`}`;
-    runsHistory.querySelectorAll('.row-clickable').forEach(tr => {
-      tr.addEventListener('click', () => renderRunResult(partnerId, tr.dataset.runid));
+    const list = await api('/bulk-runs');
+    const fulls = await Promise.all(list.map(r => api('/bulk-runs/' + r.runId)));
+    // One data point per month (latest run wins on duplicates).
+    const byMonth = {};
+    fulls.forEach(run => {
+      const res = (run.results || []).find(x => x.partnerId === partnerId);
+      if (!res) return;
+      const month = periodMonth(run.periodStart);
+      const prev = byMonth[month];
+      if (!prev || (run.uploadedAt || '') > (prev.uploadedAt || '')) {
+        byMonth[month] = { month, revenue: res.revenue || 0, payout: res.payout || 0, uploadedAt: run.uploadedAt };
+      }
     });
+    const data = Object.values(byMonth)
+      .sort((a, b) => a.month.localeCompare(b.month))
+      .map(d => ({ ...d, sharePct: d.revenue > 0 ? d.payout / d.revenue * 100 : 0 }));
+
+    runsHistory.innerHTML = `<h3 style="margin-top:30px;">Revshare path</h3>${
+      data.length
+        ? revsharePathChartSvg(data)
+        : '<p class="muted">No Share Calculations include this partner yet. Run one to populate this chart.</p>'
+    }`;
   }
 }
 
