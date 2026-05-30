@@ -10,7 +10,7 @@ import {
   updateMerchantRoute, deleteMerchantRoute
 } from './routes/merchants.mjs';
 import { importRevShareRoute } from './routes/import.mjs';
-import { createBulkRunRoute, listBulkRunsRoute, getBulkRunRoute } from './routes/bulk-runs.mjs';
+import { createBulkRunRoute, listBulkRunsRoute, getBulkRunRoute, deleteBulkRunRoute } from './routes/bulk-runs.mjs';
 import {
   listMachineModelsRoute, createMachineModelRoute,
   updateMachineModelRoute, deleteMachineModelRoute
@@ -57,6 +57,7 @@ export const handler = async (event) => {
     else if (method === 'POST'   && path === '/bulk-runs')                                      result = await createBulkRunRoute(event);
     else if (method === 'GET'    && path === '/bulk-runs')                                      result = await listBulkRunsRoute();
     else if (method === 'GET'    && /^\/bulk-runs\/[^/]+$/.test(path))                         result = await routeBulkRun(event, getBulkRunRoute);
+    else if (method === 'DELETE' && /^\/bulk-runs\/[^/]+$/.test(path))                         result = await routeBulkRun(event, deleteBulkRunRoute);
     // Machine models
     else if (method === 'GET'    && path === '/machine-models')                         result = await listMachineModelsRoute();
     else if (method === 'POST'   && path === '/machine-models')                         result = await createMachineModelRoute(event);

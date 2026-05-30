@@ -396,16 +396,31 @@ async function renderBulkRunsList() {
   const runs = await api('/bulk-runs');
   const out = document.getElementById('bulk-runs-out');
   if (!runs.length) { out.innerHTML = '<p class="muted">No calculations yet.</p>'; return; }
-  out.innerHTML = `<table class="ts"><thead><tr><th>Period</th><th>Uploaded</th><th>Partners</th><th>Total payout</th><th>Unmatched</th></tr></thead>
+  out.innerHTML = `<table class="ts"><thead><tr><th>Period</th><th>Uploaded</th><th>Partners</th><th>Total payout</th><th>Unmatched</th><th></th></tr></thead>
     <tbody>${runs.map(r => `<tr data-id="${r.runId}" style="cursor:pointer;">
       <td>${escape(r.periodStart)} – ${escape(r.periodEnd)}</td>
       <td>${escape(r.uploadedAt?.split('T')[0] || '')}</td>
       <td>${r.partnerCount}</td>
       <td>${(r.totalPayout || 0).toFixed(2)}</td>
       <td>${r.unmatchedCount > 0 ? `<span style="color:#f03e3e;">${r.unmatchedCount}</span>` : '0'}</td>
+      <td style="text-align:right;"><button class="btn-ghost del-run" data-id="${r.runId}" style="color:var(--loss);">Delete</button></td>
     </tr>`).join('')}</tbody></table>`;
   out.querySelectorAll('tr[data-id]').forEach(tr => {
     tr.addEventListener('click', () => renderBulkRunDetail(tr.dataset.id));
+  });
+  out.querySelectorAll('.del-run').forEach(btn => {
+    btn.addEventListener('click', async (ev) => {
+      ev.stopPropagation();
+      if (!confirm('Delete this calculation? This cannot be undone.')) return;
+      btn.disabled = true; btn.textContent = 'Deleting…';
+      try {
+        await api('/bulk-runs/' + btn.dataset.id, { method: 'DELETE' });
+        renderBulkRunsList();
+      } catch (e) {
+        alert('Delete failed: ' + e.message);
+        btn.disabled = false; btn.textContent = 'Delete';
+      }
+    });
   });
 }
 

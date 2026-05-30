@@ -2,7 +2,7 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import {
   DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand, DeleteCommand
 } from '@aws-sdk/lib-dynamodb';
-import { S3Client, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, GetObjectCommand, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { ulid } from 'ulid';
 
 const REGION = process.env.AWS_REGION || 'ap-northeast-1';
@@ -163,6 +163,23 @@ export async function getBulkRun(runId) {
     return JSON.parse(await obj.Body.transformToString());
   }
   return item;   // legacy run stored inline in DynamoDB (pre-S3)
+}
+
+export async function deleteBulkRun(runId) {
+  const out = await ddb.send(new GetCommand({
+    TableName: TABLE,
+    Key: { pk: 'BULKRUN', sk: `BULKRUN#${runId}` }
+  }));
+  const item = out.Item;
+  if (item?.s3Key) {
+    try {
+      await s3.send(new DeleteObjectCommand({ Bucket: RUNS_BUCKET, Key: item.s3Key }));
+    } catch { /* tolerate an already-missing S3 object */ }
+  }
+  await ddb.send(new DeleteCommand({
+    TableName: TABLE,
+    Key: { pk: 'BULKRUN', sk: `BULKRUN#${runId}` }
+  }));
 }
 
 // ── Machine Models ────────────────────────────────────────────────────────

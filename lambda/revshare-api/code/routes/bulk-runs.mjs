@@ -1,4 +1,4 @@
-import { listMerchants, listPartners, getPartner, putBulkRun, listBulkRuns, getBulkRun, listMachineModels, ulid } from '../db.mjs';
+import { listMerchants, listPartners, getPartner, putBulkRun, listBulkRuns, getBulkRun, deleteBulkRun, listMachineModels, ulid } from '../db.mjs';
 import { evaluateRun } from '../engine.mjs';
 
 export function groupOrders(orders, merchantMap) {
@@ -107,6 +107,13 @@ export async function getBulkRunRoute(event) {
   const run = await getBulkRun(id);
   if (!run) return resp(404, { error: 'not_found' });
   return resp(200, run);
+}
+
+export async function deleteBulkRunRoute(event) {
+  const id = event.pathParameters?.runId;
+  if (!id) return resp(400, { error: 'missing_runId' });
+  await deleteBulkRun(id);
+  return resp(200, { ok: true });
 }
 
 function resp(statusCode, body) {
