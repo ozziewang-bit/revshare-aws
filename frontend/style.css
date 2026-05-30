@@ -125,6 +125,15 @@ h3 { font-size: 16px; margin: 24px 0 12px; }
 }
 .back-link:hover { color: var(--ink); }
 
+.zip-link {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 14px; font-weight: 600;
+  color: var(--accent); text-decoration: none;
+  padding: 4px 10px; border: 1px solid var(--accent);
+  border-radius: 6px; background: var(--accent-soft);
+}
+.zip-link:hover { background: var(--accent); color: #fff; }
+
 .muted { color: var(--ink-soft); }
 .faint { color: var(--ink-faint); }
 .error { color: var(--loss); font-size: 13px; }

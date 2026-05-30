@@ -490,6 +490,91 @@ async function parseOrderReport(file) {
     .filter(r => r.merchantName);
 }
 
+// "2026-05-01" -> "2026_05"
+function periodTag(periodStart) {
+  const [y, m] = String(periodStart || '').split('-');
+  return `${y || '0000'}_${m || '00'}`;
+}
+
+function sanitizeFilename(s) {
+  return String(s).replace(/[\/\\:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim() || 'partner';
+}
+
+// Split `total` across `weights` at 2-decimal precision so the parts sum
+// EXACTLY to round(total,2). Largest-remainder method; falls back to an even
+// split when all weights are zero (e.g. a partner whose revenue is all 0).
+function apportion(total, weights) {
+  const n = weights.length;
+  if (n === 0) return [];
+  const cents = Math.round(Number(total) * 100);
+  const totalW = weights.reduce((a, b) => a + b, 0);
+  const raw = totalW > 0
+    ? weights.map(w => cents * w / totalW)
+    : weights.map(() => cents / n);
+  const out = raw.map(Math.floor);
+  let remainder = cents - out.reduce((a, b) => a + b, 0);
+  const order = raw.map((v, i) => ({ i, frac: v - Math.floor(v) })).sort((a, b) => b.frac - a.frac);
+  for (let k = 0; k < remainder; k++) out[order[k % n].i]++;
+  return out.map(c => c / 100);
+}
+
+// One CSV per partner, ORDER REPORT format:
+// Merchant name,Total rentals,Total revenue,Total share amount
+function buildPartnerCsv(result) {
+  const q = s => `"${String(s).replace(/"/g, '""')}"`;
+  const n2 = v => (Math.round(Number(v) * 100) / 100).toFixed(2);
+  const header = 'Merchant name,Total rentals,Total revenue,Total share amount';
+
+  const eng = result.engineResult || {};
+  const perStore = Array.isArray(eng.byStore);
+  const merchants = result.merchants || [];
+
+  // Per-merchant share: real per-store payout (per_store mode), or apportioned
+  // by revenue from the partner total (whole mode — engine gives no split).
+  let shares;
+  if (perStore) {
+    const byStore = {};
+    eng.byStore.forEach(s => { byStore[s.storeId] = s.payout; });
+    shares = merchants.map(m => byStore[m.merchantId] || 0);
+  } else {
+    shares = apportion(result.payout || 0, merchants.map(m => Math.max(0, Number(m.revenue) || 0)));
+  }
+
+  let sumRentals = 0, sumRevenue = 0, sumShare = 0;
+  const rows = merchants.map((m, i) => {
+    sumRentals += m.rentals;
+    sumRevenue += m.revenue;
+    sumShare += shares[i];
+    return [q(m.merchantName), m.rentals, n2(m.revenue), n2(shares[i])].join(',');
+  });
+
+  // per_store top-level lump sum (flat_per_partner_total) — not tied to any one merchant
+  if (perStore && eng.topLevel && eng.topLevel.payout) {
+    sumShare += eng.topLevel.payout;
+    rows.push([q('(partner-level lump sum)'), '', '', n2(eng.topLevel.payout)].join(','));
+  }
+
+  const totalRow = [q('Total'), sumRentals, n2(sumRevenue), n2(sumShare)].join(',');
+  return [header, ...rows, totalRow].join('\n') + '\n';
+}
+
+function downloadRevshareZip(run) {
+  const tag = periodTag(run.periodStart);
+  const enc = new TextEncoder();
+  const used = {};
+  const files = (run.results || []).map(r => {
+    let base = `${sanitizeFilename(r.partnerName)}_${tag}`;
+    if (used[base]) { base = `${base} (${used[base]++})`; } else { used[base] = 1; }
+    return { name: `${base}.csv`, data: enc.encode('﻿' + buildPartnerCsv(r)) };
+  });
+  const blob = SimpleZip.makeZip(files);
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `${tag}_revshare.zip`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 async function renderBulkRunDetail(runId) {
   const main = document.getElementById('main');
   main.innerHTML = `<div class="page-head"><button id="back" class="btn-ghost">← Back</button><h2>Share Calculation</h2></div><div id="br-detail">Loading…</div>`;
@@ -498,6 +583,14 @@ async function renderBulkRunDetail(runId) {
   const el = document.getElementById('br-detail');
   el.innerHTML = `
     <p class="muted">Period: <strong>${escape(run.periodStart)}</strong> – <strong>${escape(run.periodEnd)}</strong> · Uploaded: ${escape(run.uploadedAt?.split('T')[0])} · ${run.orderCount} orders · ${run.partnerCount} partners</p>
+    ${(run.results?.length) ? `<p><a href="#" id="dl-revshare-zip" class="zip-link">↓ ${escape(periodTag(run.periodStart))}_revshare</a> <span class="muted" style="font-size:12px;">(zip · one CSV per partner)</span></p>` : ''}
+    ${run.unmatchedOrderCount ? `
+      <div style="margin:8px 0 4px;padding:12px 16px;background:#fff5f5;border:1px solid #ffa8a8;border-radius:8px;font-size:13.5px;">
+        <strong style="color:#c92a2a;">⚠ ${Number(run.unmatchedOrderCount).toLocaleString('en-US')} order(s) dropped</strong>
+        — ${Number(run.unmatchedCount).toLocaleString('en-US')} unrecognized merchant name(s), revenue not counted:
+        <strong>${Number(run.unmatchedRevenue || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>.
+        Matched <strong>${Number((run.orderCount || 0) - run.unmatchedOrderCount).toLocaleString('en-US')}</strong> of ${Number(run.orderCount || 0).toLocaleString('en-US')} paid orders.
+      </div>` : ''}
     ${run.warnings?.length ? `<p style="color:#e67700;">${run.warnings.map(escape).join('<br>')}</p>` : ''}
     <table class="ts"><thead><tr><th>Partner</th><th>Merchants</th><th>Rentals</th><th>Revenue</th><th>Payout</th></tr></thead>
     <tbody>${(run.results || []).sort((a,b) => b.payout - a.payout).map(r => `<tr>
@@ -515,6 +608,10 @@ async function renderBulkRunDetail(runId) {
         <p style="color:#868e96;font-size:13px;">These names were in the order report but not found in the merchant registry. Add them under the correct partner and re-run.</p>
         <ul style="font-size:13px;">${run.unmatched.map(n => `<li>${escape(n)}</li>`).join('')}</ul>
       </div>` : ''}`;
+  el.querySelector('#dl-revshare-zip')?.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    downloadRevshareZip(run);
+  });
 }
 
 async function renderNewPartnerForm() {
