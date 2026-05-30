@@ -425,16 +425,32 @@ function renderNewBulkRunForm() {
       </select>
     </label>
     <div style="margin-top:12px;">
-      <div style="font-size:12.5px;color:var(--ink-soft);margin-bottom:8px;">Order report (.xlsx)</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+        <span style="font-size:12.5px;color:var(--ink-soft);">Order report (.xlsx)</span>
+        <button type="button" id="br-sample" class="btn-ghost" style="font-size:12px;padding:2px 8px;">↓ Sample file</button>
+      </div>
       <input type="file" id="br-file" accept=".xlsx" style="display:none">
       <div id="br-file-zone" class="upload-zone" style="cursor:pointer;">
         <p>Choose an Excel file or drag it here</p>
         <button type="button" id="br-choose" class="btn">Choose file</button>
         <div id="br-file-name" class="upload-hint"></div>
       </div>
+      <div class="upload-hint" style="margin-top:6px;">Required columns: <code style="font-size:11px;">Order No, Rental Merchant, Discount Amount, Payment Amount, Net Amount, Payment Status</code></div>
     </div>
     <div id="br-status" style="margin-top:16px;"></div>`;
   document.getElementById('back').addEventListener('click', renderBulkRunsList);
+  document.getElementById('br-sample').addEventListener('click', () => {
+    const ws = XLSX.utils.aoa_to_sheet([
+      ['Order No', 'Rental Merchant', 'Discount Amount', 'Payment Amount', 'Net Amount', 'Payment Status'],
+      ['1001', 'Example Store 1', 0, 40, 40, 'Paid'],
+      ['1002', 'Example Store 2', 0, 20, 20, 'Paid'],
+      ['1003', 'Example Store 3', 0, 30, 30, 'Paid'],
+      ['1004', 'Example Store 4', 5, 45, 40, 'Paid'],
+    ]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'ORDER REPORT');
+    XLSX.writeFile(wb, 'order-report-sample.xlsx');
+  });
   document.getElementById('br-choose').addEventListener('click', () => document.getElementById('br-file').click());
   document.getElementById('br-file-zone').addEventListener('click', e => { if (e.target.id !== 'br-choose') document.getElementById('br-file').click(); });
   document.getElementById('br-file').addEventListener('change', async e => {
