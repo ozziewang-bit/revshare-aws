@@ -398,7 +398,7 @@ async function renderBulkRunsList() {
   if (!runs.length) { out.innerHTML = '<p class="muted">No calculations yet.</p>'; return; }
   out.innerHTML = `<table class="ts"><thead><tr><th>Period</th><th>Uploaded</th><th>Partners</th><th>Total payout</th><th>Unmatched</th><th></th></tr></thead>
     <tbody>${runs.map(r => `<tr data-id="${r.runId}" style="cursor:pointer;">
-      <td>${escape(r.periodStart)} – ${escape(r.periodEnd)}</td>
+      <td>${escape(periodMonth(r.periodStart))}</td>
       <td>${escape(r.uploadedAt?.split('T')[0] || '')}</td>
       <td>${r.partnerCount}</td>
       <td>${(r.totalPayout || 0).toFixed(2)}</td>
@@ -512,6 +512,11 @@ function periodTag(periodStart) {
   return `${y || '0000'}_${m || '00'}`;
 }
 
+// "2026-05-01" -> "2026-05"
+function periodMonth(periodStart) {
+  return String(periodStart || '').slice(0, 7);
+}
+
 function sanitizeFilename(s) {
   return String(s).replace(/[\/\\:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim() || 'partner';
 }
@@ -598,7 +603,7 @@ async function renderBulkRunDetail(runId) {
   const run = await api('/bulk-runs/' + runId);
   const el = document.getElementById('br-detail');
   el.innerHTML = `
-    <p class="muted">Period: <strong>${escape(run.periodStart)}</strong> – <strong>${escape(run.periodEnd)}</strong> · Uploaded: ${escape(run.uploadedAt?.split('T')[0])} · ${run.orderCount} orders · ${run.partnerCount} partners</p>
+    <p class="muted">Period: <strong>${escape(periodMonth(run.periodStart))}</strong> · Uploaded: ${escape(run.uploadedAt?.split('T')[0])} · ${run.orderCount} orders · ${run.partnerCount} partners</p>
     ${(run.results?.length) ? `<p><a href="#" id="dl-revshare-zip" class="zip-link">↓ ${escape(periodTag(run.periodStart))}_revshare</a> <span class="muted" style="font-size:12px;">(zip · one CSV per partner)</span></p>` : ''}
     ${run.unmatchedOrderCount ? `
       <div style="margin:8px 0 4px;padding:12px 16px;background:#fff5f5;border:1px solid #ffa8a8;border-radius:8px;font-size:13.5px;">
