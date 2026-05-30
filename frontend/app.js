@@ -776,16 +776,34 @@ async function renderMerchantsTab(partnerId) {
     showMerchantForm(partnerId, null, machineModels, () => renderMerchantsTab(partnerId));
   });
 
-  container.querySelector('#export-terms-btn')?.addEventListener('click', () => {
-    const partnerName = document.querySelector('.page-head h2')?.textContent || 'partner';
-    const header = 'store_id,machine_serial,model,rentals,revenue';
-    const rows = merchants.map(m => `${m.name},,${m.machineModel || ''},0,0`);
+  container.querySelector('#export-terms-btn')?.addEventListener('click', async () => {
+    const partner = await api('/partners/' + partnerId);
+    const form = decompileRule(partner.rule);
+    const q = s => `"${String(s).replace(/"/g, '""')}"`;
+
+    const header = 'Merchant Name,Device Type,GP (%),Min Guarantee (THB/machine/month),Electricity (THB/month),Placement (THB/month),Others (THB/month)';
+    const rows = merchants.map(m => {
+      const modelDisplay = m.machineModel
+        ? (machineModels.find(mm => mm.code === m.machineModel)?.displayName || m.machineModel)
+        : '';
+      const placementRow = (form.placementRows || []).find(r => r.model === m.machineModel || r.model === 'ALL');
+      return [
+        q(m.name),
+        q(modelDisplay),
+        form.gpPercent,
+        form.mgEnabled ? form.mgAmount : 0,
+        form.electricity,
+        placementRow?.amount ?? 0,
+        form.others
+      ].join(',');
+    });
+
     const csv = [header, ...rows].join('\n') + '\n';
     const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${partnerName}-share-terms.csv`;
+    a.download = `${partner.name}-share-terms.csv`;
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     URL.revokeObjectURL(url);
   });
@@ -1120,22 +1138,34 @@ function escape(s) {
 
 // ---------- Run flow ----------
 
-function downloadSampleCsv() {
-  const csv = [
-    'store_id,machine_serial,model,rentals,revenue',
-    'TPE-001,SN-A100,S5,120,36000',
-    'TPE-001,SN-A101,T35,40,28000',
-    'TPE-002,SN-B200,S5,200,60000',
-    'TPE-002,SN-B201,S5,80,24000',
-    'TPE-002,SN-B202,L20,15,8500',
-    'KHH-001,SN-C300,T35,60,42000',
-    'KHH-001,SN-C301,S10,95,31000',
-  ].join('\n') + '\n';
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+async function downloadSampleCsv(partnerId) {
+  const [allMerchants, machineModels, partner] = await Promise.all([
+    api('/merchants'), api('/machine-models'), api('/partners/' + partnerId)
+  ]);
+  const merchants = allMerchants.filter(m => m.partnerId === partnerId);
+  const form = decompileRule(partner.rule);
+  const q = s => `"${String(s).replace(/"/g, '""')}"`;
+  const header = 'Merchant Name,Device Type,GP (%),Min Guarantee (THB/machine/month),Electricity (THB/month),Placement (THB/month),Others (THB/month)';
+  const rows = merchants.map(m => {
+    const modelDisplay = m.machineModel
+      ? (machineModels.find(mm => mm.code === m.machineModel)?.displayName || m.machineModel)
+      : '';
+    const placementRow = (form.placementRows || []).find(r => r.model === m.machineModel || r.model === 'ALL');
+    return [
+      q(m.name), q(modelDisplay),
+      form.gpPercent, form.mgEnabled ? form.mgAmount : 0,
+      form.electricity, placementRow?.amount ?? 0, form.others
+    ].join(',');
+  });
+  const fallback = rows.length === 0
+    ? ['"Example Store","Advertising Player-S5",15,200,1500,500,0']
+    : rows;
+  const csv = [header, ...fallback].join('\n') + '\n';
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = 'revshare-sample.csv';
+  a.download = `${partner.name}-share-terms.csv`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -1163,7 +1193,7 @@ function renderNewRunForm(partnerId, partner) {
           <div id="run-file-name" class="upload-hint"></div>
         </div>
         <span class="muted" style="display:block;margin-top:6px;font-size:11.5px;">
-          Columns: <code style="font-family:var(--font-mono);font-size:11px;">store_id, machine_serial, model, rentals, revenue</code> — one row per machine.
+          Columns: <code style="font-family:var(--font-mono);font-size:11px;">Merchant Name, Device Type, GP (%), Min Guarantee, Electricity, Placement, Others</code>
         </span>
       </label>
       <div>
@@ -1173,7 +1203,7 @@ function renderNewRunForm(partnerId, partner) {
     </form>`;
   document.getElementById('back').addEventListener('click', () => renderPartnerDetail(partnerId));
   document.getElementById('cancel-run').addEventListener('click', () => renderPartnerDetail(partnerId));
-  document.getElementById('download-sample').addEventListener('click', downloadSampleCsv);
+  document.getElementById('download-sample').addEventListener('click', () => downloadSampleCsv(partnerId));
   document.getElementById('run-choose').addEventListener('click', () => document.getElementById('run-file').click());
   document.getElementById('run-file-zone').addEventListener('click', e => { if (e.target.id !== 'run-choose') document.getElementById('run-file').click(); });
   document.getElementById('run-file').addEventListener('change', e => {
