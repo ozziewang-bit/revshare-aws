@@ -9,19 +9,24 @@ export function parseDeviceType(deviceType) {
   return m[1].toUpperCase().replace('LL', 'L');
 }
 
-export function compileRule({ gpPercent, mgEnabled, mgAmount, electricity, placement, others }) {
-  const children = [];
-  const gpLeaf = { type: 'percent', rows: [{ model: 'ALL', percent: Number(gpPercent) }] };
-  if (mgEnabled && Number(mgAmount) > 0) {
-    children.push({ type: 'max', children: [gpLeaf, { type: 'flat_per_machine', rows: [{ model: 'ALL', amount: Number(mgAmount) }] }] });
-  } else {
-    children.push(gpLeaf);
-  }
-  if (Number(electricity) > 0) children.push({ type: 'flat_per_partner_total', amount: Number(electricity) });
-  if (Number(placement) > 0) children.push({ type: 'flat_per_partner_total', amount: Number(placement) });
-  if (Number(others) > 0) children.push({ type: 'flat_per_partner_total', amount: Number(others) });
-  if (children.length === 1) return children[0];
-  return { type: 'sum', children };
+// New rule shape: terms (all 'add') + optional per-device-type MG floor.
+// Payout = MG ? max( sum(terms), MG ) : sum(terms). Leaves tagged (_t/_m) to match the editor.
+export function compileRule({ gpPercent, electricity, placementRows, mgRows, others }) {
+  const adds = [];
+  if (Number(gpPercent) > 0) adds.push({ type: 'percent', _t: 'gp', _m: 'add', rows: [{ model: 'ALL', percent: Number(gpPercent) }] });
+  if (Number(electricity) > 0) adds.push({ type: 'flat_per_partner_total', _t: 'elec', _m: 'add', amount: Number(electricity) });
+  const vp = (placementRows || []).filter(r => r.model && Number(r.amount) > 0);
+  if (vp.length) adds.push({ type: 'flat_per_machine', _t: 'placement', _m: 'add', rows: vp.map(r => ({ model: r.model, amount: Number(r.amount) })) });
+  if (Number(others) > 0) adds.push({ type: 'flat_per_partner_total', _t: 'others', _m: 'add', amount: Number(others) });
+  const vmg = (mgRows || []).filter(r => r.model && Number(r.amount) > 0);
+  const mgLeaf = vmg.length ? { type: 'flat_per_machine', _t: 'mg', rows: vmg.map(r => ({ model: r.model, amount: Number(r.amount) })) } : null;
+
+  const candidates = [];
+  if (adds.length) candidates.push(adds.length === 1 ? adds[0] : { type: 'sum', children: adds });
+  if (mgLeaf) candidates.push(mgLeaf);
+  if (!candidates.length) return { type: 'percent', _t: 'gp', _m: 'add', rows: [{ model: 'ALL', percent: 0 }] };
+  if (candidates.length === 1) return candidates[0];
+  return { type: 'max', children: candidates };
 }
 
 export async function importRevShareRoute(event) {
@@ -44,7 +49,7 @@ export async function importRevShareRoute(event) {
       partnerNameToId[key] = partnerByName[key].partnerId;
       continue;
     }
-    const rule = compileRule({ gpPercent: p.gpPercent || 0, mgEnabled: !!p.mgEnabled, mgAmount: p.mgAmount || 0, electricity: p.electricity || 0, placement: p.placement || 0, others: p.others || 0 });
+    const rule = compileRule({ gpPercent: p.gpPercent || 0, electricity: p.electricity || 0, placementRows: p.placementRows || [], mgRows: p.mgRows || [], others: p.others || 0 });
     const saved = await putPartner({ partnerId: ulid(), name: p.name, currency: p.currency || 'THB', aggregationMode: p.aggregationMode || 'whole', rule, notes: '', archived: false });
     partnerNameToId[key] = saved.partnerId;
     created.partners++;

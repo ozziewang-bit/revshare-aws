@@ -279,14 +279,16 @@ async function renderImportScreen() {
         <h3>Preview</h3>
         <p>${partners.length} partner(s) to create, ${merchants.length} merchant(s) to upsert.</p>
         ${warnings.length ? `<p style="color:#f03e3e;">Warnings: ${warnings.map(escape).join(', ')}</p>` : ''}
-        <table class="ts"><thead><tr><th>Partner (TAG)</th><th>GP%</th><th>MG</th><th>Electricity</th><th>Placement</th></tr></thead>
-        <tbody>${partners.map(p => `<tr>
+        <table class="ts"><thead><tr><th>Partner (TAG)</th><th>GP%</th><th>MG (per type)</th><th>Electricity</th><th>Placement (per type)</th></tr></thead>
+        <tbody>${partners.map(p => {
+          const summ = rows => rows && rows.length ? rows.map(r => `${escape(r.model)}:${r.amount}`).join(', ') : '—';
+          return `<tr>
           <td>${escape(p.name)}</td>
           <td>${p.gpPercent}%</td>
-          <td>${p.mgEnabled ? p.mgAmount + ' THB' : '—'}</td>
+          <td>${summ(p.mgRows)}</td>
           <td>${p.electricity || 0}</td>
-          <td>${p.placement || 0}</td>
-        </tr>`).join('')}</tbody></table>
+          <td>${summ(p.placementRows)}</td>
+        </tr>`; }).join('')}</tbody></table>
         <button id="confirm-import" class="btn-primary" style="margin-top:16px;">Confirm import</button>`;
 
       document.getElementById('confirm-import').addEventListener('click', async () => {
@@ -418,13 +420,15 @@ async function parseKaExcel(file) {
   const merchants = [];
   const warnings = [];
 
+  // Trigger Type 'B' = "max(GP%, MG)" — the Placement column holds the MG amount,
+  // varying by device type. Otherwise the Placement column is a placement fee.
   for (const row of rows) {
     const tag        = row['Merchant label (TAG)'];
     const name       = row['merchant name.'];
     const deviceType = row['Device Type'];
     const gpPercent  = Number(row['Rev share %'] || 0) * 100;
     const triggerType= row['Trigger Type'];
-    const placement  = Number(row['Placement (monthly)'] || 0);
+    const amount     = Number(row['Placement (monthly)'] || 0);   // MG (type B) or placement fee
     const electricity= Number(row['Electricity (monthly)'] || 0);
     const externalId = row['ID'] ? String(row['ID']) : null;
 
@@ -439,17 +443,14 @@ async function parseKaExcel(file) {
 
     const tagKey = String(tag).toLowerCase().trim();
     if (!partnerMap[tagKey]) {
-      partnerMap[tagKey] = {
-        name: String(tag),
-        gpPercent,
-        mgEnabled: triggerType === 'B',
-        mgAmount: triggerType === 'B' ? placement : 0,
-        electricity: triggerType === 'B' ? electricity : 0,
-        placement: triggerType !== 'B' ? placement : 0,
-        others: 0,
-        aggregationMode: 'whole',
-        currency: 'THB'
-      };
+      partnerMap[tagKey] = { name: String(tag), gpPercent, electricity: 0, placementRows: [], mgRows: [], others: 0, aggregationMode: 'whole', currency: 'THB' };
+    }
+    const p = partnerMap[tagKey];
+    if (gpPercent > 0 && !(p.gpPercent > 0)) p.gpPercent = gpPercent;
+    if (electricity > 0) p.electricity = electricity;
+    if (machineModel && amount > 0) {
+      const table = triggerType === 'B' ? p.mgRows : p.placementRows;
+      if (!table.some(r => r.model === machineModel)) table.push({ model: machineModel, amount });
     }
 
     merchants.push({ name: String(name), partnerName: String(tag), machineModel, externalId });

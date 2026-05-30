@@ -9,19 +9,22 @@ function parseDeviceType(deviceType) {
   return m[1].toUpperCase().replace('LL', 'L');
 }
 
-function compileRule({ gpPercent, mgEnabled, mgAmount, electricity, placement, others }) {
-  const children = [];
-  const gpLeaf = { type: 'percent', rows: [{ model: 'ALL', percent: Number(gpPercent) }] };
-  if (mgEnabled && Number(mgAmount) > 0) {
-    children.push({ type: 'max', children: [gpLeaf, { type: 'flat_per_machine', rows: [{ model: 'ALL', amount: Number(mgAmount) }] }] });
-  } else {
-    children.push(gpLeaf);
-  }
-  if (Number(electricity) > 0) children.push({ type: 'flat_per_partner_total', amount: Number(electricity) });
-  if (Number(placement) > 0) children.push({ type: 'flat_per_partner_total', amount: Number(placement) });
-  if (Number(others) > 0) children.push({ type: 'flat_per_partner_total', amount: Number(others) });
-  if (children.length === 1) return children[0];
-  return { type: 'sum', children };
+function compileRule({ gpPercent, electricity, placementRows, mgRows, others }) {
+  const adds = [];
+  if (Number(gpPercent) > 0) adds.push({ type: 'percent', _t: 'gp', _m: 'add', rows: [{ model: 'ALL', percent: Number(gpPercent) }] });
+  if (Number(electricity) > 0) adds.push({ type: 'flat_per_partner_total', _t: 'elec', _m: 'add', amount: Number(electricity) });
+  const vp = (placementRows || []).filter(r => r.model && Number(r.amount) > 0);
+  if (vp.length) adds.push({ type: 'flat_per_machine', _t: 'placement', _m: 'add', rows: vp.map(r => ({ model: r.model, amount: Number(r.amount) })) });
+  if (Number(others) > 0) adds.push({ type: 'flat_per_partner_total', _t: 'others', _m: 'add', amount: Number(others) });
+  const vmg = (mgRows || []).filter(r => r.model && Number(r.amount) > 0);
+  const mgLeaf = vmg.length ? { type: 'flat_per_machine', _t: 'mg', rows: vmg.map(r => ({ model: r.model, amount: Number(r.amount) })) } : null;
+
+  const candidates = [];
+  if (adds.length) candidates.push(adds.length === 1 ? adds[0] : { type: 'sum', children: adds });
+  if (mgLeaf) candidates.push(mgLeaf);
+  if (!candidates.length) return { type: 'percent', _t: 'gp', _m: 'add', rows: [{ model: 'ALL', percent: 0 }] };
+  if (candidates.length === 1) return candidates[0];
+  return { type: 'max', children: candidates };
 }
 
 test('parseDeviceType: S5', () => assert.equal(parseDeviceType('Advertising Player-S5'), 'S5'));
@@ -32,29 +35,33 @@ test('parseDeviceType: null input', () => assert.equal(parseDeviceType(null), nu
 test('parseDeviceType: unrecognised string', () => assert.equal(parseDeviceType('Unknown-X9'), null));
 
 test('compileRule: GP only (no MG, no fees)', () => {
-  const rule = compileRule({ gpPercent: 25, mgEnabled: false, mgAmount: 0, electricity: 0, placement: 0, others: 0 });
-  assert.deepEqual(rule, { type: 'percent', rows: [{ model: 'ALL', percent: 25 }] });
+  const rule = compileRule({ gpPercent: 25, electricity: 0, placementRows: [], mgRows: [], others: 0 });
+  assert.equal(rule.type, 'percent');
+  assert.equal(rule.rows[0].percent, 25);
+  assert.equal(rule._t, 'gp');
 });
 
-test('compileRule: GP + MG wraps in max', () => {
-  const rule = compileRule({ gpPercent: 50, mgEnabled: true, mgAmount: 200, electricity: 0, placement: 0, others: 0 });
+test('compileRule: GP + per-type MG → max(GP, MG)', () => {
+  const rule = compileRule({ gpPercent: 50, electricity: 0, placementRows: [], mgRows: [{ model: 'S8', amount: 200 }, { model: 'S5', amount: 150 }], others: 0 });
   assert.equal(rule.type, 'max');
   assert.equal(rule.children[0].type, 'percent');
   assert.equal(rule.children[1].type, 'flat_per_machine');
+  assert.equal(rule.children[1]._t, 'mg');
+  assert.equal(rule.children[1].rows.length, 2);
   assert.equal(rule.children[1].rows[0].amount, 200);
 });
 
-test('compileRule: GP + electricity + placement = sum of 3', () => {
-  const rule = compileRule({ gpPercent: 20, mgEnabled: false, mgAmount: 0, electricity: 600, placement: 3300, others: 0 });
+test('compileRule: GP + electricity + per-type placement = sum of 3', () => {
+  const rule = compileRule({ gpPercent: 20, electricity: 600, placementRows: [{ model: 'S8', amount: 3300 }], mgRows: [], others: 0 });
   assert.equal(rule.type, 'sum');
   assert.equal(rule.children.length, 3);
   assert.equal(rule.children[0].type, 'percent');
   assert.equal(rule.children[1].amount, 600);
-  assert.equal(rule.children[2].amount, 3300);
+  assert.equal(rule.children[2].type, 'flat_per_machine');
 });
 
 test('compileRule: zero fees are omitted', () => {
-  const rule = compileRule({ gpPercent: 30, mgEnabled: false, mgAmount: 0, electricity: 0, placement: 500, others: 0 });
+  const rule = compileRule({ gpPercent: 30, electricity: 0, placementRows: [{ model: 'S8', amount: 500 }], mgRows: [], others: 0 });
   assert.equal(rule.type, 'sum');
   assert.equal(rule.children.length, 2);
 });
