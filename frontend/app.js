@@ -602,6 +602,8 @@ async function renderBulkRunDetail(runId) {
   document.getElementById('back').addEventListener('click', renderBulkRunsList);
   const run = await api('/bulk-runs/' + runId);
   const el = document.getElementById('br-detail');
+  const totalRevenue = (run.results || []).reduce((s, r) => s + (r.revenue || 0), 0);
+  const totalSharePct = totalRevenue > 0 ? ((run.totalPayout || 0) / totalRevenue * 100).toFixed(1) + '%' : '—';
   el.innerHTML = `
     <p class="muted">Period: <strong>${escape(periodMonth(run.periodStart))}</strong> · Uploaded: ${escape(run.uploadedAt?.split('T')[0])} · ${run.orderCount} orders · ${run.partnerCount} partners</p>
     ${(run.results?.length) ? `<p><a href="#" id="dl-revshare-zip" class="zip-link">↓ ${escape(periodTag(run.periodStart))}_revshare</a> <span class="muted" style="font-size:12px;">(zip · one CSV per partner)</span></p>` : ''}
@@ -622,8 +624,14 @@ async function renderBulkRunDetail(runId) {
       <td><strong>${Number(r.payout).toFixed(2)}</strong></td>
       <td>${r.revenue > 0 ? (r.payout / r.revenue * 100).toFixed(1) + '%' : '—'}</td>
     </tr>`).join('')}</tbody>
-    <tfoot><tr><td colspan="4"><strong>Total</strong></td><td><strong>${Number(run.totalPayout||0).toFixed(2)}</strong></td>
-      <td><strong>${(() => { const rev = (run.results || []).reduce((s, r) => s + (r.revenue || 0), 0); return rev > 0 ? ((run.totalPayout || 0) / rev * 100).toFixed(1) + '%' : '—'; })()}</strong></td></tr></tfoot>
+    <tfoot><tr>
+      <td>Total</td>
+      <td></td>
+      <td></td>
+      <td>${totalRevenue.toFixed(2)}</td>
+      <td>${Number(run.totalPayout || 0).toFixed(2)}</td>
+      <td>${totalSharePct}</td>
+    </tr></tfoot>
     </table>
     ${run.unmatched?.length ? `
       <div style="margin-top:24px;padding:16px;background:#fff5f5;border-radius:8px;border:1px solid #ffa8a8;">
