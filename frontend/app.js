@@ -867,18 +867,35 @@ function showMerchantForm(partnerId, existing, machineModels, onDone) {
   });
 }
 
-function parseMerchantCsv(text, validCodes) {
+function parseCsvLine(line) {
+  const fields = [];
+  let cur = '', inQ = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (c === '"') { inQ = !inQ; continue; }
+    if (c === ',' && !inQ) { fields.push(cur); cur = ''; continue; }
+    cur += c;
+  }
+  fields.push(cur);
+  return fields;
+}
+
+function parseMerchantCsv(text, validCodes, machineModels) {
   const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
   if (!lines.length) return [];
   const MODELS_SET = validCodes instanceof Set ? validCodes : new Set(['S5','S8','S10','T8','T10','T20','T35','L20','L40','M10']);
+  const displayToCode = {};
+  if (machineModels) machineModels.forEach(m => { displayToCode[m.displayName.toLowerCase()] = m.code; });
   let dataLines = lines;
   if (lines[0].toLowerCase().includes('name')) dataLines = lines.slice(1);
   return dataLines
     .map(line => {
-      const [rawName, rawModel] = line.split(',');
-      const name = (rawName || '').trim();
-      const model = (rawModel || '').trim().toUpperCase();
-      return { name, model: MODELS_SET.has(model) ? model : null };
+      const fields = parseCsvLine(line);
+      const name = (fields[0] || '').trim();
+      const modelInput = (fields[1] || '').trim();
+      const modelUpper = modelInput.toUpperCase();
+      const model = MODELS_SET.has(modelUpper) ? modelUpper : (displayToCode[modelInput.toLowerCase()] || null);
+      return { name, model };
     })
     .filter(r => r.name);
 }
@@ -890,7 +907,7 @@ function showBatchCsvPanel(partnerId, machineModels, onDone) {
       <div class="batch-panel-head">
         <div>
           <div class="batch-panel-title">Upload merchants via CSV</div>
-          <div class="batch-panel-sub">Columns: <code>name</code> (required), <code>model</code> (required — S5/S8/S10/T8/T10/T20/T35/L20/L40). Rows with missing or unknown model are skipped.</div>
+          <div class="batch-panel-sub">Same format as the export file: <code>Merchant Name</code>, <code>Device Type</code>, then rule columns. Extra columns are ignored.</div>
         </div>
         <button id="bp-close" class="btn-ghost">✕</button>
       </div>
@@ -908,11 +925,17 @@ function showBatchCsvPanel(partnerId, machineModels, onDone) {
   slot.querySelector('#bp-close').addEventListener('click', () => { slot.innerHTML = ''; slot.dataset.panel = ''; });
   slot.querySelector('#bp-choose').addEventListener('click', () => slot.querySelector('#bp-csv-file').click());
   slot.querySelector('#bp-sample').addEventListener('click', () => {
-    const csv = 'name,model\nBigC Ladphrao,S10\nTops Silom,T35\nVilla Market Sukhumvit,L20\n';
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const q = s => `"${String(s).replace(/"/g, '""')}"`;
+    const header = 'Merchant Name,Device Type,GP (%),Min Guarantee (THB/machine/month),Electricity (THB/month),Placement (THB/month),Others (THB/month)';
+    const examples = machineModels.slice(0, 3).map((m, i) =>
+      `${q('Example Store ' + (i + 1))},${q(m.displayName)},15,200,1500,500,0`
+    );
+    if (!examples.length) examples.push('"Example Store","Advertising Player-S5",15,200,1500,500,0');
+    const csv = [header, ...examples].join('\n') + '\n';
+    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url; a.download = 'merchants-sample.csv';
+    a.href = url; a.download = 'share-terms-sample.csv';
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     URL.revokeObjectURL(url);
   });
@@ -923,7 +946,7 @@ function showBatchCsvPanel(partnerId, machineModels, onDone) {
     try {
       const text = await file.text();
       const validCodes = new Set(machineModels.map(m => m.code));
-      const allRows = parseMerchantCsv(text, validCodes);
+      const allRows = parseMerchantCsv(text, validCodes, machineModels);
       const validRows = allRows.filter(r => r.model);
       const skipped = allRows.length - validRows.length;
       if (!validRows.length) { status.innerHTML = '<span style="color:var(--loss);">No rows with a valid model found. Check the file format.</span>'; return; }
