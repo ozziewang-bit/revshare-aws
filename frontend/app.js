@@ -113,9 +113,25 @@ async function renderPartnersList() {
     const countByPartner = {};
     merchants.forEach(m => { countByPartner[m.partnerId] = (countByPartner[m.partnerId] || 0) + 1; });
 
+    function sortPartners(arr) {
+      function grp(name) {
+        const c = (name || '').trim().charCodeAt(0);
+        if (c >= 0x30 && c <= 0x39) return 0;             // 0–9
+        if ((c >= 0x41 && c <= 0x5A) || (c >= 0x61 && c <= 0x7A)) return 1; // A–Z a–z
+        if (c >= 0x0E00 && c <= 0x0E7F) return 2;          // Thai
+        return 1;                                            // other → English group
+      }
+      return [...arr].sort((a, b) => {
+        const ga = grp(a.name), gb = grp(b.name);
+        if (ga !== gb) return ga - gb;
+        return a.name.localeCompare(b.name, ga === 2 ? 'th' : 'en', { numeric: true, sensitivity: 'base' });
+      });
+    }
+
     function renderTable(list) {
       const out = document.getElementById('partners-out');
-      if (!list.length) {
+      const sorted = sortPartners(list);
+      if (!sorted.length) {
         const q = document.getElementById('partner-search')?.value;
         out.innerHTML = `<p class="muted">${q ? 'No partners match your search.' : 'No partners yet.'}</p>`;
         return;
@@ -123,7 +139,7 @@ async function renderPartnersList() {
       out.innerHTML = `
         <table class="ts">
           <thead><tr><th>Name</th><th>Currency</th><th>Aggregation</th><th>Merchants</th></tr></thead>
-          <tbody>${list.map(p => `
+          <tbody>${sorted.map(p => `
             <tr class="row-clickable" data-id="${escape(p.partnerId)}">
               <td>${escape(p.name)}</td>
               <td><span class="badge badge-neutral">${escape(p.currency)}</span></td>
