@@ -613,19 +613,24 @@ async function renderBulkRunDetail(runId) {
         Matched <strong>${Number((run.orderCount || 0) - run.unmatchedOrderCount).toLocaleString('en-US')}</strong> of ${Number(run.orderCount || 0).toLocaleString('en-US')} paid orders.
       </div>` : ''}
     ${run.warnings?.length ? `<p style="color:#e67700;">${run.warnings.map(escape).join('<br>')}</p>` : ''}
-    <table class="ts"><thead><tr><th>Partner</th><th>Merchants</th><th>Rentals</th><th>Revenue</th><th>Payout</th></tr></thead>
+    <table class="ts"><thead><tr><th>Partner</th><th>Merchants</th><th>Rentals</th><th>Revenue</th><th>Payout</th><th>Revenue share %</th></tr></thead>
     <tbody>${(run.results || []).sort((a,b) => b.payout - a.payout).map(r => `<tr>
       <td>${escape(r.partnerName)}</td>
       <td>${r.merchantCount}</td>
       <td>${r.rentals}</td>
       <td>${Number(r.revenue).toFixed(2)}</td>
       <td><strong>${Number(r.payout).toFixed(2)}</strong></td>
+      <td>${r.revenue > 0 ? (r.payout / r.revenue * 100).toFixed(1) + '%' : '—'}</td>
     </tr>`).join('')}</tbody>
-    <tfoot><tr><td colspan="4"><strong>Total</strong></td><td><strong>${Number(run.totalPayout||0).toFixed(2)}</strong></td></tr></tfoot>
+    <tfoot><tr><td colspan="4"><strong>Total</strong></td><td><strong>${Number(run.totalPayout||0).toFixed(2)}</strong></td>
+      <td><strong>${(() => { const rev = (run.results || []).reduce((s, r) => s + (r.revenue || 0), 0); return rev > 0 ? ((run.totalPayout || 0) / rev * 100).toFixed(1) + '%' : '—'; })()}</strong></td></tr></tfoot>
     </table>
     ${run.unmatched?.length ? `
       <div style="margin-top:24px;padding:16px;background:#fff5f5;border-radius:8px;border:1px solid #ffa8a8;">
-        <strong style="color:#c92a2a;">⚠ ${run.unmatched.length} unmatched merchant(s)</strong>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+          <strong style="color:#c92a2a;">⚠ ${run.unmatched.length} unmatched merchant(s)</strong>
+          <button id="dl-unmatched" class="btn-ghost" style="color:var(--accent);">↓ Download list (CSV)</button>
+        </div>
         <p style="color:#868e96;font-size:13px;">These names were in the order report but not found in the merchant registry. Add them under the correct partner and re-run.</p>
         <ul style="font-size:13px;">${run.unmatched.map(n => `<li>${escape(n)}</li>`).join('')}</ul>
       </div>` : ''}`;
@@ -633,6 +638,19 @@ async function renderBulkRunDetail(runId) {
     ev.preventDefault();
     downloadRevshareZip(run);
   });
+  el.querySelector('#dl-unmatched')?.addEventListener('click', () => downloadUnmatchedCsv(run));
+}
+
+function downloadUnmatchedCsv(run) {
+  const q = s => `"${String(s).replace(/"/g, '""')}"`;
+  const csv = 'Merchant name\n' + (run.unmatched || []).map(q).join('\n') + '\n';
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `unmatched-merchants-${periodMonth(run.periodStart)}.csv`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 async function renderNewPartnerForm() {
