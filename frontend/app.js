@@ -63,6 +63,18 @@ function decompileRule(rule) {
   return compat({ gpPercent, electricity, placementRows, shareModel, mgRows });
 }
 
+// Share-terms CSV: amounts only. The payout model lives in the partner page.
+const SHARE_TERMS_CSV_HEADER = 'Merchant Name,Device Type,GP (%),Electricity (THB/month),Placement (THB/month),Others (THB/month),Min Guarantee (THB/machine/month)';
+
+function shareTermsCsvRow(q, m, machineModels, form) {
+  const modelDisplay = m.machineModel
+    ? (machineModels.find(mm => mm.code === m.machineModel)?.displayName || m.machineModel)
+    : '';
+  const placement = (form.placementRows || []).find(r => r.model === m.machineModel || r.model === 'ALL')?.amount ?? 0;
+  const mg = (form.mgRows || []).find(r => r.model === m.machineModel || r.model === 'ALL')?.amount ?? 0;
+  return [q(m.name), q(modelDisplay), form.gpPercent, form.electricity, placement, form.others ?? 0, mg].join(',');
+}
+
 function readExcel(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -1107,22 +1119,8 @@ async function renderMerchantsTab(partnerId) {
     const form = decompileRule(partner.rule);
     const q = s => `"${String(s).replace(/"/g, '""')}"`;
 
-    const header = 'Merchant Name,Device Type,GP (%),Min Guarantee (THB/machine/month),Electricity (THB/month),Placement (THB/month),Others (THB/month)';
-    const rows = merchants.map(m => {
-      const modelDisplay = m.machineModel
-        ? (machineModels.find(mm => mm.code === m.machineModel)?.displayName || m.machineModel)
-        : '';
-      const placementRow = (form.placementRows || []).find(r => r.model === m.machineModel || r.model === 'ALL');
-      return [
-        q(m.name),
-        q(modelDisplay),
-        form.gpPercent,
-        form.mgEnabled ? form.mgAmount : 0,
-        form.electricity,
-        placementRow?.amount ?? 0,
-        form.others
-      ].join(',');
-    });
+    const header = SHARE_TERMS_CSV_HEADER;
+    const rows = merchants.map(m => shareTermsCsvRow(q, m, machineModels, form));
 
     const csv = [header, ...rows].join('\n') + '\n';
     const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
@@ -1233,7 +1231,7 @@ function showBatchCsvPanel(partnerId, machineModels, onDone) {
       <div class="batch-panel-head">
         <div>
           <div class="batch-panel-title">Upload merchants via CSV</div>
-          <div class="batch-panel-sub">Same format as the export file: <code>Merchant Name</code>, <code>Device Type</code>, then rule columns. Extra columns are ignored.</div>
+          <div class="batch-panel-sub">Same format as the export file: <code>Merchant Name</code>, <code>Device Type</code>, then amount columns (GP %, Electricity, Placement, Others, Min Guarantee). Currently only name + device type are imported.</div>
         </div>
         <button id="bp-close" class="btn-ghost">✕</button>
       </div>
@@ -1252,11 +1250,11 @@ function showBatchCsvPanel(partnerId, machineModels, onDone) {
   slot.querySelector('#bp-choose').addEventListener('click', () => slot.querySelector('#bp-csv-file').click());
   slot.querySelector('#bp-sample').addEventListener('click', () => {
     const q = s => `"${String(s).replace(/"/g, '""')}"`;
-    const header = 'Merchant Name,Device Type,GP (%),Min Guarantee (THB/machine/month),Electricity (THB/month),Placement (THB/month),Others (THB/month)';
+    const header = SHARE_TERMS_CSV_HEADER;
     const examples = machineModels.slice(0, 3).map((m, i) =>
-      `${q('Example Store ' + (i + 1))},${q(m.displayName)},15,200,1500,500,0`
+      `${q('Example Store ' + (i + 1))},${q(m.displayName)},15,200,1500,0,800`
     );
-    if (!examples.length) examples.push('"Example Store","Advertising Player-S5",15,200,1500,500,0');
+    if (!examples.length) examples.push('"Example Store","Advertising Player-S5",15,200,1500,0,800');
     const csv = [header, ...examples].join('\n') + '\n';
     const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
@@ -1494,20 +1492,10 @@ async function downloadSampleCsv(partnerId) {
   const merchants = allMerchants.filter(m => m.partnerId === partnerId);
   const form = decompileRule(partner.rule);
   const q = s => `"${String(s).replace(/"/g, '""')}"`;
-  const header = 'Merchant Name,Device Type,GP (%),Min Guarantee (THB/machine/month),Electricity (THB/month),Placement (THB/month),Others (THB/month)';
-  const rows = merchants.map(m => {
-    const modelDisplay = m.machineModel
-      ? (machineModels.find(mm => mm.code === m.machineModel)?.displayName || m.machineModel)
-      : '';
-    const placementRow = (form.placementRows || []).find(r => r.model === m.machineModel || r.model === 'ALL');
-    return [
-      q(m.name), q(modelDisplay),
-      form.gpPercent, form.mgEnabled ? form.mgAmount : 0,
-      form.electricity, placementRow?.amount ?? 0, form.others
-    ].join(',');
-  });
+  const header = SHARE_TERMS_CSV_HEADER;
+  const rows = merchants.map(m => shareTermsCsvRow(q, m, machineModels, form));
   const fallback = rows.length === 0
-    ? ['"Example Store","Advertising Player-S5",15,200,1500,500,0']
+    ? ['"Example Store","Advertising Player-S5",15,200,1500,0,800']
     : rows;
   const csv = [header, ...fallback].join('\n') + '\n';
   const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
@@ -1542,7 +1530,7 @@ function renderNewRunForm(partnerId, partner) {
           <div id="run-file-name" class="upload-hint"></div>
         </div>
         <span class="muted" style="display:block;margin-top:6px;font-size:11.5px;">
-          Columns: <code style="font-family:var(--font-mono);font-size:11px;">Merchant Name, Device Type, GP (%), Min Guarantee, Electricity, Placement, Others</code>
+          Columns: <code style="font-family:var(--font-mono);font-size:11px;">Merchant Name, Device Type, GP (%), Electricity, Placement, Others, Min Guarantee</code>
         </span>
       </label>
       <div>
