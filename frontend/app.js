@@ -781,7 +781,7 @@ async function renderMerchantsTab(partnerId) {
     const header = 'store_id,machine_serial,model,rentals,revenue';
     const rows = merchants.map(m => `${m.name},,${m.machineModel || ''},0,0`);
     const csv = [header, ...rows].join('\n') + '\n';
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
