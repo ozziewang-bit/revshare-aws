@@ -7,7 +7,7 @@ const CURRENCIES = ['TWD', 'USD', 'HKD', 'JPY', 'IDR', 'THB'];
 
 // Share model: 'hybrid' (sum of terms) | 'mg' (flat guarantee) | 'higher' (max of terms vs MG).
 // Share terms: GP% (percent of revenue), electricity (lump), placement (per machine type).
-function compileRule({ gpPercent, electricity, placementRows, shareModel, mgAmount, mgEnabled }) {
+function compileRule({ gpPercent, electricity, placementRows, shareModel, mgRows, mgEnabled, mgAmount }) {
   const terms = [];
   terms.push({ type: 'percent', rows: [{ model: 'ALL', percent: Number(gpPercent) || 0 }] });
   if (Number(electricity) > 0) terms.push({ type: 'flat_per_partner_total', amount: Number(electricity) });
@@ -16,31 +16,31 @@ function compileRule({ gpPercent, electricity, placementRows, shareModel, mgAmou
   const sumTerms = terms.length === 1 ? terms[0] : { type: 'sum', children: terms };
 
   // Explicit shareModel wins; legacy mgEnabled maps to 'higher'.
-  const model = shareModel || (mgEnabled && Number(mgAmount) > 0 ? 'higher' : 'hybrid');
-  const mgLeaf = { type: 'flat_per_machine', rows: [{ model: 'ALL', amount: Number(mgAmount) || 0 }] };
+  const model = shareModel || (mgEnabled ? 'higher' : 'hybrid');
+  // MG varies by device type (mirrors placement). Legacy single mgAmount → one ALL row.
+  let validMg = (mgRows || []).filter(r => r.model && Number(r.amount) > 0).map(r => ({ model: r.model, amount: Number(r.amount) }));
+  if (!validMg.length && Number(mgAmount) > 0) validMg = [{ model: 'ALL', amount: Number(mgAmount) }];
+  const mgLeaf = { type: 'flat_per_machine', rows: validMg.length ? validMg : [{ model: 'ALL', amount: 0 }] };
 
   if (model === 'mg') return mgLeaf;
   if (model === 'higher') return { type: 'max', children: [sumTerms, mgLeaf] };
   return sumTerms;   // hybrid
 }
 
-function isMgLeaf(n) {
-  return n && n.type === 'flat_per_machine' && (n.rows || []).length === 1 && n.rows[0].model === 'ALL';
-}
-
 function decompileRule(rule) {
-  // mgEnabled/others kept for back-compat with the share-terms CSV export.
-  const compat = f => ({ ...f, mgEnabled: f.shareModel !== 'hybrid', others: 0 });
-  const base = { gpPercent: 0, electricity: 0, placementRows: [], shareModel: 'hybrid', mgAmount: 0 };
+  // mgEnabled/mgAmount/others kept for back-compat with the share-terms CSV export.
+  const compat = f => ({ ...f, mgEnabled: f.shareModel !== 'hybrid', mgAmount: f.mgRows?.[0]?.amount ?? 0, others: 0 });
+  const base = { gpPercent: 0, electricity: 0, placementRows: [], shareModel: 'hybrid', mgRows: [] };
   if (!rule || typeof rule !== 'object') return compat(base);
+  const rowsOf = n => (n.rows || []).map(r => ({ model: r.model, amount: r.amount ?? 0 }));
 
-  // Lone MG leaf → "MG" model.
-  if (isMgLeaf(rule)) return compat({ ...base, shareModel: 'mg', mgAmount: rule.rows?.[0]?.amount ?? 0 });
+  // A top-level flat_per_machine can only be the MG model (terms always carry a GP% leaf).
+  if (rule.type === 'flat_per_machine') return compat({ ...base, shareModel: 'mg', mgRows: rowsOf(rule) });
 
-  let shareModel = 'hybrid', mgAmount = 0, termsNode = rule;
+  let shareModel = 'hybrid', mgRows = [], termsNode = rule;
   if (rule.type === 'max' && Array.isArray(rule.children)) {
-    const mg = rule.children.find(isMgLeaf);
-    if (mg) { shareModel = 'higher'; mgAmount = mg.rows?.[0]?.amount ?? 0; termsNode = rule.children.find(c => c !== mg) || { type: 'sum', children: [] }; }
+    const mg = rule.children.find(c => c.type === 'flat_per_machine');
+    if (mg) { shareModel = 'higher'; mgRows = rowsOf(mg); termsNode = rule.children.find(c => c !== mg) || { type: 'sum', children: [] }; }
   }
 
   const nodes = termsNode?.type === 'sum' ? (termsNode.children || []) : [termsNode];
@@ -53,14 +53,14 @@ function decompileRule(rule) {
       const pc = node.children?.find(c => c.type === 'percent');
       const fc = node.children?.find(c => c.type === 'flat_per_machine');
       if (pc) gpPercent = pc.rows?.[0]?.percent ?? 0;
-      if (fc) { shareModel = 'higher'; mgAmount = fc.rows?.[0]?.amount ?? 0; }
+      if (fc) { shareModel = 'higher'; mgRows = rowsOf(fc); }
     } else if (node.type === 'flat_per_partner_total') {
       if (!electricity) electricity = node.amount ?? 0;
     } else if (node.type === 'flat_per_machine') {
-      (node.rows || []).forEach(r => placementRows.push({ model: r.model, amount: r.amount ?? 0 }));
+      placementRows.push(...rowsOf(node));
     }
   }
-  return compat({ gpPercent, electricity, placementRows, shareModel, mgAmount });
+  return compat({ gpPercent, electricity, placementRows, shareModel, mgRows });
 }
 
 function readExcel(file) {
@@ -855,9 +855,27 @@ function renderStructuredRuleEditor(container, initialRule, machineModels, { rea
               <span><strong>${title}</strong><br><span class="muted">${desc}</span></span>
             </label>`).join('')}
         </div>
-        <div class="rf-row" id="rf-mg-row" ${form.shareModel === 'hybrid' ? 'style="opacity:.5;"' : ''}>
-          <label>Minimum guarantee (THB / machine / month)</label>
-          <input id="rf-mg-amt" type="number" min="0" value="${form.mgAmount}" ${d(form.shareModel === 'hybrid' || rawMode)}></div>
+        ${form.shareModel === 'hybrid' ? '' : `
+          <div style="margin:12px 0 6px"><label style="font-size:12.5px;color:var(--ink-soft);">Minimum guarantee — per machine type (THB / machine / month)</label></div>
+          <table class="row-form">
+            <thead><tr>
+              <th style="width:50%">Device type</th>
+              <th style="width:35%">Amount (THB/month)</th>
+              ${readOnly ? '' : '<th style="width:15%"></th>'}
+            </tr></thead>
+            <tbody>
+              ${(form.mgRows || []).map((r, i) => `<tr>
+                <td><select class="mg-model" data-i="${i}" ${d(rawMode)}>
+                  <option value="">— select —</option>
+                  <option value="ALL" ${r.model === 'ALL' ? 'selected' : ''}>All device types</option>
+                  ${(machineModels || []).map(m => `<option value="${escape(m.code)}" ${r.model===m.code?'selected':''}>${escape(m.displayName)}</option>`).join('')}
+                </select></td>
+                <td><input class="mg-amt" data-i="${i}" type="number" min="0" value="${r.amount||0}" ${d(rawMode)}></td>
+                ${readOnly ? '' : `<td style="text-align:center"><button class="mg-del btn-ghost" data-i="${i}" style="color:var(--loss);padding:4px 8px;font-size:13px;" ${rawMode?'disabled':''}>✕</button></td>`}
+              </tr>`).join('')}
+              ${(!readOnly && !rawMode) ? '<tr><td colspan="3" style="padding-top:4px"><button id="mg-add" class="add-row-btn">+ Add device type</button></td></tr>' : ''}
+            </tbody>
+          </table>`}
 
         ${readOnly ? '' : `<details ${rawMode?'open':''}>
           <summary style="cursor:pointer;color:#868e96;font-size:13px;">Advanced (raw JSON)</summary>
@@ -891,14 +909,31 @@ function renderStructuredRuleEditor(container, initialRule, machineModels, { rea
       form.placementRows.splice(+e.target.dataset.i, 1);
       draw();
     }));
+    container.querySelector('#mg-add')?.addEventListener('click', () => {
+      captureInputs();
+      form.mgRows.push({ model: '', amount: 0 });
+      draw();
+    });
+    container.querySelectorAll('.mg-del').forEach(btn => btn.addEventListener('click', e => {
+      captureInputs();
+      form.mgRows.splice(+e.target.dataset.i, 1);
+      draw();
+    }));
+  }
+
+  function syncMg() {
+    const models = container.querySelectorAll('.mg-model');
+    if (!models.length) return;   // table not shown (hybrid) — keep existing mgRows
+    const amts = container.querySelectorAll('.mg-amt');
+    form.mgRows = Array.from(models).map((sel, i) => ({ model: sel.value, amount: Number(amts[i]?.value || 0) }));
   }
 
   // Read current input values into `form` so a redraw doesn't lose edits.
   function captureInputs() {
-    const gp = container.querySelector('#rf-gp');     if (gp) form.gpPercent   = Number(gp.value || 0);
-    const el = container.querySelector('#rf-elec');   if (el) form.electricity = Number(el.value || 0);
-    const mg = container.querySelector('#rf-mg-amt'); if (mg) form.mgAmount    = Number(mg.value || 0);
+    const gp = container.querySelector('#rf-gp');   if (gp) form.gpPercent   = Number(gp.value || 0);
+    const el = container.querySelector('#rf-elec'); if (el) form.electricity = Number(el.value || 0);
     syncPlacement();
+    syncMg();
   }
 
   draw();
