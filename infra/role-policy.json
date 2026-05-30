@@ -8,6 +8,11 @@
         "dynamodb:DeleteItem","dynamodb:Query"
       ],
       "Resource": "arn:aws:dynamodb:ap-southeast-7:812751451548:table/RevsharePartner"
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:PutObject"],
+      "Resource": "arn:aws:s3:::revshare-runs-812751451548-sea7/*"
     }
   ]
 }

@@ -5,17 +5,24 @@ import { strict as assert } from 'node:assert';
 function groupOrders(orders, merchantMap) {
   const groups = {};
   const unmatchedSet = new Set();
+  let unmatchedOrderCount = 0;
+  let unmatchedRevenue = 0;
   for (const { merchantName, netAmount } of orders) {
     const key = (merchantName || '').toLowerCase().trim();
     const merchant = merchantMap[key];
-    if (!merchant) { unmatchedSet.add(merchantName); continue; }
+    if (!merchant) {
+      unmatchedSet.add(merchantName);
+      unmatchedOrderCount++;
+      unmatchedRevenue += Number(netAmount) || 0;
+      continue;
+    }
     if (!groups[merchant.partnerId]) groups[merchant.partnerId] = [];
     const g = groups[merchant.partnerId];
     const existing = g.find(m => m.merchantId === merchant.merchantId);
     if (existing) { existing.rentals++; existing.revenue += netAmount; }
     else g.push({ merchantId: merchant.merchantId, merchantName: merchant.name, model: merchant.machineModel || 'S8', rentals: 1, revenue: netAmount });
   }
-  return { groups, unmatched: [...unmatchedSet] };
+  return { groups, unmatched: [...unmatchedSet], unmatchedOrderCount, unmatchedRevenue };
 }
 
 const MERCHANT_MAP = {
@@ -41,6 +48,18 @@ test('groupOrders: unknown merchant goes to unmatched', () => {
   assert.equal(unmatched.length, 1);
   assert.equal(unmatched[0], 'Unknown Place');
   assert.deepEqual(groups, {});
+});
+
+test('groupOrders: tallies unmatched order count and revenue (distinct from name count)', () => {
+  const { unmatched, unmatchedOrderCount, unmatchedRevenue } = groupOrders([
+    { merchantName: 'Ghost Mall', netAmount: 30 },
+    { merchantName: 'Ghost Mall', netAmount: 45 },   // same unmatched name, 2 orders
+    { merchantName: 'Nowhere Cafe', netAmount: 12.5 },
+    { merchantName: '7-Eleven Store A', netAmount: 99 }, // matched — excluded
+  ], MERCHANT_MAP);
+  assert.equal(unmatched.length, 2);          // distinct names
+  assert.equal(unmatchedOrderCount, 3);       // total unmatched orders
+  assert.equal(unmatchedRevenue, 87.5);       // 30 + 45 + 12.5
 });
 
 test('groupOrders: name matching is case-insensitive and trims whitespace', () => {

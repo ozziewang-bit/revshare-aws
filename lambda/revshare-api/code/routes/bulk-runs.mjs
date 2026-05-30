@@ -4,17 +4,24 @@ import { evaluateRun } from '../engine.mjs';
 export function groupOrders(orders, merchantMap) {
   const groups = {};
   const unmatchedSet = new Set();
+  let unmatchedOrderCount = 0;
+  let unmatchedRevenue = 0;
   for (const { merchantName, netAmount } of orders) {
     const key = (merchantName || '').toLowerCase().trim();
     const merchant = merchantMap[key];
-    if (!merchant) { unmatchedSet.add(merchantName); continue; }
+    if (!merchant) {
+      unmatchedSet.add(merchantName);
+      unmatchedOrderCount++;
+      unmatchedRevenue += Number(netAmount) || 0;
+      continue;
+    }
     if (!groups[merchant.partnerId]) groups[merchant.partnerId] = [];
     const g = groups[merchant.partnerId];
     const existing = g.find(m => m.merchantId === merchant.merchantId);
     if (existing) { existing.rentals++; existing.revenue += netAmount; }
     else g.push({ merchantId: merchant.merchantId, merchantName: merchant.name, model: merchant.machineModel || 'S8', rentals: 1, revenue: netAmount });
   }
-  return { groups, unmatched: [...unmatchedSet] };
+  return { groups, unmatched: [...unmatchedSet], unmatchedOrderCount, unmatchedRevenue };
 }
 
 export async function createBulkRunRoute(event) {
@@ -28,7 +35,7 @@ export async function createBulkRunRoute(event) {
   const merchantMap = Object.fromEntries(allMerchants.map(m => [m.nameLower, m]));
   const partnerMap = Object.fromEntries(allPartners.map(p => [p.partnerId, p]));
 
-  const { groups, unmatched } = groupOrders(orders, merchantMap);
+  const { groups, unmatched, unmatchedOrderCount, unmatchedRevenue } = groupOrders(orders, merchantMap);
 
   const results = [];
   const ruleSnapshots = {};
@@ -78,6 +85,8 @@ export async function createBulkRunRoute(event) {
     merchantCount: Object.values(groups).flat().length,
     partnerCount: results.length,
     unmatchedCount: unmatched.length,
+    unmatchedOrderCount,
+    unmatchedRevenue,
     totalPayout,
     results,
     unmatched,

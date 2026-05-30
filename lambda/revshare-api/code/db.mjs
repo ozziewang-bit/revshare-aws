@@ -2,12 +2,15 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import {
   DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand, DeleteCommand
 } from '@aws-sdk/lib-dynamodb';
+import { S3Client, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { ulid } from 'ulid';
 
 const REGION = process.env.AWS_REGION || 'ap-northeast-1';
 const TABLE  = process.env.REVSHARE_TABLE || 'RevsharePartner';
+const RUNS_BUCKET = process.env.REVSHARE_RUNS_BUCKET || 'revshare-runs-812751451548-sea7';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }));
+const s3 = new S3Client({ region: REGION });
 
 export async function listPartners() {
   const out = await ddb.send(new QueryCommand({
@@ -108,9 +111,34 @@ export async function deleteMerchant(merchantId) {
 // ── Bulk Runs ─────────────────────────────────────────────────────────────
 
 export async function putBulkRun(bulkRun) {
-  const item = { pk: 'BULKRUN', sk: `BULKRUN#${bulkRun.runId}`, ...bulkRun };
+  const s3Key = `runs/${bulkRun.runId}.json`;
+  // Full payload goes to S3 — bulk runs can exceed DynamoDB's 400 KB item limit.
+  await s3.send(new PutObjectCommand({
+    Bucket: RUNS_BUCKET,
+    Key: s3Key,
+    Body: JSON.stringify(bulkRun),
+    ContentType: 'application/json'
+  }));
+  // Slim summary index in DynamoDB drives the list view + getBulkRun lookup.
+  const item = {
+    pk: 'BULKRUN',
+    sk: `BULKRUN#${bulkRun.runId}`,
+    s3Key,
+    runId: bulkRun.runId,
+    periodStart: bulkRun.periodStart,
+    periodEnd: bulkRun.periodEnd,
+    uploadedAt: bulkRun.uploadedAt,
+    orderCount: bulkRun.orderCount ?? 0,
+    merchantCount: bulkRun.merchantCount ?? 0,
+    partnerCount: bulkRun.partnerCount ?? 0,
+    unmatchedCount: bulkRun.unmatchedCount ?? 0,
+    unmatchedOrderCount: bulkRun.unmatchedOrderCount ?? 0,
+    unmatchedRevenue: bulkRun.unmatchedRevenue ?? 0,
+    totalPayout: bulkRun.totalPayout ?? 0,
+    warningCount: (bulkRun.warnings || []).length
+  };
   await ddb.send(new PutCommand({ TableName: TABLE, Item: item }));
-  return item;
+  return bulkRun;
 }
 
 export async function listBulkRuns() {
@@ -128,7 +156,13 @@ export async function getBulkRun(runId) {
     TableName: TABLE,
     Key: { pk: 'BULKRUN', sk: `BULKRUN#${runId}` }
   }));
-  return out.Item || null;
+  const item = out.Item;
+  if (!item) return null;
+  if (item.s3Key) {
+    const obj = await s3.send(new GetObjectCommand({ Bucket: RUNS_BUCKET, Key: item.s3Key }));
+    return JSON.parse(await obj.Body.transformToString());
+  }
+  return item;   // legacy run stored inline in DynamoDB (pre-S3)
 }
 
 // ── Machine Models ────────────────────────────────────────────────────────

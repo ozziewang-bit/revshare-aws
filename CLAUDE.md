@@ -83,6 +83,15 @@ Single DDB table `RevsharePartner`. Three row families:
 |---|---|---|
 | `PARTNER` | `META#<partnerId>` | Partner config + frozen rule tree. |
 | `RUN#<partnerId>` | `RUN#<runId>` | One run = one CSV upload + computed result. Includes `ruleSnapshot` (rule frozen at calc time) + `csvRaw` (base64) + `csvParsed` + `result`. |
+| `BULKRUN` | `BULKRUN#<runId>` | **Slim summary index only** (counts, totals, `s3Key`). Full payload (results, unmatched names, ruleSnapshots) lives in S3 — see below. |
+
+**Bulk-run payloads live in S3, not DynamoDB.** A bulk run over a full month
+(20k+ orders → ~1.5k merchants) exceeds DynamoDB's hard 400 KB item limit.
+So `putBulkRun` writes the full JSON to S3 (`s3://revshare-runs-812751451548-sea7/runs/<runId>.json`)
+and stores only a slim summary row in DDB. `getBulkRun` reads the slim row,
+then fetches the full payload from S3 via `s3Key` (legacy pre-S3 runs without
+`s3Key` are returned inline for backward compat). The Lambda role has
+`s3:GetObject`/`s3:PutObject` on that bucket only (see `infra/role-policy.json`).
 
 **Rule snapshot per run** is load-bearing: editing a partner's rule does NOT
 retroactively change old run results. Each run's PDF/statement reproduces
