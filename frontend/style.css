@@ -640,6 +640,46 @@ table.ts tfoot td {
 }
 .add-row-btn:hover { background: var(--accent-soft); }
 
+/* ---- Rule editor form (Rule tab + new-partner form) ---- */
+.rule-form { max-width: 600px; }
+.rule-form .rf-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 12px 2px;
+  border-bottom: 1px solid var(--border);
+}
+.rule-form .rf-row:last-of-type { border-bottom: none; }
+.rule-form .rf-row > label {
+  flex: 1 1 auto;
+  margin: 0;
+  font-size: 13.5px;
+  color: var(--ink-soft);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.rule-form .rf-row > input {
+  flex: 0 0 150px;
+  width: 150px;
+  margin: 0;
+  text-align: right;
+  background: var(--surface); color: var(--ink);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  font-size: 13.5px;
+}
+.rule-form .rf-row > input:focus {
+  outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.rule-form .rf-row > label input[type=checkbox] { flex: none; width: auto; margin: 0; }
+.rule-form .rf-row > input:disabled { background: var(--surface-muted); color: var(--ink-faint); }
+.rule-form .row-form { margin: 4px 0 16px; }
+.rule-form details { margin-top: 18px; padding-top: 6px; border-top: 1px solid var(--border); }
+
 /* ============ HERO (big payout number) ============ */
 .hero {
   font-family: var(--font-display);
