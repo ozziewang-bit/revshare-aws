@@ -317,7 +317,7 @@ function renderNav() {
   const nav = document.getElementById('topnav');
   nav.innerHTML = `
     <button id="nav-partners" class="nav-btn active">Partners</button>
-    <button id="nav-bulk-runs" class="nav-btn">Share Calculation</button>
+    <button id="nav-bulk-runs" class="nav-btn">Run share</button>
     <button id="nav-device-types" class="nav-btn">Device Types</button>
     <button id="nav-import" class="nav-btn">Update</button>`;
   nav.querySelector('#nav-partners').addEventListener('click', () => { setActiveNav('nav-partners'); renderPartnersList(); });
@@ -569,7 +569,7 @@ async function parseKaExcel(file) {
 
 async function renderBulkRunsList() {
   const main = document.getElementById('main');
-  main.innerHTML = `<div class="page-head"><h2>Share Calculation</h2><button id="new-bulk-run" class="btn-primary">+ New calculation</button></div><div id="bulk-runs-out">Loading…</div>`;
+  main.innerHTML = `<div class="page-head"><h2>Run share</h2><button id="new-bulk-run" class="btn-primary">+ New run</button></div><div id="bulk-runs-out">Loading…</div>`;
   document.getElementById('new-bulk-run').addEventListener('click', renderNewBulkRunForm);
   const runs = await api('/bulk-runs');
   const out = document.getElementById('bulk-runs-out');
@@ -609,7 +609,7 @@ function renderNewBulkRunForm() {
   main.innerHTML = `
     <div class="page-head">
       <button id="back" class="btn-ghost">← Back</button>
-      <h2>New Share Calculation</h2>
+      <h2>New run</h2>
     </div>
     <label>Year <input type="number" id="br-year" min="2020" max="2035" value="${now.getFullYear()}" style="width:100px;margin-left:8px;"></label>
     <label style="margin-top:12px;">Month
@@ -851,7 +851,7 @@ function downloadRevshareZip(run) {
 
 async function renderBulkRunDetail(runId) {
   const main = document.getElementById('main');
-  main.innerHTML = `<div class="page-head"><button id="back" class="btn-ghost">← Back</button><h2>Share Calculation</h2></div><div id="br-detail">Loading…</div>`;
+  main.innerHTML = `<div class="page-head"><button id="back" class="btn-ghost">← Back</button><h2>Run share</h2></div><div id="br-detail">Loading…</div>`;
   document.getElementById('back').addEventListener('click', renderBulkRunsList);
   const run = await api('/bulk-runs/' + runId);
   const el = document.getElementById('br-detail');
