@@ -14,7 +14,7 @@ aws s3 cp "$ROOT/frontend/style.css"    "s3://$BUCKET/style.css"    --content-ty
 aws s3 cp "$TMP"                        "s3://$BUCKET/app.js"       --content-type "application/javascript" --cache-control "no-cache"
 aws s3 cp "$ROOT/frontend/service-worker.js" "s3://$BUCKET/service-worker.js" --content-type "application/javascript" --cache-control "no-cache"
 aws s3 cp "$ROOT/frontend/manifest.json" "s3://$BUCKET/manifest.json" --content-type "application/manifest+json" --cache-control "no-cache"
-for f in icon-192.png icon-512.png apple-touch-icon.png; do
+for f in icon-192.png icon-512.png apple-touch-icon.png logo.png; do
   aws s3 cp "$ROOT/frontend/$f" "s3://$BUCKET/$f" --content-type "image/png" --cache-control "public,max-age=86400"
 done
 rm "$TMP"
