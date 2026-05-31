@@ -318,10 +318,12 @@ function renderNav() {
   nav.innerHTML = `
     <button id="nav-partners" class="nav-btn active">Partners</button>
     <button id="nav-bulk-runs" class="nav-btn">Run share</button>
+    <button id="nav-revshare-path" class="nav-btn">Revshare path</button>
     <button id="nav-device-types" class="nav-btn">Device Types</button>
     <button id="nav-import" class="nav-btn">Update</button>`;
   nav.querySelector('#nav-partners').addEventListener('click', () => { setActiveNav('nav-partners'); renderPartnersList(); });
   nav.querySelector('#nav-bulk-runs').addEventListener('click', () => { setActiveNav('nav-bulk-runs'); renderBulkRunsList(); });
+  nav.querySelector('#nav-revshare-path').addEventListener('click', () => { setActiveNav('nav-revshare-path'); renderRevsharePathScreen(); });
   nav.querySelector('#nav-device-types').addEventListener('click', () => { setActiveNav('nav-device-types'); renderDeviceTypesScreen(); });
   nav.querySelector('#nav-import').addEventListener('click', () => { setActiveNav('nav-import'); renderImportScreen(); });
 }
@@ -413,6 +415,58 @@ async function renderImportScreen() {
       out.innerHTML = `<p style="color:var(--loss);">Error: ${escape(err.message)}</p>`;
     }
   });
+}
+
+async function renderRevsharePathScreen() {
+  const main = document.getElementById('main');
+  main.innerHTML = `<div class="page-head"><h2>Revshare path</h2></div>
+    <div style="max-width:340px;margin-bottom:8px;">
+      <input id="rp-search" class="search-input" list="rp-options" placeholder="Search partner… (or Total)" autocomplete="off">
+      <datalist id="rp-options"></datalist>
+    </div>
+    <div id="rp-title" class="muted" style="margin:4px 0 10px;font-size:13px;"></div>
+    <div id="rp-chart">Loading…</div>`;
+
+  const list = await api('/bulk-runs');
+  const fulls = await Promise.all(list.map(r => api('/bulk-runs/' + r.runId)));
+  // one run per month (latest wins)
+  const byMonth = {};
+  fulls.forEach(run => {
+    const m = periodMonth(run.periodStart);
+    if (!byMonth[m] || (run.uploadedAt || '') > (byMonth[m].uploadedAt || '')) byMonth[m] = run;
+  });
+  const months = Object.keys(byMonth).sort();
+  const pct = (payout, revenue) => revenue > 0 ? payout / revenue * 100 : 0;
+
+  const totalSeries = months.map(m => {
+    const run = byMonth[m];
+    const revenue = (run.results || []).reduce((s, r) => s + (r.revenue || 0), 0);
+    const payout = run.totalPayout || 0;
+    return { month: m, revenue, payout, sharePct: pct(payout, revenue) };
+  });
+  const partnerSeries = {};
+  months.forEach(m => (byMonth[m].results || []).forEach(r => {
+    (partnerSeries[r.partnerName] = partnerSeries[r.partnerName] || []).push({ month: m, revenue: r.revenue || 0, payout: r.payout || 0, sharePct: pct(r.payout || 0, r.revenue || 0) });
+  }));
+  const names = Object.keys(partnerSeries).sort((a, b) => a.localeCompare(b));
+  const byLower = {}; names.forEach(n => { byLower[n.toLowerCase()] = n; });
+
+  document.getElementById('rp-options').innerHTML = ['Total', ...names].map(n => `<option value="${escape(n)}"></option>`).join('');
+
+  function show(sel) {
+    const titleEl = document.getElementById('rp-title');
+    const chartEl = document.getElementById('rp-chart');
+    const key = (sel || '').trim().toLowerCase();
+    let label, data;
+    if (!key || key === 'total') { label = 'Total — all partners'; data = totalSeries; }
+    else if (byLower[key]) { label = byLower[key]; data = partnerSeries[byLower[key]]; }
+    else { titleEl.textContent = ''; chartEl.innerHTML = `<p class="muted">No partner matching “${escape(sel)}”.</p>`; return; }
+    titleEl.textContent = label;
+    chartEl.innerHTML = data && data.length ? revsharePathChartSvg(data) : '<p class="muted">No calculations yet to chart.</p>';
+  }
+
+  document.getElementById('rp-search').addEventListener('input', e => show(e.target.value));
+  show('Total');   // default
 }
 
 async function renderDeviceTypesScreen() {
