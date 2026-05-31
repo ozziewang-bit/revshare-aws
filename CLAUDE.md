@@ -1,6 +1,7 @@
 # revshare-aws — handoff
 
-Last updated: 2026-05-28 (initial v1 shipped end-to-end).
+Last updated: 2026-05-31 (rule model overhaul, S3 runs, Analytics/Update tabs, Thailand branding).
+Service-worker `CACHE_VERSION` is at `revshare-v56` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
 end-to-end before touching anything. The codebase is the ultimate source of
@@ -15,6 +16,61 @@ to produce an auditable payout breakdown plus a printable PDF statement.
 
 Full design spec: [`docs/superpowers/specs/2026-05-28-revshare-design.md`](docs/superpowers/specs/2026-05-28-revshare-design.md).
 Initial implementation plan (33 tasks): [`docs/superpowers/plans/2026-05-28-revshare.md`](docs/superpowers/plans/2026-05-28-revshare.md).
+
+## 1b. CURRENT STATE (2026-05-31) — read this, the sections below are partly stale
+
+Branding: app is **"RevShare CHARGESPOT Thailand"** (title/manifest/topbar). Topbar
+shows the ChargeSpot logo (`frontend/logo.png`) + "RevShare Thailand". Per-region;
+swap name in index.html/manifest.json + `logo.png` for other regions.
+
+**UI tabs (frontend/app.js):**
+- **Partners** — partner list + detail (Merchants / Rule / Analytics tabs).
+- **Run share** (was "Share Calculation") — bulk monthly calc. Upload an order
+  report (xlsx), it parses orders (excludes only `unpaid`; refunded kept),
+  groups by partner via merchant registry, runs each partner's rule, stores a run.
+  Run detail has: per-partner table w/ revenue-share %, unmatched-orders banner,
+  per-partner CSV zip download (`<year>_<month>_revshare.zip`), and per-run Delete.
+- **Analytics** (global + per-partner tab) — monthly combo chart (Revenue/Payout
+  bars + Revenue-share % line, data labels). Global tab defaults to Total (all
+  partners) with a partner search/filter. Built from stored run results.
+- **Device Types** — machine-model CRUD.
+- **Update** (was "Import") — **global rule batch update from CSV**. One file
+  updates many partners: columns `Partner Name, Merchant Name, Device Type,
+  GP (%), Electricity, Placement, Others, Min Guarantee, Payout Method`. Rows
+  group by Partner Name → existing partners' rules overwritten, new partners
+  created, merchants upserted. (KA Excel import was removed from the UI;
+  `parseKaExcel` + `/import/rev-share` code still exist but are unreachable.)
+
+**Rule model (NEW — replaces the old leaf-tree editor UX):** a partner's rule is
+built from **share terms** + a **payout method**. Terms: GP% (percent of revenue),
+Electricity (lump), Placement (**per machine type**), Others (lump), and MG
+(Minimum Guarantee, **per machine type**). Four payout methods (`form.method`):
+- `default` (code **D**) — single term, just pay it.
+- `hybrid` (code **H**) — sum of all terms.
+- `higher` (code **WH**) — `max(each term…, MG)`.
+- `hybrid-higher` (code **HH**) — `max(sum of terms, MG)`.
+`compileRule`/`decompileRule` (frontend `app.js` + backend `routes/import.mjs`)
+tag leaves with `_t` (term) and the root with `_method` so decompile is exact;
+legacy untagged rules fall back to heuristics. **Engine is unchanged** — it still
+just evaluates `sum`/`max`/`percent`/`flat_per_machine`/`flat_per_partner_total`.
+
+**Business rule (load-bearing):** KA "Placement (monthly)" is charged **per
+machine / per store** (`flat_per_machine`), NOT a partner lump. MG is also
+per machine, varying by device type. (The old import wrongly treated placement
+as a lump and MG as a single flat amount — fixed 2026-05-31.)
+
+**Bulk runs are stored in S3** (see §5), not inline in DDB.
+
+**Immutability:** a run is a frozen snapshot (results + `ruleSnapshots` in S3).
+Batch-updating rules NEVER alters past runs — only the partner's current rule,
+affecting future runs only. There is no in-place recompute for bulk runs by
+design (user requirement: keep historical periods as-is).
+
+**Current data:** 112 partners, all rules regenerated into the new shape from
+the KA file on 2026-05-31. The canonical 2026-05 run total is **680,172.65**
+(per-machine placement); an earlier 528,383.32 run is superseded but still stored.
+
+Tests: `npm test` → **50/50** pass.
 
 ## 2. Live URLs and resources
 
