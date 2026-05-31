@@ -746,13 +746,34 @@ table.ts tfoot td {
 
 /* ============ RESPONSIVE ============ */
 @media (max-width: 760px) {
-  .topbar { padding: 0 16px; }
-  #main { padding: 20px 16px 96px; }
+  /* topbar: brand on top, nav wraps to a full-width scrollable pill row */
+  .topbar { height: auto; flex-wrap: wrap; gap: 8px; padding: 10px 14px; }
+  .brand { font-size: 14px; }
+  .brand-logo { height: 20px; }
+  .brand-text { padding-left: 8px; margin-left: 0; }
+  #topnav { order: 2; width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; flex-wrap: nowrap; }
+  #topnav::-webkit-scrollbar { display: none; }
+  .nav-btn { white-space: nowrap; flex: 0 0 auto; padding: 6px 13px; }
+
+  #main { padding: 18px 14px 96px; }
   h1 { font-size: 24px; }
-  h2 { font-size: 20px; }
-  .hero { font-size: 42px; }
-  .page-head { flex-direction: column; align-items: flex-start; }
+  h2 { font-size: 19px; }
+  .hero { font-size: 40px; }
+  .page-head { flex-direction: column; align-items: flex-start; gap: 10px; }
   .page-head > div:last-child { width: 100%; }
   .add-picker .ap-grid { grid-template-columns: 1fr; }
-  table.ts thead th, table.ts tbody td { padding: 10px 12px; font-size: 12.5px; }
+
+  /* wide tables scroll horizontally instead of overflowing the screen */
+  table.ts { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  table.ts thead th, table.ts tbody td, table.ts tfoot td { padding: 10px 12px; font-size: 12.5px; white-space: nowrap; }
+
+  /* rule editor: payout-method cards + the form stack full width */
+  .rule-form { max-width: 100%; }
+  .rule-form .model-options .model-opt, .rule-form .model-options-4 .model-opt { flex: 1 1 100%; }
+  .rule-form .formula-box { overflow-x: auto; }
+  .rule-form .row-form { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .rule-form .rf-row > input, .rule-form .rf-row > .term-ctl > input { flex-basis: 120px; width: 120px; }
+
+  /* analytics search full width */
+  .search-input { width: 100%; box-sizing: border-box; }
 }
