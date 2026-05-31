@@ -85,11 +85,13 @@ function decompileRule(rule) {
 }
 
 const PAYOUT_METHOD_META = [
-  { val: 'default',       title: 'Default',             desc: 'Single term — just pay it' },
-  { val: 'hybrid',        title: 'Hybrid',              desc: 'All terms summed' },
-  { val: 'higher',        title: 'Whichever is higher', desc: 'Highest of each term, incl. MG' },
-  { val: 'hybrid-higher', title: 'Hybrid-higher',       desc: 'max( summed terms , MG )' },
+  { val: 'default',       code: 'D',  title: 'Default',             desc: 'Single term — just pay it' },
+  { val: 'hybrid',        code: 'H',  title: 'Hybrid',              desc: 'All terms summed' },
+  { val: 'higher',        code: 'WH', title: 'Whichever is higher', desc: 'Highest of each term, incl. MG' },
+  { val: 'hybrid-higher', code: 'HH', title: 'Hybrid-higher',       desc: 'max( summed terms , MG )' },
 ];
+const codeToMethod = c => (PAYOUT_METHOD_META.find(m => m.code === String(c || '').trim().toUpperCase()) || {}).val || 'hybrid';
+const methodToCode = v => (PAYOUT_METHOD_META.find(m => m.val === v) || {}).code || 'H';
 
 function presentTermLabels(form) {
   const out = [];
@@ -117,7 +119,7 @@ function payoutFormula(form) {
 }
 
 // Share-terms CSV: amounts only. The payout model lives in the partner page.
-const SHARE_TERMS_CSV_HEADER = 'Merchant Name,Device Type,GP (%),Electricity (THB/month),Placement (THB/month),Others (THB/month),Min Guarantee (THB/machine/month)';
+const SHARE_TERMS_CSV_HEADER = 'Merchant Name,Device Type,GP (%),Electricity (THB/month),Placement (THB/month),Others (THB/month),Min Guarantee (THB/machine/month),Payout Method';
 
 function shareTermsCsvRow(q, m, machineModels, form) {
   const modelDisplay = m.machineModel
@@ -125,7 +127,52 @@ function shareTermsCsvRow(q, m, machineModels, form) {
     : '';
   const placement = (form.placementRows || []).find(r => r.model === m.machineModel || r.model === 'ALL')?.amount ?? 0;
   const mg = (form.mgRows || []).find(r => r.model === m.machineModel || r.model === 'ALL')?.amount ?? 0;
-  return [q(m.name), q(modelDisplay), form.gpPercent, form.electricity, placement, form.others ?? 0, mg].join(',');
+  return [q(m.name), q(modelDisplay), form.gpPercent, form.electricity, placement, form.others ?? 0, mg, methodToCode(form.method)].join(',');
+}
+
+// Parse the global rule-batch CSV: one row per merchant with term amounts + a payout-method code.
+function parseRuleBatchCsv(text, machineModels) {
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  if (!lines.length) return [];
+  const MODELS = new Set((machineModels || []).map(m => m.code).concat(['S5','S8','S10','T8','T10','T20','T35','L20','L40']));
+  const displayToCode = {};
+  (machineModels || []).forEach(m => { displayToCode[m.displayName.toLowerCase()] = m.code; });
+  const dataLines = lines[0].toLowerCase().includes('name') ? lines.slice(1) : lines;
+  const num = v => Number(String(v ?? '').replace(/[^0-9.\-]/g, '')) || 0;
+  return dataLines.map(line => {
+    const f = parseCsvLine(line);
+    const name = (f[0] || '').trim();
+    const mi = (f[1] || '').trim();
+    const model = MODELS.has(mi.toUpperCase()) ? mi.toUpperCase() : (displayToCode[mi.toLowerCase()] || null);
+    return {
+      name, model,
+      gpPercent: num(f[2]), electricity: num(f[3]), placement: num(f[4]),
+      others: num(f[5]), mg: num(f[6]), method: codeToMethod(f[7]),
+    };
+  }).filter(r => r.name);
+}
+
+// Group rule-batch rows by partner (via merchant→partner lookup) and build each partner's rule.
+function buildRuleBatchUpdates(rows, merchantByName) {
+  const groups = {};
+  const unmatched = [];
+  for (const r of rows) {
+    const merchant = merchantByName[(r.name || '').toLowerCase().trim()];
+    if (!merchant) { unmatched.push(r.name); continue; }
+    (groups[merchant.partnerId] = groups[merchant.partnerId] || []).push(r);
+  }
+  const updates = Object.entries(groups).map(([partnerId, rs]) => {
+    const first = rs[0];
+    const placementRows = [], mgRows = [];
+    for (const r of rs) {
+      if (r.model && r.placement > 0 && !placementRows.some(x => x.model === r.model)) placementRows.push({ model: r.model, amount: r.placement });
+      if (r.model && r.mg > 0 && !mgRows.some(x => x.model === r.model)) mgRows.push({ model: r.model, amount: r.mg });
+    }
+    const pick = key => (rs.find(r => Number(r[key]) > 0) || first)[key] || 0;
+    const form = { gpPercent: pick('gpPercent'), electricity: pick('electricity'), others: pick('others'), placementRows, mgRows, method: first.method };
+    return { partnerId, rule: compileRule(form), form, rowCount: rs.length };
+  });
+  return { updates, unmatched };
 }
 
 function readExcel(file) {
@@ -275,7 +322,73 @@ async function renderImportScreen() {
       <button type="button" id="import-choose" class="btn">Choose file</button>
       <div id="import-file-name" class="upload-hint"></div>
     </div>
-    <div id="import-preview" style="margin-top:16px;"></div>`;
+    <div id="import-preview" style="margin-top:16px;"></div>
+
+    <div style="border-top:1px solid var(--border);margin:32px 0 0;padding-top:24px;"></div>
+    <div class="page-head"><h2>Batch update partner rules (CSV)</h2></div>
+    <p class="muted">Upload a share-terms CSV (amounts + <strong>Payout Method</strong> code). Each row's partner is found by merchant name, and <strong>every matched partner's rule is overwritten</strong> from its rows. Codes: <code>D</code> Default · <code>H</code> Hybrid · <code>WH</code> Whichever higher · <code>HH</code> Hybrid-higher.</p>
+    <div style="display:flex;gap:8px;margin:8px 0 12px;">
+      <button id="rb-sample" class="btn">↓ Sample / template CSV</button>
+    </div>
+    <input id="rb-file" type="file" accept=".csv,text/csv" style="display:none">
+    <div id="rb-file-zone" class="upload-zone" style="cursor:pointer;max-width:520px;">
+      <p>Choose the rule CSV or drag it here</p>
+      <button type="button" id="rb-choose" class="btn">Choose file</button>
+      <div id="rb-file-name" class="upload-hint"></div>
+    </div>
+    <div id="rb-preview" style="margin-top:16px;"></div>`;
+
+  document.getElementById('rb-choose').addEventListener('click', () => document.getElementById('rb-file').click());
+  document.getElementById('rb-file-zone').addEventListener('click', e => { if (e.target.id !== 'rb-choose') document.getElementById('rb-file').click(); });
+  document.getElementById('rb-sample').addEventListener('click', async () => {
+    const machineModels = await api('/machine-models');
+    const q = s => `"${String(s).replace(/"/g, '""')}"`;
+    const ex = machineModels.slice(0, 2).map((m, i) => `${q('Example Store ' + (i + 1))},${q(m.displayName)},50,0,0,0,${i === 0 ? 200 : 0},${i === 0 ? 'HH' : 'H'}`);
+    if (!ex.length) ex.push('"Example Store","Advertising Player-S8",50,0,0,0,200,HH');
+    const csv = [SHARE_TERMS_CSV_HEADER, ...ex].join('\n') + '\n';
+    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = 'rule-batch-template.csv';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+  });
+  document.getElementById('rb-file').addEventListener('change', async e => {
+    const file = e.target.files[0]; if (!file) return;
+    document.getElementById('rb-file-name').textContent = file.name;
+    const out = document.getElementById('rb-preview');
+    out.innerHTML = 'Parsing…';
+    try {
+      const [text, machineModels, merchants, partners] = await Promise.all([
+        file.text(), api('/machine-models'), api('/merchants'), api('/partners')
+      ]);
+      const rows = parseRuleBatchCsv(text, machineModels);
+      const merchantByName = Object.fromEntries(merchants.map(m => [m.nameLower, m]));
+      const partnerById = Object.fromEntries(partners.map(p => [p.partnerId, p]));
+      const { updates, unmatched } = buildRuleBatchUpdates(rows, merchantByName);
+      if (!updates.length) { out.innerHTML = `<p style="color:var(--loss);">No rows matched a known merchant. ${unmatched.length} unmatched.</p>`; return; }
+      out.innerHTML = `
+        <h3>Preview</h3>
+        <p>${updates.length} partner rule(s) will be <strong>overwritten</strong> from ${rows.length} row(s).${unmatched.length ? ` <span style="color:#e67700;">${unmatched.length} row(s) had unknown merchants (skipped).</span>` : ''}</p>
+        <table class="ts"><thead><tr><th>Partner</th><th>Method</th><th>New payout formula</th></tr></thead>
+        <tbody>${updates.map(u => `<tr>
+          <td>${escape(partnerById[u.partnerId]?.name || u.partnerId)}</td>
+          <td>${escape((PAYOUT_METHOD_META.find(m => m.val === u.form.method) || {}).title || u.form.method)}</td>
+          <td style="font-family:var(--font-mono,monospace);font-size:12px;">${escape(payoutFormula(u.form))}</td>
+        </tr>`).join('')}</tbody></table>
+        <button id="rb-confirm" class="btn-primary" style="margin-top:16px;">Overwrite ${updates.length} partner rule(s)</button>`;
+      document.getElementById('rb-confirm').addEventListener('click', async () => {
+        const btn = document.getElementById('rb-confirm');
+        btn.disabled = true; btn.textContent = 'Updating…';
+        let ok = 0, fail = 0;
+        await Promise.all(updates.map(u =>
+          api('/partners/' + u.partnerId, { method: 'PUT', body: JSON.stringify({ rule: u.rule }) })
+            .then(() => ok++).catch(() => fail++)
+        ));
+        out.innerHTML = `<div style="color:#2f9e44;font-weight:600;">Done — ${ok} partner rule(s) updated${fail ? `, ${fail} failed` : ''}.</div>`;
+      });
+    } catch (err) {
+      out.innerHTML = `<p style="color:var(--loss);">Error: ${escape(err.message)}</p>`;
+    }
+  });
 
   document.getElementById('import-choose').addEventListener('click', () => document.getElementById('import-file').click());
   document.getElementById('import-file-zone').addEventListener('click', e => { if (e.target.id !== 'import-choose') document.getElementById('import-file').click(); });
@@ -1323,9 +1436,9 @@ function showBatchCsvPanel(partnerId, machineModels, onDone) {
     const q = s => `"${String(s).replace(/"/g, '""')}"`;
     const header = SHARE_TERMS_CSV_HEADER;
     const examples = machineModels.slice(0, 3).map((m, i) =>
-      `${q('Example Store ' + (i + 1))},${q(m.displayName)},15,200,1500,0,800`
+      `${q('Example Store ' + (i + 1))},${q(m.displayName)},15,200,1500,0,800,HH`
     );
-    if (!examples.length) examples.push('"Example Store","Advertising Player-S5",15,200,1500,0,800');
+    if (!examples.length) examples.push('"Example Store","Advertising Player-S5",15,200,1500,0,800,HH');
     const csv = [header, ...examples].join('\n') + '\n';
     const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
@@ -1566,7 +1679,7 @@ async function downloadSampleCsv(partnerId) {
   const header = SHARE_TERMS_CSV_HEADER;
   const rows = merchants.map(m => shareTermsCsvRow(q, m, machineModels, form));
   const fallback = rows.length === 0
-    ? ['"Example Store","Advertising Player-S5",15,200,1500,0,800']
+    ? ['"Example Store","Advertising Player-S5",15,200,1500,0,800,HH']
     : rows;
   const csv = [header, ...fallback].join('\n') + '\n';
   const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
