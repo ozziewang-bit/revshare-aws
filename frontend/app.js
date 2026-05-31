@@ -5,34 +5,40 @@ const CURRENCIES = ['TWD', 'USD', 'HKD', 'JPY', 'IDR', 'THB'];
 
 // ── Rule form helpers ──────────────────────────────────────────────────────
 
-// Each share term is marked 'add' or 'compare'. MG is always a floor.
-// Payout = max( sum of Add terms, each Compare term, MG ).
-// Leaves are tagged (_t = term, _m = mode) so decompile is unambiguous.
-function compileRule(form) {
-  const { gpPercent, gpMode, electricity, elecMode, placementRows, placeMode, others, othersMode, mgRows } = form;
-  const adds = [], compares = [];
-  const place = (mode, leaf) => { (mode === 'compare' ? compares : adds).push(leaf); };
+// Four payout methods (form.method):
+//   default       → single term payout (just the one term)
+//   hybrid        → sum of all terms
+//   higher        → max( each term … , MG )           — highest single term incl. MG
+//   hybrid-higher → max( sum of terms , MG )           — summed terms vs MG, whichever higher
+// Leaves are tagged (_t = term), root tagged (_method) so decompile is exact.
+const PAYOUT_METHODS = ['default', 'hybrid', 'higher', 'hybrid-higher'];
 
-  if (Number(gpPercent) > 0)
-    place(gpMode, { type: 'percent', _t: 'gp', _m: gpMode || 'add', rows: [{ model: 'ALL', percent: Number(gpPercent) }] });
-  if (Number(electricity) > 0)
-    place(elecMode, { type: 'flat_per_partner_total', _t: 'elec', _m: elecMode || 'add', amount: Number(electricity) });
+function compileRule(form) {
+  const { gpPercent, electricity, placementRows, others, mgRows } = form;
+  const method = PAYOUT_METHODS.includes(form.method) ? form.method : 'hybrid';
+  const terms = [];
+  if (Number(gpPercent) > 0) terms.push({ type: 'percent', _t: 'gp', rows: [{ model: 'ALL', percent: Number(gpPercent) }] });
+  if (Number(electricity) > 0) terms.push({ type: 'flat_per_partner_total', _t: 'elec', amount: Number(electricity) });
   const vp = (placementRows || []).filter(r => r.model && Number(r.amount) > 0);
-  if (vp.length)
-    place(placeMode, { type: 'flat_per_machine', _t: 'placement', _m: placeMode || 'add', rows: vp.map(r => ({ model: r.model, amount: Number(r.amount) })) });
-  if (Number(others) > 0)
-    place(othersMode, { type: 'flat_per_partner_total', _t: 'others', _m: othersMode || 'add', amount: Number(others) });
+  if (vp.length) terms.push({ type: 'flat_per_machine', _t: 'placement', rows: vp.map(r => ({ model: r.model, amount: Number(r.amount) })) });
+  if (Number(others) > 0) terms.push({ type: 'flat_per_partner_total', _t: 'others', amount: Number(others) });
   const vmg = (mgRows || []).filter(r => r.model && Number(r.amount) > 0);
   const mgLeaf = vmg.length ? { type: 'flat_per_machine', _t: 'mg', rows: vmg.map(r => ({ model: r.model, amount: Number(r.amount) })) } : null;
 
-  const candidates = [];
-  if (adds.length) candidates.push(adds.length === 1 ? adds[0] : { type: 'sum', children: adds });
-  candidates.push(...compares);
-  if (mgLeaf) candidates.push(mgLeaf);
+  const zero = () => ({ type: 'percent', _t: 'gp', rows: [{ model: 'ALL', percent: 0 }] });
+  const sumOf = list => list.length === 0 ? zero() : (list.length === 1 ? list[0] : { type: 'sum', children: list });
 
-  if (!candidates.length) return { type: 'percent', _t: 'gp', _m: 'add', rows: [{ model: 'ALL', percent: 0 }] };
-  if (candidates.length === 1) return candidates[0];
-  return { type: 'max', children: candidates };
+  let rule;
+  if (method === 'higher') {
+    const cands = mgLeaf ? [...terms, mgLeaf] : [...terms];
+    rule = cands.length === 0 ? zero() : (cands.length === 1 ? cands[0] : { type: 'max', children: cands });
+  } else if (method === 'hybrid-higher') {
+    const s = sumOf(terms);
+    rule = mgLeaf ? { type: 'max', children: [s, mgLeaf] } : s;
+  } else {
+    rule = sumOf(terms);   // default | hybrid (MG not used)
+  }
+  return { ...rule, _method: method };
 }
 
 function legacyRole(node, ctx) {
@@ -43,13 +49,12 @@ function legacyRole(node, ctx) {
 }
 
 function decompileRule(rule) {
-  const base = { gpPercent: 0, gpMode: 'add', electricity: 0, elecMode: 'add', placementRows: [], placeMode: 'add', others: 0, othersMode: 'add', mgRows: [] };
+  const base = { gpPercent: 0, electricity: 0, placementRows: [], others: 0, mgRows: [], method: 'hybrid' };
   // mgEnabled/mgAmount kept for back-compat with the share-terms CSV export.
-  const compat = f => ({ ...f, mgEnabled: (f.mgRows && f.mgRows.length > 0), mgAmount: f.mgRows?.[0]?.amount ?? 0 });
-  if (!rule || typeof rule !== 'object') return compat(base);
+  const compat = f => ({ ...f, mgEnabled: f.mgRows.length > 0, mgAmount: f.mgRows[0]?.amount ?? 0 });
+  if (!rule || typeof rule !== 'object') return compat({ ...base, placementRows: [], mgRows: [] });
   const rowsOf = n => (n.rows || []).map(r => ({ model: r.model, amount: r.amount ?? 0 }));
 
-  // Flatten leaves, tracking context (inside a sum → add; a max child → compare).
   const leaves = [];
   (function walk(n, ctx) {
     if (!n || typeof n !== 'object') return;
@@ -58,49 +63,57 @@ function decompileRule(rule) {
     else leaves.push({ node: n, ctx });
   })(rule, rule.type === 'max' ? 'max' : 'add');
 
-  const f = { ...base };
+  const f = { ...base, placementRows: [], mgRows: [] };
   for (const { node, ctx } of leaves) {
     const role = node._t || legacyRole(node, ctx);
-    const mode = node._m || (ctx === 'max' ? 'compare' : 'add');
-    if (role === 'gp')             { f.gpPercent = node.rows?.[0]?.percent ?? 0; f.gpMode = mode; }
-    else if (role === 'elec')      { f.electricity = node.amount ?? 0; f.elecMode = mode; }
-    else if (role === 'placement') { f.placementRows.push(...rowsOf(node)); f.placeMode = mode; }
-    else if (role === 'others')    { f.others = node.amount ?? 0; f.othersMode = mode; }
-    else if (role === 'mg')        { f.mgRows.push(...rowsOf(node)); }
+    if (role === 'gp') f.gpPercent = node.rows?.[0]?.percent ?? 0;
+    else if (role === 'elec') f.electricity = node.amount ?? 0;
+    else if (role === 'placement') f.placementRows.push(...rowsOf(node));
+    else if (role === 'others') f.others = node.amount ?? 0;
+    else if (role === 'mg') f.mgRows.push(...rowsOf(node));
+  }
+
+  if (PAYOUT_METHODS.includes(rule._method)) {
+    f.method = rule._method;
+  } else if (rule.type === 'max') {
+    f.method = (rule.children || []).some(c => c.type === 'sum') ? 'hybrid-higher' : 'higher';
+  } else {
+    const termCount = [f.gpPercent > 0, f.electricity > 0, f.placementRows.length > 0, f.others > 0].filter(Boolean).length;
+    f.method = termCount <= 1 ? 'default' : 'hybrid';
   }
   return compat(f);
 }
 
-// Which terms are present (have a value), with their mode.
-function presentTerms(form) {
+const PAYOUT_METHOD_META = [
+  { val: 'default',       title: 'Default',             desc: 'Single term — just pay it' },
+  { val: 'hybrid',        title: 'Hybrid',              desc: 'All terms summed' },
+  { val: 'higher',        title: 'Whichever is higher', desc: 'Highest of each term, incl. MG' },
+  { val: 'hybrid-higher', title: 'Hybrid-higher',       desc: 'max( summed terms , MG )' },
+];
+
+function presentTermLabels(form) {
   const out = [];
-  if (Number(form.gpPercent) > 0) out.push({ key: 'gp', label: 'GP%', mode: form.gpMode });
-  if (Number(form.electricity) > 0) out.push({ key: 'elec', label: 'Electricity', mode: form.elecMode });
-  if ((form.placementRows || []).some(r => r.model && Number(r.amount) > 0)) out.push({ key: 'place', label: 'Placement', mode: form.placeMode });
-  if (Number(form.others) > 0) out.push({ key: 'others', label: 'Others', mode: form.othersMode });
+  if (Number(form.gpPercent) > 0) out.push('GP%');
+  if (Number(form.electricity) > 0) out.push('Electricity');
+  if ((form.placementRows || []).some(r => r.model && Number(r.amount) > 0)) out.push('Placement');
+  if (Number(form.others) > 0) out.push('Others');
   return out;
 }
 
-// 'sum' (all add) | 'higher' (all compare) | 'custom' (mixed).
-function payoutMethod(form) {
-  const modes = presentTerms(form).map(t => t.mode);
-  if (!modes.length || modes.every(m => m === 'add')) return 'sum';
-  if (modes.every(m => m === 'compare')) return 'higher';
-  return 'custom';
-}
-
-// Readable payout formula, e.g. "max( GP% + Electricity , Placement , MG )".
+// Readable payout formula for the selected method.
 function payoutFormula(form) {
-  const terms = presentTerms(form);
-  const adds = terms.filter(t => t.mode !== 'compare').map(t => t.label);
-  const compares = terms.filter(t => t.mode === 'compare').map(t => t.label);
+  const labels = presentTermLabels(form);
   const hasMg = (form.mgRows || []).some(r => r.model && Number(r.amount) > 0);
-  const candidates = [];
-  if (adds.length) candidates.push(adds.join(' + '));
-  candidates.push(...compares);
-  if (hasMg) candidates.push('MG');
-  if (!candidates.length) return '0';
-  return candidates.length === 1 ? candidates[0] : `max( ${candidates.join(' , ')} )`;
+  const method = form.method || 'hybrid';
+  if (method === 'higher') {
+    const c = hasMg ? [...labels, 'MG'] : [...labels];
+    return c.length === 0 ? '0' : (c.length === 1 ? c[0] : `max( ${c.join(' , ')} )`);
+  }
+  if (method === 'hybrid-higher') {
+    const s = labels.join(' + ') || '0';
+    return hasMg ? `max( ${s} , MG )` : s;
+  }
+  return labels.join(' + ') || '0';   // default | hybrid
 }
 
 // Share-terms CSV: amounts only. The payout model lives in the partner page.
@@ -854,7 +867,7 @@ async function renderNewPartnerForm() {
 
 function renderStructuredRuleEditor(container, initialRule, machineModels, { readOnly = false } = {}) {
   let form = decompileRule(initialRule);
-  let method = payoutMethod(form);   // 'sum' | 'higher' | 'custom'
+  let method = form.method;   // one of PAYOUT_METHODS
   let rawMode = false;
   let rawJson = JSON.stringify(initialRule || { type: 'sum', children: [] }, null, 2);
 
@@ -872,20 +885,11 @@ function renderStructuredRuleEditor(container, initialRule, machineModels, { rea
   function draw() {
     container.innerHTML = `
       ${(() => {
-        const custom = method === 'custom';
-        const modeSel = (term, val) => custom ? `<select class="rf-mode" data-term="${term}" title="Add = summed with other Add terms. Higher = competes for the max." ${d(rawMode)}>
-            <option value="add" ${val === 'add' ? 'selected' : ''}>+ added (sum)</option>
-            <option value="compare" ${val === 'compare' ? 'selected' : ''}>⤒ whichever higher</option>
-          </select>` : '';
         return `
       <div class="rule-form">
         <div class="section-label">Payout method</div>
-        <div class="model-options">
-          ${[
-            ['sum', 'Sum (Hybrid)', 'Add all terms together'],
-            ['higher', 'Whichever is higher', 'Pay the highest term'],
-            ['custom', 'Custom', 'Mark each term add / higher'],
-          ].map(([val, title, desc]) => `
+        <div class="model-options model-options-4">
+          ${PAYOUT_METHOD_META.map(({ val, title, desc }) => `
             <label class="model-opt">
               <input type="radio" name="rf-method" value="${val}" ${method === val ? 'checked' : ''} ${d(rawMode)}>
               <span><strong>${title}</strong><br><span class="muted">${desc}</span></span>
@@ -895,26 +899,25 @@ function renderStructuredRuleEditor(container, initialRule, machineModels, { rea
         <details class="method-help">
           <summary>How payout methods work — example</summary>
           <div class="mh-body">
-            <p><strong>Add</strong> = summed with other Add terms. <strong>Whichever higher</strong> = competes for the maximum.<br>
-            <span class="muted">Payout = max( sum of Add terms , each Higher term , MG )</span></p>
-            <p class="muted" style="margin:6px 0 4px;">Example — a month where GP share = 3,000 and Placement = 2,000:</p>
+            <p class="muted" style="margin:0 0 4px;">Example — a month where GP share = 3,000, Placement = 2,000, MG = 4,000:</p>
             <table class="mh-table">
-              <tr><td>Sum (Hybrid)</td><td>3,000 + 2,000</td><td><strong>5,000</strong></td></tr>
-              <tr><td>Whichever is higher</td><td>max(3,000, 2,000)</td><td><strong>3,000</strong></td></tr>
-              <tr><td>Custom · GP higher, Placement add</td><td>max(2,000, 3,000)</td><td><strong>3,000</strong></td></tr>
+              <tr><td>Default</td><td>single term (e.g. just GP)</td><td><strong>3,000</strong></td></tr>
+              <tr><td>Hybrid</td><td>3,000 + 2,000</td><td><strong>5,000</strong></td></tr>
+              <tr><td>Whichever is higher</td><td>max(3,000, 2,000, MG 4,000)</td><td><strong>4,000</strong></td></tr>
+              <tr><td>Hybrid-higher</td><td>max(3,000 + 2,000, MG 4,000)</td><td><strong>5,000</strong></td></tr>
             </table>
-            <p class="muted" style="margin-top:6px;">A Minimum guarantee, if set, is just one more option in the max — a floor.</p>
+            <p class="muted" style="margin-top:6px;">MG is only used by <em>Whichever is higher</em> and <em>Hybrid-higher</em>.</p>
           </div>
         </details>
 
         <div class="section-label" style="margin-top:18px;">Share terms</div>
         <div class="rf-row"><label>GP Share %</label>
-          <div class="term-ctl">${modeSel('gp', form.gpMode)}<input id="rf-gp" type="number" min="0" max="100" step="0.1" value="${form.gpPercent}" ${d(rawMode)}></div></div>
+          <input id="rf-gp" type="number" min="0" max="100" step="0.1" value="${form.gpPercent}" ${d(rawMode)}></div>
         <div class="rf-row"><label>Electricity fee (THB/month)</label>
-          <div class="term-ctl">${modeSel('elec', form.elecMode)}<input id="rf-elec" type="number" min="0" value="${form.electricity}" ${d(rawMode)}></div></div>
+          <input id="rf-elec" type="number" min="0" value="${form.electricity}" ${d(rawMode)}></div>
         <div class="rf-row"><label>Others (THB/month)</label>
-          <div class="term-ctl">${modeSel('others', form.othersMode)}<input id="rf-others" type="number" min="0" value="${form.others}" ${d(rawMode)}></div></div>
-        <div class="term-table-head"><label style="font-size:12.5px;color:var(--ink-soft);">Placement fee — per machine type</label>${modeSel('place', form.placeMode)}</div>
+          <input id="rf-others" type="number" min="0" value="${form.others}" ${d(rawMode)}></div>
+        <div class="term-table-head"><label style="font-size:12.5px;color:var(--ink-soft);">Placement fee — per machine type</label></div>
         <table class="row-form">
           <thead><tr>
             <th style="width:50%">Device type</th>
@@ -968,12 +971,7 @@ function renderStructuredRuleEditor(container, initialRule, machineModels, { rea
     container.querySelectorAll('input[name="rf-method"]').forEach(radio => radio.addEventListener('change', e => {
       captureInputs();
       method = e.target.value;
-      if (method === 'sum') ['gpMode','elecMode','placeMode','othersMode'].forEach(k => form[k] = 'add');
-      else if (method === 'higher') ['gpMode','elecMode','placeMode','othersMode'].forEach(k => form[k] = 'compare');
-      draw();
-    }));
-    container.querySelectorAll('.rf-mode').forEach(sel => sel.addEventListener('change', () => {
-      captureInputs();
+      form.method = method;
       draw();
     }));
     container.querySelector('#rf-raw-mode')?.addEventListener('change', e => {
@@ -1017,15 +1015,9 @@ function renderStructuredRuleEditor(container, initialRule, machineModels, { rea
     const gp = container.querySelector('#rf-gp');     if (gp) form.gpPercent   = Number(gp.value || 0);
     const el = container.querySelector('#rf-elec');   if (el) form.electricity = Number(el.value || 0);
     const ot = container.querySelector('#rf-others'); if (ot) form.others      = Number(ot.value || 0);
+    form.method = method;
     syncPlacement();
     syncMg();
-    container.querySelectorAll('.rf-mode').forEach(sel => {
-      const t = sel.dataset.term;
-      if (t === 'gp') form.gpMode = sel.value;
-      else if (t === 'elec') form.elecMode = sel.value;
-      else if (t === 'others') form.othersMode = sel.value;
-      else if (t === 'place') form.placeMode = sel.value;
-    });
   }
 
   draw();

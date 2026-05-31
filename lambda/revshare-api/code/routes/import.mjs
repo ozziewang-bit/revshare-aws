@@ -21,12 +21,17 @@ export function compileRule({ gpPercent, electricity, placementRows, mgRows, oth
   const vmg = (mgRows || []).filter(r => r.model && Number(r.amount) > 0);
   const mgLeaf = vmg.length ? { type: 'flat_per_machine', _t: 'mg', rows: vmg.map(r => ({ model: r.model, amount: Number(r.amount) })) } : null;
 
-  const candidates = [];
-  if (adds.length) candidates.push(adds.length === 1 ? adds[0] : { type: 'sum', children: adds });
-  if (mgLeaf) candidates.push(mgLeaf);
-  if (!candidates.length) return { type: 'percent', _t: 'gp', _m: 'add', rows: [{ model: 'ALL', percent: 0 }] };
-  if (candidates.length === 1) return candidates[0];
-  return { type: 'max', children: candidates };
+  // MG present → "hybrid-higher" (max of summed terms vs MG). Else sum.
+  let rule;
+  if (mgLeaf) {
+    const s = adds.length === 0 ? { type: 'percent', _t: 'gp', rows: [{ model: 'ALL', percent: 0 }] }
+      : (adds.length === 1 ? adds[0] : { type: 'sum', children: adds });
+    rule = { type: 'max', children: [s, mgLeaf] };
+    return { ...rule, _method: 'hybrid-higher' };
+  }
+  if (!adds.length) return { type: 'percent', _t: 'gp', rows: [{ model: 'ALL', percent: 0 }], _method: 'default' };
+  if (adds.length === 1) return { ...adds[0], _method: 'default' };
+  return { type: 'sum', children: adds, _method: 'hybrid' };
 }
 
 export async function importRevShareRoute(event) {

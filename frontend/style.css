@@ -692,6 +692,7 @@ table.ts tfoot td {
 .rule-form .model-opt:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
 .rule-form .model-opt input { flex: none; width: auto; margin-top: 3px; }
 .rule-form .model-opt .muted { font-size: 11.5px; }
+.rule-form .model-options-4 .model-opt { flex: 1 1 calc(50% - 5px); }
 .rule-form .rf-row > .term-ctl { display: flex; align-items: center; gap: 8px; }
 .rule-form .rf-row > .term-ctl > input { flex: 0 0 130px; width: 130px; margin: 0; text-align: right;
   background: var(--surface); color: var(--ink); border: 1px solid var(--border);
