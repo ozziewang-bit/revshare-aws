@@ -318,7 +318,7 @@ function renderNav() {
   nav.innerHTML = `
     <button id="nav-partners" class="nav-btn active">Partners</button>
     <button id="nav-bulk-runs" class="nav-btn">Run share</button>
-    <button id="nav-revshare-path" class="nav-btn">Revshare path</button>
+    <button id="nav-revshare-path" class="nav-btn">Analytics</button>
     <button id="nav-device-types" class="nav-btn">Device Types</button>
     <button id="nav-import" class="nav-btn">Update</button>`;
   nav.querySelector('#nav-partners').addEventListener('click', () => { setActiveNav('nav-partners'); renderPartnersList(); });
@@ -419,7 +419,7 @@ async function renderImportScreen() {
 
 async function renderRevsharePathScreen() {
   const main = document.getElementById('main');
-  main.innerHTML = `<div class="page-head"><h2>Revshare path</h2></div>
+  main.innerHTML = `<div class="page-head"><h2>Analytics</h2></div>
     <div style="max-width:340px;margin-bottom:8px;">
       <input id="rp-search" class="search-input" list="rp-options" placeholder="Search partner… (or Total)" autocomplete="off">
       <datalist id="rp-options"></datalist>
@@ -1199,7 +1199,7 @@ async function renderPartnerDetail(partnerId) {
     <div class="tabs">
       <button id="tab-merchants" class="tab active">Merchants (<span id="merchant-count">…</span>)</button>
       <button id="tab-rule" class="tab">Rule</button>
-      <button id="tab-runs" class="tab">Revshare path</button>
+      <button id="tab-runs" class="tab">Analytics</button>
     </div>
     <div id="tab-merchants-content">
       <div id="merchants-tab-content">Loading…</div>
@@ -1290,7 +1290,7 @@ async function renderPartnerDetail(partnerId) {
       .sort((a, b) => a.month.localeCompare(b.month))
       .map(d => ({ ...d, sharePct: d.revenue > 0 ? d.payout / d.revenue * 100 : 0 }));
 
-    runsHistory.innerHTML = `<h3 style="margin-top:30px;">Revshare path</h3>${
+    runsHistory.innerHTML = `<h3 style="margin-top:30px;">Analytics</h3>${
       data.length
         ? revsharePathChartSvg(data)
         : '<p class="muted">No Share Calculations include this partner yet. Run one to populate this chart.</p>'
