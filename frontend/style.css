@@ -57,6 +57,7 @@ input, select, textarea { font-family: inherit; }
   font-family: var(--font-display);
   font-weight: 600; font-size: 15px; line-height: 1;
 }
+.brand-region { font-weight: 500; color: var(--ink-soft); letter-spacing: 0; }
 
 /* ============ PILL NAV ============ */
 #topnav {
