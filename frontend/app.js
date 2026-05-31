@@ -319,7 +319,7 @@ function renderNav() {
     <button id="nav-partners" class="nav-btn active">Partners</button>
     <button id="nav-bulk-runs" class="nav-btn">Share Calculation</button>
     <button id="nav-device-types" class="nav-btn">Device Types</button>
-    <button id="nav-import" class="nav-btn">Import</button>`;
+    <button id="nav-import" class="nav-btn">Update</button>`;
   nav.querySelector('#nav-partners').addEventListener('click', () => { setActiveNav('nav-partners'); renderPartnersList(); });
   nav.querySelector('#nav-bulk-runs').addEventListener('click', () => { setActiveNav('nav-bulk-runs'); renderBulkRunsList(); });
   nav.querySelector('#nav-device-types').addEventListener('click', () => { setActiveNav('nav-device-types'); renderDeviceTypesScreen(); });
@@ -333,17 +333,6 @@ function setActiveNav(id) {
 async function renderImportScreen() {
   const main = document.getElementById('main');
   main.innerHTML = `
-    <div class="page-head"><h2>Import from KA Excel</h2></div>
-    <p class="muted">Upload the <strong>KA cost rate</strong> Excel file (Rev Share sheet). New partners will be created; existing partners are skipped. Merchants are upserted by name.</p>
-    <input id="import-file" type="file" accept=".xlsx" style="display:none">
-    <div id="import-file-zone" class="upload-zone" style="cursor:pointer;max-width:520px;margin-top:16px;">
-      <p>Choose the KA cost rate Excel file or drag it here</p>
-      <button type="button" id="import-choose" class="btn">Choose file</button>
-      <div id="import-file-name" class="upload-hint"></div>
-    </div>
-    <div id="import-preview" style="margin-top:16px;"></div>
-
-    <div style="border-top:1px solid var(--border);margin:32px 0 0;padding-top:24px;"></div>
     <div class="page-head"><h2>Batch update partner rules (CSV)</h2></div>
     <p class="muted">Upload a share-terms CSV with a <strong>Partner Name</strong> column (amounts + <strong>Payout Method</strong> code). Rows group by partner: <strong>existing partners' rules are overwritten</strong>, <strong>new partners are created</strong>, and every merchant is upserted (name + device type). Codes: <code>D</code> Default · <code>H</code> Hybrid · <code>WH</code> Whichever higher · <code>HH</code> Hybrid-higher.</p>
     <div style="display:flex;gap:8px;margin:8px 0 12px;">
@@ -422,48 +411,6 @@ async function renderImportScreen() {
       });
     } catch (err) {
       out.innerHTML = `<p style="color:var(--loss);">Error: ${escape(err.message)}</p>`;
-    }
-  });
-
-  document.getElementById('import-choose').addEventListener('click', () => document.getElementById('import-file').click());
-  document.getElementById('import-file-zone').addEventListener('click', e => { if (e.target.id !== 'import-choose') document.getElementById('import-file').click(); });
-  document.getElementById('import-file').addEventListener('change', async e => {
-    const file = e.target.files[0];
-    if (!file) return;
-    const nameEl = document.getElementById('import-file-name');
-    if (nameEl) nameEl.textContent = file.name;
-    const preview = document.getElementById('import-preview');
-    preview.innerHTML = 'Parsing…';
-    try {
-      const { partners, merchants, warnings } = await parseKaExcel(file);
-      preview.innerHTML = `
-        <h3>Preview</h3>
-        <p>${partners.length} partner(s) to create, ${merchants.length} merchant(s) to upsert.</p>
-        ${warnings.length ? `<p style="color:#f03e3e;">Warnings: ${warnings.map(escape).join(', ')}</p>` : ''}
-        <table class="ts"><thead><tr><th>Partner (TAG)</th><th>GP%</th><th>MG (per type)</th><th>Electricity</th><th>Placement (per type)</th></tr></thead>
-        <tbody>${partners.map(p => {
-          const summ = rows => rows && rows.length ? rows.map(r => `${escape(r.model)}:${r.amount}`).join(', ') : '—';
-          return `<tr>
-          <td>${escape(p.name)}</td>
-          <td>${p.gpPercent}%</td>
-          <td>${summ(p.mgRows)}</td>
-          <td>${p.electricity || 0}</td>
-          <td>${summ(p.placementRows)}</td>
-        </tr>`; }).join('')}</tbody></table>
-        <button id="confirm-import" class="btn-primary" style="margin-top:16px;">Confirm import</button>`;
-
-      document.getElementById('confirm-import').addEventListener('click', async () => {
-        document.getElementById('confirm-import').disabled = true;
-        document.getElementById('confirm-import').textContent = 'Importing…';
-        const result = await api('/import/rev-share', { method: 'POST', body: JSON.stringify({ partners, merchants }) });
-        preview.innerHTML = `
-          <div style="color:#2f9e44;font-weight:600;">Import complete</div>
-          <p>Partners created: ${result.created.partners} | Skipped (already exist): ${result.skipped.partners.length}</p>
-          <p>Merchants upserted: ${result.created.merchants}</p>
-          ${result.warnings.length ? `<p style="color:#f03e3e;">${result.warnings.map(escape).join('<br>')}</p>` : ''}`;
-      });
-    } catch (err) {
-      preview.innerHTML = `<p style="color:#f03e3e;">Parse error: ${escape(err.message)}</p>`;
     }
   });
 }
