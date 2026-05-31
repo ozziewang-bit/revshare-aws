@@ -703,6 +703,12 @@ table.ts tfoot td {
 .rule-form .formula-box { margin: 12px 0 4px; padding: 10px 14px; background: var(--surface-muted);
   border: 1px solid var(--border); border-radius: var(--radius-sm); font-size: 13.5px;
   font-family: var(--font-mono, monospace); }
+.rule-form .method-help { margin: 4px 0 2px; font-size: 13px; }
+.rule-form .method-help > summary { cursor: pointer; color: var(--accent); font-size: 12.5px; }
+.rule-form .method-help .mh-body { padding: 8px 2px 2px; }
+.rule-form .mh-table { border-collapse: collapse; margin-top: 2px; font-size: 12.5px; }
+.rule-form .mh-table td { padding: 3px 14px 3px 0; border-bottom: 1px solid var(--border); }
+.rule-form .mh-table td:last-child { text-align: right; padding-right: 0; }
 
 /* ============ HERO (big payout number) ============ */
 .hero {

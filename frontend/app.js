@@ -873,9 +873,9 @@ function renderStructuredRuleEditor(container, initialRule, machineModels, { rea
     container.innerHTML = `
       ${(() => {
         const custom = method === 'custom';
-        const modeSel = (term, val) => custom ? `<select class="rf-mode" data-term="${term}" ${d(rawMode)}>
-            <option value="add" ${val === 'add' ? 'selected' : ''}>+ add</option>
-            <option value="compare" ${val === 'compare' ? 'selected' : ''}>⤒ higher</option>
+        const modeSel = (term, val) => custom ? `<select class="rf-mode" data-term="${term}" title="Add = summed with other Add terms. Higher = competes for the max." ${d(rawMode)}>
+            <option value="add" ${val === 'add' ? 'selected' : ''}>+ added (sum)</option>
+            <option value="compare" ${val === 'compare' ? 'selected' : ''}>⤒ whichever higher</option>
           </select>` : '';
         return `
       <div class="rule-form">
@@ -891,7 +891,21 @@ function renderStructuredRuleEditor(container, initialRule, machineModels, { rea
               <span><strong>${title}</strong><br><span class="muted">${desc}</span></span>
             </label>`).join('')}
         </div>
-        <div class="formula-box">Payout = <strong>${escape(payoutFormula(form))}</strong>${(form.mgRows || []).some(r => r.model && Number(r.amount) > 0) ? '' : ''}</div>
+        <div class="formula-box">Payout = <strong>${escape(payoutFormula(form))}</strong></div>
+        <details class="method-help">
+          <summary>How payout methods work — example</summary>
+          <div class="mh-body">
+            <p><strong>Add</strong> = summed with other Add terms. <strong>Whichever higher</strong> = competes for the maximum.<br>
+            <span class="muted">Payout = max( sum of Add terms , each Higher term , MG )</span></p>
+            <p class="muted" style="margin:6px 0 4px;">Example — a month where GP share = 3,000 and Placement = 2,000:</p>
+            <table class="mh-table">
+              <tr><td>Sum (Hybrid)</td><td>3,000 + 2,000</td><td><strong>5,000</strong></td></tr>
+              <tr><td>Whichever is higher</td><td>max(3,000, 2,000)</td><td><strong>3,000</strong></td></tr>
+              <tr><td>Custom · GP higher, Placement add</td><td>max(2,000, 3,000)</td><td><strong>3,000</strong></td></tr>
+            </table>
+            <p class="muted" style="margin-top:6px;">A Minimum guarantee, if set, is just one more option in the max — a floor.</p>
+          </div>
+        </details>
 
         <div class="section-label" style="margin-top:18px;">Share terms</div>
         <div class="rf-row"><label>GP Share %</label>
