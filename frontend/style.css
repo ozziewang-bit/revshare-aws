@@ -49,14 +49,9 @@ input, select, textarea { font-family: inherit; }
   display: flex; align-items: center; gap: 10px;
   font-weight: 600; font-size: 15px; letter-spacing: -0.01em;
 }
-.brand::before {
-  content: 'R';
-  width: 26px; height: 26px; border-radius: 7px;
-  background: var(--ink); color: var(--bg);
-  display: grid; place-items: center;
-  font-family: var(--font-display);
-  font-weight: 600; font-size: 15px; line-height: 1;
-}
+.brand-logo { height: 24px; width: auto; display: block; }
+.brand-text { display: inline-flex; gap: 6px; align-items: baseline; padding-left: 2px;
+  border-left: 1px solid var(--border); padding-left: 10px; margin-left: 2px; }
 .brand-region { font-weight: 500; color: var(--ink-soft); letter-spacing: 0; }
 
 /* ============ PILL NAV ============ */

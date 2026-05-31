@@ -1,6 +1,6 @@
-const CACHE_VERSION = 'revshare-v53';
+const CACHE_VERSION = 'revshare-v54';
 const SHELL = [
-  '/', '/index.html', '/style.css', '/app.js', '/manifest.json',
+  '/', '/index.html', '/style.css', '/app.js', '/manifest.json', '/logo.png',
   '/lib/html2canvas.min.js', '/lib/jspdf.umd.min.js', '/lib/zip.js',
   '/icon-192.png', '/icon-512.png', '/apple-touch-icon.png'
 ];
