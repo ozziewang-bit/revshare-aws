@@ -90,8 +90,20 @@ const PAYOUT_METHOD_META = [
   { val: 'higher',        code: 'WH', title: 'Whichever is higher', desc: 'Highest of each term, incl. MG' },
   { val: 'hybrid-higher', code: 'HH', title: 'Hybrid-higher',       desc: 'max( summed terms , MG )' },
 ];
-const codeToMethod = c => (PAYOUT_METHOD_META.find(m => m.code === String(c || '').trim().toUpperCase()) || {}).val || 'hybrid';
-const methodToCode = v => (PAYOUT_METHOD_META.find(m => m.val === v) || {}).code || 'H';
+// Accept the payout-method NAME (default / hybrid / whichever higher / hybrid-higher); legacy codes (D/H/WH/HH) still work.
+const parseMethod = input => {
+  const s = String(input || '').trim().toLowerCase().replace(/[\s_]+/g, '-');
+  if (!s) return 'hybrid';
+  if (PAYOUT_METHODS.includes(s)) return s;
+  const byCode = PAYOUT_METHOD_META.find(m => m.code.toLowerCase() === s);
+  if (byCode) return byCode.val;
+  if (s.includes('hybrid') && s.includes('high')) return 'hybrid-higher';
+  if (s.startsWith('default')) return 'default';
+  if (s.includes('whichever') || s.includes('higher')) return 'higher';
+  if (s.includes('hybrid')) return 'hybrid';
+  return 'hybrid';
+};
+const methodToName = v => (PAYOUT_METHOD_META.find(m => m.val === v) || {}).title || 'Hybrid';
 
 function presentTermLabels(form) {
   const out = [];
@@ -127,7 +139,7 @@ function shareTermsCsvRow(q, partnerName, m, machineModels, form) {
     : '';
   const placement = (form.placementRows || []).find(r => r.model === m.machineModel || r.model === 'ALL')?.amount ?? 0;
   const mg = (form.mgRows || []).find(r => r.model === m.machineModel || r.model === 'ALL')?.amount ?? 0;
-  return [q(partnerName), q(m.name), q(modelDisplay), form.gpPercent, form.electricity, placement, form.others ?? 0, mg, methodToCode(form.method)].join(',');
+  return [q(partnerName), q(m.name), q(modelDisplay), form.gpPercent, form.electricity, placement, form.others ?? 0, mg, q(methodToName(form.method))].join(',');
 }
 
 // Map share-terms CSV columns by header name (robust to extra/reordered columns).
@@ -168,7 +180,7 @@ function parseRuleBatchCsv(text, machineModels) {
       name: (at(f, idx.name) || '').trim(),
       model,
       gpPercent: num(at(f, idx.gp)), electricity: num(at(f, idx.elec)), placement: num(at(f, idx.place)),
-      others: num(at(f, idx.others)), mg: num(at(f, idx.mg)), method: codeToMethod(at(f, idx.method)),
+      others: num(at(f, idx.others)), mg: num(at(f, idx.mg)), method: parseMethod(at(f, idx.method)),
     };
   }).filter(r => r.partnerName && r.name);
 }
@@ -336,7 +348,7 @@ async function renderImportScreen() {
   const main = document.getElementById('main');
   main.innerHTML = `
     <div class="page-head"><h2>Batch update partner rules (CSV)</h2></div>
-    <p class="muted">Upload a share-terms CSV with a <strong>Partner Name</strong> column (amounts + <strong>Payout Method</strong> code). Rows group by partner: <strong>existing partners' rules are overwritten</strong>, <strong>new partners are created</strong>, and every merchant is upserted (name + device type). Codes: <code>D</code> Default · <code>H</code> Hybrid · <code>WH</code> Whichever higher · <code>HH</code> Hybrid-higher.</p>
+    <p class="muted">Upload a share-terms CSV with a <strong>Partner Name</strong> column (amounts + <strong>Payout Method</strong> name). Rows group by partner: <strong>existing partners' rules are overwritten</strong>, <strong>new partners are created</strong>, and every merchant is upserted (name + device type). Payout Method: <code>Default</code> · <code>Hybrid</code> · <code>Whichever higher</code> · <code>Hybrid-higher</code> (legacy codes D/H/WH/HH still accepted).</p>
     <div style="display:flex;gap:8px;margin:8px 0 12px;">
       <button id="rb-sample" class="btn">↓ Sample / template CSV</button>
     </div>
@@ -355,8 +367,8 @@ async function renderImportScreen() {
     const q = s => `"${String(s).replace(/"/g, '""')}"`;
     const d = (machineModels[0] || {}).displayName || 'ChargeSpot Station-S8';
     const ex = [
-      `${q('Example Partner A')},${q('Example Store 1')},${q(d)},50,0,0,0,200,HH`,
-      `${q('Example Partner B')},${q('Example Store 2')},${q(d)},25,0,1500,0,0,H`,
+      `${q('Example Partner A')},${q('Example Store 1')},${q(d)},50,0,0,0,200,${q('Hybrid-higher')}`,
+      `${q('Example Partner B')},${q('Example Store 2')},${q(d)},25,0,1500,0,0,${q('Hybrid')}`,
     ];
     const csv = [SHARE_TERMS_CSV_HEADER, ...ex].join('\n') + '\n';
     const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
