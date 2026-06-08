@@ -8,7 +8,7 @@ const REGIONS = {
 let REGION = (localStorage.getItem('rs_region') in REGIONS) ? localStorage.getItem('rs_region') : 'th';
 const R = () => REGIONS[REGION];
 const API_URL = R().api;
-const CCY = R().ccy, SYM = R().sym;
+const CCY = R().ccy;
 
 const CURRENCIES = ['TWD', 'USD', 'HKD', 'JPY', 'IDR', 'THB', 'SGD'];
 
