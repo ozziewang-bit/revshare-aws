@@ -10,7 +10,7 @@ const R = () => REGIONS[REGION];
 const API_URL = R().api;
 const CCY = R().ccy, SYM = R().sym;
 
-const CURRENCIES = ['TWD', 'USD', 'HKD', 'JPY', 'IDR', 'THB'];
+const CURRENCIES = ['TWD', 'USD', 'HKD', 'JPY', 'IDR', 'THB', 'SGD'];
 
 // ── Rule form helpers ──────────────────────────────────────────────────────
 
@@ -140,7 +140,7 @@ function payoutFormula(form) {
 }
 
 // Share-terms CSV: amounts only. The payout model lives in the partner page.
-const SHARE_TERMS_CSV_HEADER = 'Partner Name,Merchant Name,Device Type,GP (%),Electricity (THB/month),Placement (THB/month),Others (THB/month),Min Guarantee (THB/machine/month),Payout Method';
+const SHARE_TERMS_CSV_HEADER = `Partner Name,Merchant Name,Device Type,GP (%),Electricity (${CCY}/month),Placement (${CCY}/month),Others (${CCY}/month),Min Guarantee (${CCY}/machine/month),Payout Method`;
 
 function shareTermsCsvRow(q, partnerName, m, machineModels, form) {
   const modelDisplay = m.machineModel
@@ -655,7 +655,7 @@ async function parseKaExcel(file) {
 
     const tagKey = String(tag).toLowerCase().trim();
     if (!partnerMap[tagKey]) {
-      partnerMap[tagKey] = { name: String(tag), gpPercent, electricity: 0, placementRows: [], mgRows: [], others: 0, aggregationMode: 'whole', currency: 'THB' };
+      partnerMap[tagKey] = { name: String(tag), gpPercent, electricity: 0, placementRows: [], mgRows: [], others: 0, aggregationMode: 'whole', currency: CCY };
     }
     const p = partnerMap[tagKey];
     if (gpPercent > 0 && !(p.gpPercent > 0)) p.gpPercent = gpPercent;
@@ -816,7 +816,7 @@ function fmtCompact(v) {
   return n.toFixed(0);
 }
 
-// Combo chart: clustered Revenue/Payout bars (left THB axis) + a revenue-share-%
+// Combo chart: clustered Revenue/Payout bars (left currency axis) + a revenue-share-%
 // line (right % axis), with a data label on every bar and point.
 // data: [{ month, revenue, payout, sharePct }]
 function revsharePathChartSvg(data) {
@@ -866,7 +866,7 @@ function revsharePathChartSvg(data) {
     <line x1="${padL + 180}" y1="${ly - 4}" x2="${padL + 196}" y2="${ly - 4}" stroke="${LINE}" stroke-width="2"/><circle cx="${padL + 188}" cy="${ly - 4}" r="3" fill="${LINE}"/><text x="${padL + 202}" y="${ly}" font-size="11" fill="${INK}">Revenue share %</text>`;
 
   return `<div style="overflow-x:auto;"><svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:${W}px;font-family:inherit;">
-    <text x="${padL - 8}" y="${padT - 12}" text-anchor="end" font-size="10" fill="${TXT}">THB</text>
+    <text x="${padL - 8}" y="${padT - 12}" text-anchor="end" font-size="10" fill="${TXT}">${CCY}</text>
     <text x="${padL + plotW + 8}" y="${padT - 12}" text-anchor="start" font-size="10" fill="${LINE}">%</text>
     ${grid}
     <line x1="${padL}" y1="${baseY}" x2="${padL + plotW}" y2="${baseY}" stroke="#cbd5e1" stroke-width="1"/>
@@ -1027,7 +1027,7 @@ async function renderNewPartnerForm() {
     <form id="new-partner-form">
       <label>Name <input name="name" required></label>
       <label>Currency
-        <select name="currency">${CURRENCIES.map(c => `<option>${c}</option>`).join('')}</select>
+        <select name="currency">${CURRENCIES.map(c => `<option ${c === CCY ? 'selected' : ''}>${c}</option>`).join('')}</select>
       </label>
       <label>Aggregation mode
         <select name="aggregationMode"><option value="per_store">per store (one calc per store, summed)</option><option value="whole">whole partner (one calc over all rows)</option></select>
@@ -1112,15 +1112,15 @@ function renderStructuredRuleEditor(container, initialRule, machineModels, { rea
         <div class="section-label" style="margin-top:18px;">Share terms</div>
         <div class="rf-row"><label>GP Share %</label>
           <input id="rf-gp" type="number" min="0" max="100" step="0.1" value="${form.gpPercent}" ${d(rawMode)}></div>
-        <div class="rf-row"><label>Electricity fee (THB/month)</label>
+        <div class="rf-row"><label>Electricity fee (${CCY}/month)</label>
           <input id="rf-elec" type="number" min="0" value="${form.electricity}" ${d(rawMode)}></div>
-        <div class="rf-row"><label>Others (THB/month)</label>
+        <div class="rf-row"><label>Others (${CCY}/month)</label>
           <input id="rf-others" type="number" min="0" value="${form.others}" ${d(rawMode)}></div>
         <div class="term-table-head"><label style="font-size:12.5px;color:var(--ink-soft);">Placement fee — per machine type</label></div>
         <table class="row-form">
           <thead><tr>
             <th style="width:50%">Device type</th>
-            <th style="width:35%">Amount (THB/month)</th>
+            <th style="width:35%">Amount (${CCY}/month)</th>
             ${readOnly ? '' : '<th style="width:15%"></th>'}
           </tr></thead>
           <tbody>
@@ -1140,7 +1140,7 @@ function renderStructuredRuleEditor(container, initialRule, machineModels, { rea
         <table class="row-form">
           <thead><tr>
             <th style="width:50%">Device type</th>
-            <th style="width:35%">Amount (THB/machine/month)</th>
+            <th style="width:35%">Amount (${CCY}/machine/month)</th>
             ${readOnly ? '' : '<th style="width:15%"></th>'}
           </tr></thead>
           <tbody>
@@ -1907,7 +1907,7 @@ async function downloadPdf(run) {
         <tbody>${run.result.byStore.map(s => `<tr><td style="padding:4px 8px;border-bottom:1px solid #e5e7eb;">${escape(s.storeId)}</td><td style="padding:4px 8px;border-bottom:1px solid #e5e7eb;text-align:right;">${cur(s.payout)}</td></tr>`).join('')}</tbody>
       </table>` : ''}
     ${run.result.topLevel ? `<p style="font-size:11px;margin-top:14px;">Top-level lump-sum: ${escape(partner.currency)} ${cur(run.result.topLevel.payout)}</p>` : ''}
-    <div style="margin-top:36px;font-size:9px;color:#94a3b8;text-align:center;">RevShare CHARGESPOT Thailand · Generated automatically · Not a tax document</div>`;
+    <div style="margin-top:36px;font-size:9px;color:#94a3b8;text-align:center;">RevShare SEA · ${R().name} · Generated automatically · Not a tax document</div>`;
   document.body.appendChild(statement);
   const canvas = await window.html2canvas(statement, { scale: 2, useCORS: true });
   document.body.removeChild(statement);
