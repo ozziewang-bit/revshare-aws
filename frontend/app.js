@@ -1,5 +1,14 @@
-// === API ===
-const API_URL = window.REVSHARE_API_URL || '';   // injected by deploy script
+// === API / region ===
+// One site, two backends. Both API URLs are public (no auth). Switching region
+// persists to localStorage and reloads (see switchRegion) so no TH/SG state bleeds.
+const REGIONS = {
+  th: { name: 'Thailand',  api: 'https://7z269nmx74.execute-api.ap-southeast-7.amazonaws.com/prod', ccy: 'THB', sym: '฿'  },
+  sg: { name: 'Singapore', api: 'https://4qcyojfg79.execute-api.ap-southeast-7.amazonaws.com/prod', ccy: 'SGD', sym: 'S$' },
+};
+let REGION = (localStorage.getItem('rs_region') in REGIONS) ? localStorage.getItem('rs_region') : 'th';
+const R = () => REGIONS[REGION];
+const API_URL = R().api;
+const CCY = R().ccy, SYM = R().sym;
 
 const CURRENCIES = ['TWD', 'USD', 'HKD', 'JPY', 'IDR', 'THB'];
 
