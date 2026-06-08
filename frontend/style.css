@@ -547,6 +547,16 @@ table.ts tfoot td {
   border: 1px solid var(--border);
 }
 
+.badge-danger {
+  background: var(--loss-soft);
+  color: var(--loss);
+  border: 1px solid var(--loss);
+}
+
+/* Partners with no rule set — tinted so they stand out in the list. */
+.row-norule td { background: var(--loss-soft); }
+.row-norule:hover td { background: #f6dcdc; }
+
 /* ============ SEARCH INPUT ============ */
 .search-input {
   display: block;

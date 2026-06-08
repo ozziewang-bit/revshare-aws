@@ -272,6 +272,20 @@ async function renderPartnersList() {
     const [partners, merchants] = await Promise.all([api('/partners'), api('/merchants')]);
     const countByPartner = {};
     merchants.forEach(m => { countByPartner[m.partnerId] = (countByPartner[m.partnerId] || 0) + 1; });
+    // Flag partners with no usable rule: missing/untyped, OR an effectively-empty
+    // placeholder (e.g. GP 0% with no fees/MG) that would pay nothing. These get
+    // skipped or pay zero in a bulk run, so finance needs to spot them at a glance.
+    function ruleHasValue(node) {
+      if (!node || typeof node !== 'object') return false;
+      switch (node.type) {
+        case 'flat_per_partner_total': return Number(node.amount) > 0;
+        case 'percent':                return (node.rows || []).some(r => Number(r.percent) > 0);
+        case 'flat_per_machine':       return (node.rows || []).some(r => Number(r.amount) > 0);
+        case 'tiered_percent':         return (node.rows || []).some(r => (r.tiers || []).some(t => Number(t.percent) > 0));
+        default:                       return (node.children || []).some(ruleHasValue);
+      }
+    }
+    const noRule = p => !p.rule || !p.rule.type || !ruleHasValue(p.rule);
 
     function sortPartners(arr) {
       function grp(name) {
@@ -296,12 +310,16 @@ async function renderPartnersList() {
         out.innerHTML = `<p class="muted">${q ? 'No partners match your search.' : 'No partners yet.'}</p>`;
         return;
       }
-      out.innerHTML = `
+      const missing = partners.filter(noRule).length;
+      const banner = missing
+        ? `<p class="muted" style="margin:0 0 8px;"><span class="badge badge-danger">No rule</span> ${missing} partner(s) have no rule set — they are skipped in bulk runs.</p>`
+        : '';
+      out.innerHTML = `${banner}
         <table class="ts">
           <thead><tr><th>Name</th><th>Currency</th><th>Aggregation</th><th>Merchants</th></tr></thead>
           <tbody>${sorted.map(p => `
-            <tr class="row-clickable" data-id="${escape(p.partnerId)}">
-              <td>${escape(p.name)}</td>
+            <tr class="row-clickable${noRule(p) ? ' row-norule' : ''}" data-id="${escape(p.partnerId)}">
+              <td>${escape(p.name)}${noRule(p) ? ' <span class="badge badge-danger">No rule</span>' : ''}</td>
               <td><span class="badge badge-neutral">${escape(p.currency)}</span></td>
               <td>${escape(p.aggregationMode)}</td>
               <td>${countByPartner[p.partnerId] || 0}</td>
