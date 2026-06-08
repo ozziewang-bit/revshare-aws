@@ -1,7 +1,7 @@
 # revshare-aws — handoff
 
 Last updated: 2026-06-08 (server-side rule-batch endpoint; rule model overhaul, S3 runs, Analytics/Update tabs, Thailand branding).
-Service-worker `CACHE_VERSION` is at `revshare-v59` (bump on every shell change).
+Service-worker `CACHE_VERSION` is at `revshare-v61` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
 end-to-end before touching anything. The codebase is the ultimate source of
@@ -19,9 +19,16 @@ Initial implementation plan (33 tasks): [`docs/superpowers/plans/2026-05-28-revs
 
 ## 1b. CURRENT STATE (2026-05-31) — read this, the sections below are partly stale
 
-Branding: app is **"RevShare CHARGESPOT Thailand"** (title/manifest/topbar). Topbar
-shows the ChargeSpot logo (`frontend/logo.png`) + "RevShare Thailand". Per-region;
-swap name in index.html/manifest.json + `logo.png` for other regions.
+Branding: app is **"RevShare SEA"** with a topbar **Thailand/Singapore** switcher
+(`REGIONS` config in `app.js`; choice persists in `localStorage('rs_region')`,
+default `th`, full `location.reload()` on switch so no TH↔SG state bleeds). TH →
+API `7z269nmx74` / DDB `RevsharePartner`; SG → API `4qcyojfg79` / DDB
+`RevsharePartnerSG` (the separate `revshare_sg` repo is the SG backend source —
+keep its Lambda in parity with TH). Currency follows region via `CCY`/`SYM`
+(THB/฿ · SGD/S$) across the chart axis, rule-editor labels, batch-CSV header,
+PDF footer, and the new-partner default; per-partner stored `currency` still
+drives each partner's own display. The SG standalone CloudFront (`E1ALROWEFJOG3Q`)
+is deprecated — the unified site lives on `d2t76jfby056ul`.
 
 **UI tabs (frontend/app.js):**
 - **Partners** — partner list + detail (Merchants / Rule / Analytics tabs).
