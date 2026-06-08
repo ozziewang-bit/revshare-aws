@@ -1,7 +1,7 @@
 # revshare-aws — handoff
 
-Last updated: 2026-05-31 (rule model overhaul, S3 runs, Analytics/Update tabs, Thailand branding).
-Service-worker `CACHE_VERSION` is at `revshare-v56` (bump on every shell change).
+Last updated: 2026-06-08 (server-side rule-batch endpoint; rule model overhaul, S3 runs, Analytics/Update tabs, Thailand branding).
+Service-worker `CACHE_VERSION` is at `revshare-v59` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
 end-to-end before touching anything. The codebase is the ultimate source of
@@ -172,6 +172,7 @@ team). If auth becomes necessary, see §11.
 | GET | `/partners/:id/runs` | List partner's runs |
 | GET | `/partners/:id/runs/:runId` | Get one run (incl. csvRaw, csvParsed, result) |
 | POST | `/partners/:id/runs/:runId/rerun` | Re-apply current rule to stored CSV |
+| POST | `/import/rule-batch` | Apply a whole rule-batch upload (Update tab) in ONE invocation — overwrites/creates partners, upserts merchants by `nameLower` with bounded concurrency (`mapPool`). Replaces the old browser-side per-partner/per-merchant fan-out that got throttled. |
 
 CORS configured on the API Gateway to allow `*` origin with headers
 `content-type, x-app-password`. Adjust the `AllowOrigins` once a custom
