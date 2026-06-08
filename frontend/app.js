@@ -406,22 +406,25 @@ async function renderImportScreen() {
       document.getElementById('rb-confirm').addEventListener('click', async () => {
         const btn = document.getElementById('rb-confirm');
         btn.disabled = true; btn.textContent = 'Applying…';
-        let okP = 0, newP = 0, okM = 0, fail = 0;
-        for (const u of updates) {
-          try {
-            let partnerId;
-            if (u.existing) {
-              await api('/partners/' + u.existing.partnerId, { method: 'PUT', body: JSON.stringify({ rule: u.rule }) });
-              partnerId = u.existing.partnerId; okP++;
-            } else {
-              const p = await api('/partners', { method: 'POST', body: JSON.stringify({ name: u.partnerName, currency: 'THB', aggregationMode: 'whole', rule: u.rule }) });
-              partnerId = p.partnerId; newP++;
-            }
-            const res = await Promise.allSettled(u.merchants.map(m => api('/merchants', { method: 'POST', body: JSON.stringify({ name: m.name, machineModel: m.model, partnerId }) })));
-            okM += res.filter(r => r.status === 'fulfilled').length;
-          } catch (_) { fail++; }
+        // Single request: the server applies the whole batch in one invocation,
+        // so we never fire thousands of concurrent calls that get throttled.
+        const payload = { updates: updates.map(u => ({
+          partnerId: u.existing ? u.existing.partnerId : null,
+          partnerName: u.partnerName,
+          rule: u.rule,
+          merchants: u.merchants
+        })) };
+        try {
+          const r = await api('/import/rule-batch', { method: 'POST', body: JSON.stringify(payload) });
+          const fail = r.failedPartners || 0, mfail = r.failedMerchants || 0;
+          const warn = (r.warnings && r.warnings.length)
+            ? `<details style="margin-top:8px;"><summary>${r.warnings.length} warning(s)</summary><pre style="white-space:pre-wrap;font-size:12px;">${escape(r.warnings.join('\n'))}</pre></details>`
+            : '';
+          out.innerHTML = `<div style="color:#2f9e44;font-weight:600;">Done — ${r.updatedPartners} updated, ${r.newPartners} new partner(s), ${r.upsertedMerchants} merchant(s) upserted${fail ? `, ${fail} partner(s) failed` : ''}${mfail ? `, ${mfail} merchant(s) failed` : ''}.</div>${warn}`;
+        } catch (e) {
+          out.innerHTML = `<p style="color:var(--loss);">Error: ${escape(e.message)}</p>`;
+          btn.disabled = false; btn.textContent = `Apply to ${updates.length} partner(s)`;
         }
-        out.innerHTML = `<div style="color:#2f9e44;font-weight:600;">Done — ${okP} updated, ${newP} new partner(s), ${okM} merchant(s) upserted${fail ? `, ${fail} partner(s) failed` : ''}.</div>`;
       });
     } catch (err) {
       out.innerHTML = `<p style="color:var(--loss);">Error: ${escape(err.message)}</p>`;
