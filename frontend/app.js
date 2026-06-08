@@ -263,8 +263,16 @@ async function api(path, opts = {}) {
 
 // === router + screens ===
 function initApp() {
+  const rs = document.getElementById('region-switch');
+  if (rs) { rs.value = REGION; rs.onchange = e => switchRegion(e.target.value); }
   renderNav();
   renderPartnersList();
+}
+
+function switchRegion(rk) {
+  if (!(rk in REGIONS) || rk === REGION) return;
+  try { localStorage.setItem('rs_region', rk); } catch {}
+  location.reload();   // full reset — partner/run/merchant state is per-backend
 }
 
 async function renderPartnersList() {
