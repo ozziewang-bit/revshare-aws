@@ -212,10 +212,19 @@ domain exists.
 
 ## 8. Deploy commands
 
-Backend (Lambda code):
+Backend (Lambda code) — Thailand only:
 ```bash
 ./infra/deploy-lambda.sh
 ```
+
+Backend — **BOTH regions in one command** (revshare-aws is the source of truth;
+syncs shared code TH→SG except `db.mjs`, then deploys `revshare-api` + `revshare-api-sg`):
+```bash
+./infra/deploy-lambda-all.sh        # set REVSHARE_SG_ROOT if the SG repo isn't at ~/revshare_sg
+```
+If it reports SG code changed, commit it in the `revshare_sg` repo. (`db.mjs` is
+never synced — it holds each region's table/bucket; mirror db.mjs logic changes
+by hand.) The frontend is a single shared site (one deploy serves both regions).
 
 Frontend (SPA):
 ```bash
