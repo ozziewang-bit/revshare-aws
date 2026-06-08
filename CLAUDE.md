@@ -70,6 +70,17 @@ design (user requirement: keep historical periods as-is).
 the KA file on 2026-05-31. The canonical 2026-05 run total is **680,172.65**
 (per-machine placement); an earlier 528,383.32 run is superseded but still stored.
 
+**Aggregation mode + MG floors (2026-06-08):** a `higher`/`hybrid-higher` rule's
+MG floor only applies **per merchant** when the partner is `aggregationMode:
+per_store`. In `whole` mode the `max(GP, MG)` collapses to the partner aggregate,
+so small stores get only their GP slice (no floor). **7-Eleven** was switched to
+`per_store` on 2026-06-08 for this reason (per-store guarantee; partner total
+244,527.50 → 333,252.50 on 2026-05 — pending a re-upload of more accurate raw
+data). **กะทู้** has the same `max(50% GP, S8=200)` shape and is still `whole`
+(should be flipped; no current impact). BIG-C/BTS/AOT/Turtle Shop are MG-dominated
+at every store, so whole == per_store — no change needed. The engine + per-merchant
+CSV already handle per_store correctly; this was a config issue, not a code bug.
+
 Tests: `npm test` → **50/50** pass.
 
 ## 2. Live URLs and resources
