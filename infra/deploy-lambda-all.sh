@@ -20,8 +20,12 @@ SG_CODE="$SG_ROOT/lambda/revshare-api/code"
 [ -d "$SG_CODE" ] || { echo "ERROR: SG repo not found at $SG_ROOT (set REVSHARE_SG_ROOT)"; exit 1; }
 
 echo "→ Syncing backend code TH → SG (preserving SG db.mjs)…"
-for f in index.mjs engine.mjs csv.mjs package.json; do
-  cp "$TH_CODE/$f" "$SG_CODE/$f"
+# Sync ALL shared top-level files EXCEPT db.mjs (region-specific table/bucket names),
+# so new modules (e.g. auth.mjs, users-db.mjs) are never missed.
+for f in "$TH_CODE"/*.mjs "$TH_CODE"/*.json; do
+  base="$(basename "$f")"
+  [ "$base" = "db.mjs" ] && continue
+  cp "$f" "$SG_CODE/$base"
 done
 cp "$TH_CODE"/routes/*.mjs "$SG_CODE"/routes/
 

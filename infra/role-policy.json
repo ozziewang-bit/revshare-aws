@@ -13,6 +13,11 @@
       "Effect": "Allow",
       "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
       "Resource": "arn:aws:s3:::revshare-runs-812751451548-sea7/*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:Scan"],
+      "Resource": "arn:aws:dynamodb:ap-southeast-7:812751451548:table/RevshareUsers"
     }
   ]
 }

@@ -1,7 +1,7 @@
 # revshare-aws — handoff
 
 Last updated: 2026-06-08 (server-side rule-batch endpoint; rule model overhaul, S3 runs, Analytics/Update tabs, Thailand branding).
-Service-worker `CACHE_VERSION` is at `revshare-v61` (bump on every shell change).
+Service-worker `CACHE_VERSION` is at `revshare-v65` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
 end-to-end before touching anything. The codebase is the ultimate source of
@@ -244,17 +244,35 @@ If/when CloudFront is provisioned:
 REVSHARE_CLOUDFRONT_DIST_ID=EXXXXXX ./infra/deploy-frontend.sh
 ```
 
-## 9. Auth
+## 9. Auth (Google Sign-In + per-feature access control — 2026-06-11)
 
-**No auth.** Removed 2026-05-28. If you ever want to add it back:
-- The auth-fail rate-limit row family already existed in DDB design — you
-  can resurrect it without a schema change.
-- The pattern from `expense` (scrypt hash in SSM, `x-app-password` header,
-  in-memory cache, IP rate limit) is the right template; check the
-  `expense` project's `lambda/expense-data-api/code/index.mjs` for the
-  current shape.
-- Reapply SSM read to the Lambda IAM role (currently removed —
-  `infra/role-policy.json`).
+**Google Sign-In, read-only baseline, admin-granted permissions.** Spec/plan:
+`docs/superpowers/specs/2026-06-11-google-auth-access-control-design.md` +
+`docs/superpowers/plans/2026-06-11-google-auth-access-control.md`.
+
+- **AuthN:** Google Identity Services (client-side ID token / JWT). Frontend login gate
+  (`#login-gate` in index.html + `boot()`/`initGsi()`/`onCredential()` in app.js); token
+  stored in `localStorage('rs_idtoken')`, sent as `Authorization: Bearer` by `api()`; 401 →
+  clear + re-prompt. `GOOGLE_CLIENT_ID` is a public constant in app.js (set at deploy).
+- **Backend gate** (`index.mjs`, after the OPTIONS/`/healthz` short-circuits): `auth.mjs`
+  `verifyGoogleToken` checks RS256 sig vs Google's cached JWKS (Node `crypto.subtle`, **no
+  npm dep**), `aud === GOOGLE_CLIENT_ID`, issuer, exp (60s skew), `email_verified`, and
+  `hd ∈ ALLOWED_DOMAINS`. Then `resolvePermissions(email, row, ADMIN_EMAILS)` →
+  `requiredPermission(method, path)` → 401/403. `/healthz` is the only public route.
+- **AuthZ:** 7 permissions `editPartners, runCalcs, deleteRuns, manageMerchants,
+  manageDeviceTypes, applyRuleBatch, admin` (`admin` ⇒ all). admin email (env) ⇒ all; else
+  a **`RevshareUsers`** DDB row (`{email, permissions, updatedAt, updatedBy}`); else
+  read-only. Frontend gates controls with `can(perm)`; admin **Users** screen
+  (`renderUsersScreen`) edits grants via `/users`.
+- **Shared users table:** one `RevshareUsers` table (ap-southeast-7) read by **both**
+  Lambdas via `users-db.mjs` (own DDB client, table name a shared constant — NOT in the
+  region-specific `db.mjs`). IAM `revshare-users-access` inline policy on both roles.
+- **Config (Lambda env, both functions):** `GOOGLE_CLIENT_ID`, `ALLOWED_DOMAINS`
+  (`inforich.com,inforichjapan.com`), `ADMIN_EMAILS` (`ozzie.wang@inforich.com`).
+- **Routes added:** `GET /me`, `GET/PUT/DELETE /users` (admin-only). Tests:
+  `tests/auth.test.mjs` (resolver + route map). CORS now allows `authorization`.
+- **deploy-lambda-all.sh fix:** it now syncs ALL top-level `*.mjs`/`*.json` except `db.mjs`
+  (was a hardcoded list that missed new modules like `auth.mjs`/`users-db.mjs`).
 
 ## 10. Critical rules — don't break these
 

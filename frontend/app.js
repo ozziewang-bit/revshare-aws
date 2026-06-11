@@ -8,7 +8,7 @@ const REGIONS = {
 let REGION = (localStorage.getItem('rs_region') in REGIONS) ? localStorage.getItem('rs_region') : 'th';
 const R = () => REGIONS[REGION];
 const API_URL = R().api;
-const GOOGLE_CLIENT_ID = '__GOOGLE_CLIENT_ID__';   // public OAuth client ID, real value set at deploy time
+const GOOGLE_CLIENT_ID = '1087526052921-3426va3t0ah8lnbfndvp739uf37sc7uv.apps.googleusercontent.com';   // public OAuth client ID
 let ID_TOKEN = localStorage.getItem('rs_idtoken') || '';
 let ME = null;   // { email, name, permissions }
 const can = perm => !!(ME && ME.permissions && ME.permissions[perm]);
