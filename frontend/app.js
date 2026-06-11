@@ -307,11 +307,11 @@ async function renderPartnersList() {
   main.innerHTML = `
     <div class="page-head">
       <h2>Partners</h2>
-      <button id="new-partner" class="btn-primary">+ New partner</button>
+      ${can('editPartners') ? '<button id="new-partner" class="btn-primary">+ New partner</button>' : ''}
     </div>
     <input id="partner-search" class="search-input" placeholder="Search partners…" autocomplete="off">
     <div id="partners-out">Loading…</div>`;
-  document.getElementById('new-partner').addEventListener('click', () => renderNewPartnerForm());
+  document.getElementById('new-partner')?.addEventListener('click', () => renderNewPartnerForm());
   try {
     const [partners, merchants] = await Promise.all([api('/partners'), api('/merchants')]);
     const countByPartner = {};
@@ -391,15 +391,15 @@ function renderNav() {
   const nav = document.getElementById('topnav');
   nav.innerHTML = `
     <button id="nav-partners" class="nav-btn active">Partners</button>
-    <button id="nav-bulk-runs" class="nav-btn">Run share</button>
+    ${can('runCalcs') ? '<button id="nav-bulk-runs" class="nav-btn">Run share</button>' : ''}
     <button id="nav-revshare-path" class="nav-btn">Analytics</button>
     <button id="nav-device-types" class="nav-btn">Device Types</button>
-    <button id="nav-import" class="nav-btn">Update</button>`;
+    ${can('applyRuleBatch') ? '<button id="nav-import" class="nav-btn">Update</button>' : ''}`;
   nav.querySelector('#nav-partners').addEventListener('click', () => { setActiveNav('nav-partners'); renderPartnersList(); });
-  nav.querySelector('#nav-bulk-runs').addEventListener('click', () => { setActiveNav('nav-bulk-runs'); renderBulkRunsList(); });
+  nav.querySelector('#nav-bulk-runs')?.addEventListener('click', () => { setActiveNav('nav-bulk-runs'); renderBulkRunsList(); });
   nav.querySelector('#nav-revshare-path').addEventListener('click', () => { setActiveNav('nav-revshare-path'); renderRevsharePathScreen(); });
   nav.querySelector('#nav-device-types').addEventListener('click', () => { setActiveNav('nav-device-types'); renderDeviceTypesScreen(); });
-  nav.querySelector('#nav-import').addEventListener('click', () => { setActiveNav('nav-import'); renderImportScreen(); });
+  nav.querySelector('#nav-import')?.addEventListener('click', () => { setActiveNav('nav-import'); renderImportScreen(); });
 }
 
 function setActiveNav(id) {
@@ -551,12 +551,12 @@ async function renderDeviceTypesScreen() {
   main.innerHTML = `
     <div class="page-head">
       <h2>Device Types</h2>
-      <button id="add-model-btn" class="btn-primary">+ Add device type</button>
+      ${can('manageDeviceTypes') ? '<button id="add-model-btn" class="btn-primary">+ Add device type</button>' : ''}
     </div>
     <div id="model-form-slot"></div>
     <div id="models-out">Loading…</div>`;
 
-  document.getElementById('add-model-btn').addEventListener('click', showAddModelForm);
+  document.getElementById('add-model-btn')?.addEventListener('click', showAddModelForm);
 
   async function loadModels() {
     const out = document.getElementById('models-out');
@@ -572,8 +572,8 @@ async function renderDeviceTypesScreen() {
               <td>${escape(m.displayName)}</td>
               <td><span class="badge badge-neutral">${escape(m.code)}</span></td>
               <td>
-                <button class="btn-ghost edit-model" data-code="${escape(m.code)}" data-dn="${escape(m.displayName)}">Edit</button>
-                <button class="btn-ghost del-model" data-code="${escape(m.code)}" style="color:var(--loss)">Delete</button>
+                ${can('manageDeviceTypes') ? `<button class="btn-ghost edit-model" data-code="${escape(m.code)}" data-dn="${escape(m.displayName)}">Edit</button>` : ''}
+                ${can('manageDeviceTypes') ? `<button class="btn-ghost del-model" data-code="${escape(m.code)}" style="color:var(--loss)">Delete</button>` : ''}
               </td>
             </tr>`).join('')}
         </tbody>
@@ -700,8 +700,8 @@ async function parseKaExcel(file) {
 
 async function renderBulkRunsList() {
   const main = document.getElementById('main');
-  main.innerHTML = `<div class="page-head"><h2>Run share</h2><button id="new-bulk-run" class="btn-primary">+ New run</button></div><div id="bulk-runs-out">Loading…</div>`;
-  document.getElementById('new-bulk-run').addEventListener('click', renderNewBulkRunForm);
+  main.innerHTML = `<div class="page-head"><h2>Run share</h2>${can('runCalcs') ? '<button id="new-bulk-run" class="btn-primary">+ New run</button>' : ''}</div><div id="bulk-runs-out">Loading…</div>`;
+  document.getElementById('new-bulk-run')?.addEventListener('click', renderNewBulkRunForm);
   const runs = await api('/bulk-runs');
   const out = document.getElementById('bulk-runs-out');
   if (!runs.length) { out.innerHTML = '<p class="muted">No calculations yet.</p>'; return; }
@@ -712,7 +712,7 @@ async function renderBulkRunsList() {
       <td>${r.partnerCount}</td>
       <td>${(r.totalPayout || 0).toFixed(2)}</td>
       <td>${r.unmatchedCount > 0 ? `<span style="color:#f03e3e;">${r.unmatchedCount}</span>` : '0'}</td>
-      <td style="text-align:right;"><button class="btn-ghost del-run" data-id="${r.runId}" style="color:var(--loss);">Delete</button></td>
+      <td style="text-align:right;">${can('deleteRuns') ? `<button class="btn-ghost del-run" data-id="${r.runId}" style="color:var(--loss);">Delete</button>` : ''}</td>
     </tr>`).join('')}</tbody></table>`;
   out.querySelectorAll('tr[data-id]').forEach(tr => {
     tr.addEventListener('click', () => renderBulkRunDetail(tr.dataset.id));
@@ -1322,13 +1322,13 @@ async function renderPartnerDetail(partnerId) {
     if (!bar || !ruleContainer) return;
     bar.innerHTML = `
       <span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--ink-soft);background:var(--surface-muted);border:1px solid var(--border);border-radius:99px;padding:4px 12px;margin-right:8px;">👁 View only</span>
-      <button id="edit-rule-btn" class="btn-primary" style="padding:6px 14px;font-size:12.5px;">Edit rule</button>`;
+      ${can('editPartners') ? '<button id="edit-rule-btn" class="btn-primary" style="padding:6px 14px;font-size:12.5px;">Edit rule</button>' : ''}`;
     renderStructuredRuleEditor(ruleContainer, p.rule, machineModels, { readOnly: true });
     const npRow = document.getElementById('nopay-row');
     if (npRow) npRow.innerHTML = p.noPayout
       ? `<span class="badge badge-neutral">No payout</span> <span class="muted" style="font-size:12.5px;">This partner has no revenue share — not paid in runs.</span>`
       : '';
-    document.getElementById('edit-rule-btn').addEventListener('click', () => showRuleEdit(machineModels));
+    document.getElementById('edit-rule-btn')?.addEventListener('click', () => showRuleEdit(machineModels));
   }
 
   function showRuleEdit(machineModels) {
@@ -1405,11 +1405,11 @@ async function renderMerchantsTab(partnerId) {
         <span>${merchants.length} merchant${merchants.length !== 1 ? 's' : ''}</span>
         ${merchants.length > 0 ? `<button id="export-terms-btn" class="btn" style="font-size:12px;padding:5px 12px;">↓ Export terms</button>` : ''}
       </div>
-      <div style="display:flex;gap:6px;">
+      ${can('manageMerchants') ? `<div style="display:flex;gap:6px;">
         <button id="batch-csv-btn" class="btn">↑ CSV upload</button>
         <button id="batch-rows-btn" class="btn">+ Add rows</button>
         <button id="add-merchant-btn" class="btn-primary">+ Add one</button>
-      </div>
+      </div>` : ''}
     </div>
     <div id="batch-panel-slot"></div>
     ${merchants.length === 0 ? '<p class="muted">No merchants yet. Add one or import from Excel.</p>' : `
@@ -1419,8 +1419,8 @@ async function renderMerchantsTab(partnerId) {
           <td>${escape(m.name)}</td>
           <td>${m.machineModel ? `<span class="badge badge-neutral">${escape(machineModels.find(mm => mm.code === m.machineModel)?.displayName || m.machineModel)}</span>` : '—'}</td>
           <td>
-            <button class="btn-ghost edit-m" data-id="${m.merchantId}">Edit</button>
-            <button class="btn-ghost del-m" data-id="${m.merchantId}">Delete</button>
+            ${can('manageMerchants') ? `<button class="btn-ghost edit-m" data-id="${m.merchantId}">Edit</button>` : ''}
+            ${can('manageMerchants') ? `<button class="btn-ghost del-m" data-id="${m.merchantId}">Delete</button>` : ''}
           </td>
         </tr>`).join('')}
     </tbody></table>`}
@@ -1449,12 +1449,12 @@ async function renderMerchantsTab(partnerId) {
   });
 
   const batchSlot = container.querySelector('#batch-panel-slot');
-  container.querySelector('#batch-csv-btn').addEventListener('click', () => {
+  container.querySelector('#batch-csv-btn')?.addEventListener('click', () => {
     const isOpen = batchSlot.dataset.panel === 'csv';
     batchSlot.dataset.panel = isOpen ? '' : 'csv';
     isOpen ? (batchSlot.innerHTML = '') : showBatchCsvPanel(partnerId, machineModels, () => renderMerchantsTab(partnerId));
   });
-  container.querySelector('#batch-rows-btn').addEventListener('click', () => {
+  container.querySelector('#batch-rows-btn')?.addEventListener('click', () => {
     const isOpen = batchSlot.dataset.panel === 'rows';
     batchSlot.dataset.panel = isOpen ? '' : 'rows';
     isOpen ? (batchSlot.innerHTML = '') : showBatchRowsPanel(partnerId, machineModels, () => renderMerchantsTab(partnerId));
