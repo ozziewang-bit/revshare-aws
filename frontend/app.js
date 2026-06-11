@@ -8,6 +8,10 @@ const REGIONS = {
 let REGION = (localStorage.getItem('rs_region') in REGIONS) ? localStorage.getItem('rs_region') : 'th';
 const R = () => REGIONS[REGION];
 const API_URL = R().api;
+const GOOGLE_CLIENT_ID = '__GOOGLE_CLIENT_ID__';   // public OAuth client ID, real value set at deploy time
+let ID_TOKEN = localStorage.getItem('rs_idtoken') || '';
+let ME = null;   // { email, name, permissions }
+const can = perm => !!(ME && ME.permissions && ME.permissions[perm]);
 const CCY = R().ccy;
 
 const CURRENCIES = ['TWD', 'USD', 'HKD', 'JPY', 'IDR', 'THB', 'SGD'];
@@ -253,12 +257,35 @@ const PRESET_META = {
 };
 async function api(path, opts = {}) {
   const headers = { 'content-type': 'application/json', ...(opts.headers || {}) };
+  if (ID_TOKEN) headers['authorization'] = 'Bearer ' + ID_TOKEN;
   const res = await fetch(API_URL + path, { ...opts, headers });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`HTTP ${res.status}: ${text}`);
-  }
+  if (res.status === 401) { ID_TOKEN = ''; localStorage.removeItem('rs_idtoken'); showLoginGate(); throw new Error('unauthenticated'); }
+  if (!res.ok) { const text = await res.text(); throw new Error(`HTTP ${res.status}: ${text}`); }
   return res.status === 204 ? null : res.json();
+}
+function showLoginGate(msg) {
+  const g = document.getElementById('login-gate'); if (g) g.hidden = false;
+  const m = document.getElementById('main'); if (m) m.style.display = 'none';
+  if (msg) { const e = document.getElementById('login-err'); if (e) e.textContent = msg; }
+}
+function hideLoginGate() {
+  const g = document.getElementById('login-gate'); if (g) g.hidden = true;
+  const m = document.getElementById('main'); if (m) m.style.display = '';
+}
+async function onCredential(response) {
+  ID_TOKEN = response.credential; localStorage.setItem('rs_idtoken', ID_TOKEN);
+  try { ME = await api('/me'); } catch (e) { showLoginGate('That account is not allowed. Use your @inforich.com / @inforichjapan.com account.'); return; }
+  hideLoginGate(); initApp();
+}
+function initGsi() {
+  if (!window.google || !google.accounts) { return setTimeout(initGsi, 200); }
+  google.accounts.id.initialize({ client_id: GOOGLE_CLIENT_ID, callback: onCredential, auto_select: true });
+  google.accounts.id.renderButton(document.getElementById('gsi-btn'), { theme: 'outline', size: 'large', type: 'standard' });
+  google.accounts.id.prompt();
+}
+async function boot() {
+  if (ID_TOKEN) { try { ME = await api('/me'); hideLoginGate(); initApp(); return; } catch (_) { /* fall through to sign-in */ } }
+  showLoginGate(); initGsi();
 }
 
 // === router + screens ===
@@ -1940,4 +1967,4 @@ async function downloadPdf(run) {
 }
 
 // Boot
-initApp();
+boot();
