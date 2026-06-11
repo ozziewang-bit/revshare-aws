@@ -13,7 +13,8 @@ separation — permissions are global across TH + SG.
 
 ## Decisions (from brainstorming)
 - **AuthN:** Google Identity Services (client-side ID token / JWT). No passwords, no callback
-  server. Restrict to Workspace domain `@inforich.com` (`hd` claim).
+  server. Restrict to Workspace domains `@inforich.com` **and** `@inforichjapan.com`
+  (`hd` claim ∈ allowed list).
 - **AuthZ:** a single shared `RevshareUsers` DynamoDB table, keyed by email, read by both
   Lambdas. Permissions are global.
 - **Baseline:** any verified domain user with no grants → read-only (GETs allowed, mutations
@@ -51,7 +52,7 @@ Pure resolver (unit-tested): `resolvePermissions(email, row, adminEmails) → pe
    - `verifyGoogleToken(idToken) → { email, hd, ... }`: parse JWT; fetch & **cache Google's
      JWKS** (`https://www.googleapis.com/oauth2/v3/certs`); verify RS256 via Node 22
      `crypto.subtle` (no new npm dependency); check `aud === GOOGLE_CLIENT_ID`, `exp`, `iss`
-     ∈ google issuers, and `hd === ALLOWED_DOMAIN`. Throw on any failure.
+     ∈ google issuers, and `hd ∈ ALLOWED_DOMAINS`. Throw on any failure.
    - `resolvePermissions(email, row, adminEmails)` — the pure function above.
    - `requiredPermission(method, path) → 'editPartners' | … | null` (null = read/any-token).
 2. **`index.mjs` gate:** after the OPTIONS/`/healthz` short-circuits, on every other request:
@@ -66,8 +67,9 @@ Pure resolver (unit-tested): `resolvePermissions(email, row, adminEmails) → pe
    (`GET /users`, `PUT /users/:email`, `DELETE /users/:email`; admin-only — guarded centrally
    + defensively in-route). `PUT` records `updatedAt`, `updatedBy`.
 5. **CORS:** add `authorization` to `access-control-allow-headers` (OPTIONS + `cors()`).
-6. **Config (Lambda env vars, both functions):** `GOOGLE_CLIENT_ID`, `ALLOWED_DOMAIN`
-   (`inforich.com`), `ADMIN_EMAILS` (comma-separated). No SSM needed.
+6. **Config (Lambda env vars, both functions):** `GOOGLE_CLIENT_ID`, `ALLOWED_DOMAINS`
+   (comma-separated: `inforich.com,inforichjapan.com`), `ADMIN_EMAILS` (comma-separated).
+   No SSM needed.
 
 ## Frontend
 1. **Login gate** (`index.html` pre-paint + `app.js`): if no valid token in storage, render a
@@ -100,7 +102,8 @@ both `revshare-api` and `revshare-api-sg`.
 - New unit tests (`node:test`): `resolvePermissions` (admin / row / baseline), and
   `requiredPermission(method, path)` for the route map. Engine tests unaffected → `npm test`
   stays green.
-- Manual: sign in with an @inforich.com account → read-only; non-domain account → rejected;
+- Manual: sign in with an @inforich.com or @inforichjapan.com account → read-only;
+  a non-allowed-domain account → rejected;
   admin grants `runCalcs` → Run-share appears + a bulk run succeeds; without it → tab hidden
   and `POST /bulk-runs` returns 403; Users screen hidden for non-admins; both TH + SG enforce.
 
