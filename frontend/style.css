@@ -557,6 +557,20 @@ table.ts tfoot td {
 .row-norule td { background: var(--loss-soft); }
 .row-norule:hover td { background: #f6dcdc; }
 
+/* Prominent "No revenue share" toggle (partner rule tab + new-partner form). */
+.nopay-toggle {
+  display: flex; align-items: flex-start; gap: 11px;
+  border: 1.5px solid var(--border); border-radius: 10px;
+  padding: 13px 15px; margin-bottom: 16px; max-width: 540px;
+  background: var(--surface-muted); cursor: pointer;
+  transition: border-color .12s, background .12s;
+}
+.nopay-toggle:hover { border-color: var(--ink-faint); }
+.nopay-toggle.on { border-color: var(--accent); background: var(--accent-soft); }
+.nopay-toggle input[type=checkbox] { width: 18px; height: 18px; margin: 1px 0 0; flex: none; cursor: pointer; }
+.nopay-toggle .t1 { display: block; font-weight: 700; font-size: 13.5px; }
+.nopay-toggle .t2 { display: block; font-size: 12px; color: var(--ink-soft); margin-top: 3px; }
+
 /* ============ SEARCH INPUT ============ */
 .search-input {
   display: block;

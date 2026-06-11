@@ -1034,7 +1034,7 @@ async function renderNewPartnerForm() {
       </label>
       <div style="border-top:1px solid var(--border);margin-top:18px;padding-top:16px;">
         <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:14px;">Revenue rule <span style="font-weight:400;text-transform:none;letter-spacing:0;">(optional — can be set later)</span></div>
-        <label style="display:inline-flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;margin-bottom:14px;"><input type="checkbox" name="noPayout" style="width:auto;margin:0;"> No revenue share — this partner is not paid.</label>
+        <label class="nopay-toggle"><input type="checkbox" name="noPayout"><span><span class="t1">🚫 No revenue share — not paid</span><span class="t2">This partner is excluded from all payouts and skipped in bulk runs.</span></span></label>
         <div id="new-rule-container"></div>
       </div>
       <div>
@@ -1054,7 +1054,7 @@ async function renderNewPartnerForm() {
 
   const npCb = document.querySelector('#new-partner-form input[name="noPayout"]');
   const npContainer = document.getElementById('new-rule-container');
-  if (npCb && npContainer) { const dim = () => { npContainer.style.opacity = npCb.checked ? '.45' : '1'; npContainer.style.pointerEvents = npCb.checked ? 'none' : ''; }; npCb.addEventListener('change', dim); dim(); }
+  if (npCb && npContainer) { const lab = npCb.closest('.nopay-toggle'); const dim = () => { if (lab) lab.classList.toggle('on', npCb.checked); npContainer.style.opacity = npCb.checked ? '.45' : '1'; npContainer.style.pointerEvents = npCb.checked ? 'none' : ''; }; npCb.addEventListener('change', dim); dim(); }
 
   document.getElementById('new-partner-form').addEventListener('submit', async (ev) => {
     ev.preventDefault();
@@ -1311,10 +1311,10 @@ async function renderPartnerDetail(partnerId) {
     const editor = renderStructuredRuleEditor(ruleContainer, p.rule, machineModels, { readOnly: false });
     const npRow = document.getElementById('nopay-row');
     if (npRow) {
-      npRow.innerHTML = `<label style="display:inline-flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;">
-        <input type="checkbox" id="nopay-cb" ${p.noPayout ? 'checked' : ''} style="width:auto;margin:0;"> No revenue share — this partner is not paid.</label>`;
+      npRow.innerHTML = `<label class="nopay-toggle"><input type="checkbox" id="nopay-cb" ${p.noPayout ? 'checked' : ''}><span><span class="t1">🚫 No revenue share — not paid</span><span class="t2">This partner is excluded from all payouts and skipped in bulk runs.</span></span></label>`;
       const cb = document.getElementById('nopay-cb');
-      const dim = () => { ruleContainer.style.opacity = cb.checked ? '.45' : '1'; ruleContainer.style.pointerEvents = cb.checked ? 'none' : ''; };
+      const lab = npRow.querySelector('.nopay-toggle');
+      const dim = () => { if (lab) lab.classList.toggle('on', cb.checked); ruleContainer.style.opacity = cb.checked ? '.45' : '1'; ruleContainer.style.pointerEvents = cb.checked ? 'none' : ''; };
       cb.addEventListener('change', dim); dim();
     }
     bar.innerHTML = `
