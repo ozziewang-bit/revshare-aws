@@ -394,12 +394,14 @@ function renderNav() {
     ${can('runCalcs') ? '<button id="nav-bulk-runs" class="nav-btn">Run share</button>' : ''}
     <button id="nav-revshare-path" class="nav-btn">Analytics</button>
     <button id="nav-device-types" class="nav-btn">Device Types</button>
-    ${can('applyRuleBatch') ? '<button id="nav-import" class="nav-btn">Update</button>' : ''}`;
+    ${can('applyRuleBatch') ? '<button id="nav-import" class="nav-btn">Update</button>' : ''}
+    ${can('admin') ? '<button id="nav-users" class="nav-btn">Users</button>' : ''}`;
   nav.querySelector('#nav-partners').addEventListener('click', () => { setActiveNav('nav-partners'); renderPartnersList(); });
   nav.querySelector('#nav-bulk-runs')?.addEventListener('click', () => { setActiveNav('nav-bulk-runs'); renderBulkRunsList(); });
   nav.querySelector('#nav-revshare-path').addEventListener('click', () => { setActiveNav('nav-revshare-path'); renderRevsharePathScreen(); });
   nav.querySelector('#nav-device-types').addEventListener('click', () => { setActiveNav('nav-device-types'); renderDeviceTypesScreen(); });
   nav.querySelector('#nav-import')?.addEventListener('click', () => { setActiveNav('nav-import'); renderImportScreen(); });
+  nav.querySelector('#nav-users')?.addEventListener('click', () => { setActiveNav('nav-users'); renderUsersScreen(); });
 }
 
 function setActiveNav(id) {
@@ -492,6 +494,31 @@ async function renderImportScreen() {
       out.innerHTML = `<p style="color:var(--loss);">Error: ${escape(err.message)}</p>`;
     }
   });
+}
+
+const PERM_LABELS = { editPartners:'Edit partners & rules', runCalcs:'Run calcs', deleteRuns:'Delete runs', manageMerchants:'Manage merchants', manageDeviceTypes:'Device types', applyRuleBatch:'Rule-batch', admin:'Admin' };
+async function renderUsersScreen() {
+  const main = document.getElementById('main');
+  main.innerHTML = '<h2>Users</h2><p class="muted">Grant per-feature access. Anyone with a company Google account can sign in (read-only) until granted more.</p><div id="users-out">Loading…</div>';
+  const users = await api('/users');
+  const keys = Object.keys(PERM_LABELS);
+  const rowHtml = u => `<tr data-email="${escape(u.email)}"><td>${escape(u.email)}</td>${keys.map(k => `<td style="text-align:center"><input type="checkbox" data-perm="${k}" ${u.permissions?.[k] ? 'checked' : ''}></td>`).join('')}<td><button class="btn-primary" data-save>Save</button> <button data-del>Remove</button></td></tr>`;
+  document.getElementById('users-out').innerHTML = `
+    <div style="margin:10px 0;"><input id="new-user-email" placeholder="email@inforich.com" style="width:240px"> <button id="add-user" class="btn-primary">Add user</button></div>
+    <table class="ts"><thead><tr><th>Email</th>${keys.map(k => `<th>${escape(PERM_LABELS[k])}</th>`).join('')}<th></th></tr></thead>
+    <tbody>${users.map(rowHtml).join('') || '<tr><td colspan="9" class="muted">No granted users yet.</td></tr>'}</tbody></table>`;
+  const save = async tr => {
+    const email = tr.dataset.email;
+    const permissions = {}; tr.querySelectorAll('input[data-perm]').forEach(c => permissions[c.dataset.perm] = c.checked);
+    await api('/users/' + encodeURIComponent(email), { method: 'PUT', body: JSON.stringify({ permissions }) });
+  };
+  document.querySelectorAll('#users-out [data-save]').forEach(b => b.onclick = () => save(b.closest('tr')).then(() => b.textContent = 'Saved ✓'));
+  document.querySelectorAll('#users-out [data-del]').forEach(b => b.onclick = async () => { const tr = b.closest('tr'); await api('/users/' + encodeURIComponent(tr.dataset.email), { method: 'DELETE' }); tr.remove(); });
+  document.getElementById('add-user').onclick = async () => {
+    const email = document.getElementById('new-user-email').value.trim().toLowerCase(); if (!email) return;
+    await api('/users/' + encodeURIComponent(email), { method: 'PUT', body: JSON.stringify({ permissions: {} }) });
+    renderUsersScreen();
+  };
 }
 
 async function renderRevsharePathScreen() {
