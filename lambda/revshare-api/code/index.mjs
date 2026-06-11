@@ -1,3 +1,12 @@
+import { verifyGoogleToken, resolvePermissions, requiredPermission } from './auth.mjs';
+import { getUser } from './users-db.mjs';
+import { meRoute } from './routes/me.mjs';
+import { listUsersRoute, putUserRoute, deleteUserRoute } from './routes/users.mjs';
+
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
+const ALLOWED_DOMAINS = (process.env.ALLOWED_DOMAINS || '').split(',').map(s => s.trim()).filter(Boolean);
+const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || '').split(',').map(s => s.trim()).filter(Boolean);
+
 import {
   listPartnersRoute, createPartnerRoute,
   getPartnerRoute, updatePartnerRoute, archivePartnerRoute
@@ -26,12 +35,27 @@ export const handler = async (event) => {
       headers: {
         'access-control-allow-origin': '*',
         'access-control-allow-methods': 'GET,POST,PUT,DELETE,OPTIONS',
-        'access-control-allow-headers': 'content-type,x-app-password',
+        'access-control-allow-headers': 'content-type,authorization',
       },
       body: ''
     };
 
     if (method === 'GET' && path === '/healthz') return ok({ ok: true });
+
+    // ── Auth gate (everything except OPTIONS + /healthz) ──
+    const authz = event.headers?.authorization || event.headers?.Authorization || '';
+    const token = authz.replace(/^Bearer\s+/i, '');
+    let claims;
+    try {
+      claims = await verifyGoogleToken(token, { clientId: GOOGLE_CLIENT_ID, allowedDomains: ALLOWED_DOMAINS });
+    } catch (e) {
+      return cors(resp(401, { error: 'unauthenticated', reason: e.message }));
+    }
+    const userRow = await getUser(claims.email.toLowerCase());
+    const permissions = resolvePermissions(claims.email, userRow, ADMIN_EMAILS);
+    const need = requiredPermission(method, path);
+    if (need && !permissions[need]) return cors(resp(403, { error: 'forbidden', need }));
+    event.auth = { email: claims.email.toLowerCase(), name: claims.name, permissions };
 
     let result;
     // Partners
@@ -64,6 +88,11 @@ export const handler = async (event) => {
     else if (method === 'POST'   && path === '/machine-models')                         result = await createMachineModelRoute(event);
     else if (method === 'PUT'    && /^\/machine-models\/[^/]+$/.test(path))             result = await routeMachineModel(event, updateMachineModelRoute);
     else if (method === 'DELETE' && /^\/machine-models\/[^/]+$/.test(path))             result = await routeMachineModel(event, deleteMachineModelRoute);
+    // Me + Users
+    else if (method === 'GET'    && path === '/me')                                    result = await meRoute(event);
+    else if (method === 'GET'    && path === '/users')                                 result = await listUsersRoute(event);
+    else if (method === 'PUT'    && /^\/users\/[^/]+$/.test(path))                      result = await routeUser(event, putUserRoute);
+    else if (method === 'DELETE' && /^\/users\/[^/]+$/.test(path))                     result = await routeUser(event, deleteUserRoute);
     else result = resp(404, { error: 'not_found', path, method });
 
     return cors(result);
@@ -109,6 +138,13 @@ async function routeMachineModel(event, fn) {
   const path = event.requestContext?.http?.path ?? event.rawPath ?? event.path ?? '';
   const m = path.match(/\/machine-models\/([^/]+)/);
   event.pathParameters = { ...(event.pathParameters || {}), code: m?.[1] };
+  return fn(event);
+}
+
+async function routeUser(event, fn) {
+  const path = event.requestContext?.http?.path ?? event.rawPath ?? event.path ?? '';
+  const m = path.match(/\/users\/([^/]+)/);
+  event.pathParameters = { ...(event.pathParameters || {}), email: decodeURIComponent(m?.[1] || '') };
   return fn(event);
 }
 
