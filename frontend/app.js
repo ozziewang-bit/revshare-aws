@@ -272,10 +272,26 @@ function hideLoginGate() {
   const g = document.getElementById('login-gate'); if (g) g.hidden = true;
   const m = document.getElementById('main'); if (m) m.style.display = '';
 }
+// Fetch the caller's profile, retrying transient failures (5xx / network) — e.g. the IAM
+// permission to read RevshareUsers can lag a fresh deploy by a few seconds. A 401 ("token
+// rejected") is NOT retried — that means the token is genuinely bad.
+async function fetchMe() {
+  for (let i = 0; ; i++) {
+    try { return await api('/me'); }
+    catch (e) {
+      if (e.message === 'unauthenticated' || i >= 3) throw e;
+      await new Promise(r => setTimeout(r, 600 * (i + 1)));
+    }
+  }
+}
 async function onCredential(response) {
   ID_TOKEN = response.credential; localStorage.setItem('rs_idtoken', ID_TOKEN);
-  try { ME = await api('/me'); } catch (e) { showLoginGate('That account is not allowed. Use your @inforich.com / @inforichjapan.com account.'); return; }
-  hideLoginGate(); initApp();
+  let me; try { me = await fetchMe(); } catch (e) {
+    if (e.message === 'unauthenticated') { showLoginGate('That account is not allowed. Use your @inforich.com / @inforichjapan.com account.'); }
+    else { showLoginGate('Sign-in hit a temporary error — please reload. (' + e.message + ')'); }
+    return;
+  }
+  ME = me; hideLoginGate(); initApp();
 }
 function initGsi() {
   if (!window.google || !google.accounts) { return setTimeout(initGsi, 200); }
@@ -284,7 +300,11 @@ function initGsi() {
   google.accounts.id.prompt();
 }
 async function boot() {
-  if (ID_TOKEN) { try { ME = await api('/me'); hideLoginGate(); initApp(); return; } catch (_) { /* fall through to sign-in */ } }
+  if (ID_TOKEN) {
+    let me = null;
+    try { me = await fetchMe(); } catch (_) { me = null; }   // transient/invalid → fall back to sign-in
+    if (me) { ME = me; hideLoginGate(); initApp(); return; }  // initApp runs OUTSIDE the try — an app error never bounces back to the gate
+  }
   showLoginGate(); initGsi();
 }
 
