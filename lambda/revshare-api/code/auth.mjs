@@ -47,20 +47,23 @@ const b64urlToBuf = s => Buffer.from(s.replace(/-/g, '+').replace(/_/g, '/'), 'b
 
 // Verify a Google ID token; return its claims or throw. Checks signature, aud, iss, exp, hd.
 export async function verifyGoogleToken(idToken, { clientId, allowedDomains }) {
+  if (!clientId) throw new Error('server_misconfigured');           // fail loud if env not set
   if (!idToken) throw new Error('no_token');
   const [h, p, s] = idToken.split('.');
   if (!h || !p || !s) throw new Error('malformed_token');
   const header = JSON.parse(b64urlToBuf(h).toString('utf8'));
+  if (header.alg !== 'RS256') throw new Error('bad_alg');           // pin the algorithm
   const payload = JSON.parse(b64urlToBuf(p).toString('utf8'));
   const keys = await getGoogleKeys();
-  const jwk = keys.find(k => k.kid === header.kid);
+  const jwk = keys.find(k => k.kid === header.kid && k.kty === 'RSA' && (k.use === 'sig' || k.alg === 'RS256'));
   if (!jwk) throw new Error('unknown_kid');
   const key = await webcrypto.subtle.importKey('jwk', jwk, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['verify']);
   const ok = await webcrypto.subtle.verify('RSASSA-PKCS1-v1_5', key, b64urlToBuf(s), Buffer.from(`${h}.${p}`));
   if (!ok) throw new Error('bad_signature');
   if (payload.aud !== clientId) throw new Error('bad_aud');
   if (!GOOGLE_ISSUERS.includes(payload.iss)) throw new Error('bad_iss');
-  if (payload.exp * 1000 < Date.now()) throw new Error('expired');
+  if (payload.exp * 1000 < Date.now() - 60000) throw new Error('expired');   // 60s clock-skew leeway
+  if (typeof payload.email !== 'string' || !payload.email) throw new Error('no_email');
   if (payload.email_verified !== true) throw new Error('email_unverified');
   if (!allowedDomains.map(d => d.toLowerCase()).includes((payload.hd || '').toLowerCase())) throw new Error('bad_domain');
   return payload;   // { email, hd, name, ... }
