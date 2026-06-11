@@ -264,12 +264,14 @@ async function api(path, opts = {}) {
   return res.status === 204 ? null : res.json();
 }
 function showLoginGate(msg) {
-  const g = document.getElementById('login-gate'); if (g) g.hidden = false;
+  // NOTE: the gate has inline `display:flex`, which overrides the [hidden] attribute —
+  // so we must toggle style.display directly, not just the hidden property.
+  const g = document.getElementById('login-gate'); if (g) { g.hidden = false; g.style.display = 'flex'; }
   const m = document.getElementById('main'); if (m) m.style.display = 'none';
   if (msg) { const e = document.getElementById('login-err'); if (e) e.textContent = msg; }
 }
 function hideLoginGate() {
-  const g = document.getElementById('login-gate'); if (g) g.hidden = true;
+  const g = document.getElementById('login-gate'); if (g) { g.hidden = true; g.style.display = 'none'; }
   const m = document.getElementById('main'); if (m) m.style.display = '';
 }
 // Fetch the caller's profile, retrying transient failures (5xx / network) — e.g. the IAM
