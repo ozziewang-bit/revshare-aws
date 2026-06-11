@@ -61,6 +61,14 @@ tag leaves with `_t` (term) and the root with `_method` so decompile is exact;
 legacy untagged rules fall back to heuristics. **Engine is unchanged** — it still
 just evaluates `sum`/`max`/`percent`/`flat_per_machine`/`flat_per_partner_total`.
 
+**No-payout partners (2026-06-11):** a partner can carry `noPayout: true` (set via the Rule
+tab / new-partner form checkbox "No revenue share — not paid"). Such partners show a calm
+neutral **"No payout"** badge (normal row) in the partner list and are **skipped in bulk runs
+regardless of any rule** (`bulk-runs.mjs` skips them before the no-rule check). The red
+**"No rule"** danger badge + warning banner now flag **only** partners that are empty **and
+not** `noPayout` (genuinely missing). Persisted via the partner PUT merge; create route sets
+`noPayout: !!body.noPayout`. No engine/DDB-schema change.
+
 **Business rule (load-bearing):** KA "Placement (monthly)" is charged **per
 machine / per store** (`flat_per_machine`), NOT a partner lump. MG is also
 per machine, varying by device type. (The old import wrongly treated placement

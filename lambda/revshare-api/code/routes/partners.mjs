@@ -18,6 +18,7 @@ export async function createPartnerRoute(event) {
     partnerId: ulid(),
     name, currency, aggregationMode,
     rule: body.rule || { type: 'sum', children: [] },
+    noPayout: !!body.noPayout,
     notes: '',
     archived: false
   };

@@ -327,7 +327,7 @@ async function renderPartnersList() {
         out.innerHTML = `<p class="muted">${q ? 'No partners match your search.' : 'No partners yet.'}</p>`;
         return;
       }
-      const missing = partners.filter(noRule).length;
+      const missing = partners.filter(p => noRule(p) && !p.noPayout).length;
       const banner = missing
         ? `<p class="muted" style="margin:0 0 8px;"><span class="badge badge-danger">No rule</span> ${missing} partner(s) have no rule set — they are skipped in bulk runs.</p>`
         : '';
@@ -335,8 +335,8 @@ async function renderPartnersList() {
         <table class="ts">
           <thead><tr><th>Name</th><th>Currency</th><th>Aggregation</th><th>Merchants</th></tr></thead>
           <tbody>${sorted.map(p => `
-            <tr class="row-clickable${noRule(p) ? ' row-norule' : ''}" data-id="${escape(p.partnerId)}">
-              <td>${escape(p.name)}${noRule(p) ? ' <span class="badge badge-danger">No rule</span>' : ''}</td>
+            <tr class="row-clickable${noRule(p) && !p.noPayout ? ' row-norule' : ''}" data-id="${escape(p.partnerId)}">
+              <td>${escape(p.name)}${p.noPayout ? ' <span class="badge badge-neutral">No payout</span>' : (noRule(p) ? ' <span class="badge badge-danger">No rule</span>' : '')}</td>
               <td><span class="badge badge-neutral">${escape(p.currency)}</span></td>
               <td>${escape(p.aggregationMode)}</td>
               <td>${countByPartner[p.partnerId] || 0}</td>
@@ -1034,6 +1034,7 @@ async function renderNewPartnerForm() {
       </label>
       <div style="border-top:1px solid var(--border);margin-top:18px;padding-top:16px;">
         <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:14px;">Revenue rule <span style="font-weight:400;text-transform:none;letter-spacing:0;">(optional — can be set later)</span></div>
+        <label style="display:inline-flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;margin-bottom:14px;"><input type="checkbox" name="noPayout" style="width:auto;margin:0;"> No revenue share — this partner is not paid.</label>
         <div id="new-rule-container"></div>
       </div>
       <div>
@@ -1051,12 +1052,16 @@ async function renderNewPartnerForm() {
     machineModels
   );
 
+  const npCb = document.querySelector('#new-partner-form input[name="noPayout"]');
+  const npContainer = document.getElementById('new-rule-container');
+  if (npCb && npContainer) { const dim = () => { npContainer.style.opacity = npCb.checked ? '.45' : '1'; npContainer.style.pointerEvents = npCb.checked ? 'none' : ''; }; npCb.addEventListener('change', dim); dim(); }
+
   document.getElementById('new-partner-form').addEventListener('submit', async (ev) => {
     ev.preventDefault();
     const fd = new FormData(ev.target);
     let rule;
     try { rule = editor.getRule(); } catch(e) { alert('Invalid rule JSON: ' + e.message); return; }
-    const body = { name: fd.get('name'), currency: fd.get('currency'), aggregationMode: fd.get('aggregationMode'), rule };
+    const body = { name: fd.get('name'), currency: fd.get('currency'), aggregationMode: fd.get('aggregationMode'), rule, noPayout: fd.get('noPayout') === 'on' };
     try {
       const p = await api('/partners', { method: 'POST', body: JSON.stringify(body) });
       renderPartnerDetail(p.partnerId);
@@ -1255,6 +1260,7 @@ async function renderPartnerDetail(partnerId) {
       <div id="merchants-tab-content">Loading…</div>
     </div>
     <div id="tab-rule-content" style="display:none">
+      <div id="nopay-row" style="margin-bottom:12px;"></div>
       <div id="rule-edit-bar" style="display:flex;justify-content:flex-end;margin-bottom:14px;"></div>
       <div id="rule-editor-container"></div>
     </div>
@@ -1291,6 +1297,10 @@ async function renderPartnerDetail(partnerId) {
       <span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--ink-soft);background:var(--surface-muted);border:1px solid var(--border);border-radius:99px;padding:4px 12px;margin-right:8px;">👁 View only</span>
       <button id="edit-rule-btn" class="btn-primary" style="padding:6px 14px;font-size:12.5px;">Edit rule</button>`;
     renderStructuredRuleEditor(ruleContainer, p.rule, machineModels, { readOnly: true });
+    const npRow = document.getElementById('nopay-row');
+    if (npRow) npRow.innerHTML = p.noPayout
+      ? `<span class="badge badge-neutral">No payout</span> <span class="muted" style="font-size:12.5px;">This partner has no revenue share — not paid in runs.</span>`
+      : '';
     document.getElementById('edit-rule-btn').addEventListener('click', () => showRuleEdit(machineModels));
   }
 
@@ -1299,6 +1309,14 @@ async function renderPartnerDetail(partnerId) {
     const ruleContainer = document.getElementById('rule-editor-container');
     if (!bar || !ruleContainer) return;
     const editor = renderStructuredRuleEditor(ruleContainer, p.rule, machineModels, { readOnly: false });
+    const npRow = document.getElementById('nopay-row');
+    if (npRow) {
+      npRow.innerHTML = `<label style="display:inline-flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;">
+        <input type="checkbox" id="nopay-cb" ${p.noPayout ? 'checked' : ''} style="width:auto;margin:0;"> No revenue share — this partner is not paid.</label>`;
+      const cb = document.getElementById('nopay-cb');
+      const dim = () => { ruleContainer.style.opacity = cb.checked ? '.45' : '1'; ruleContainer.style.pointerEvents = cb.checked ? 'none' : ''; };
+      cb.addEventListener('change', dim); dim();
+    }
     bar.innerHTML = `
       <button id="cancel-rule-btn" class="btn-ghost" style="margin-right:6px;">Cancel</button>
       <button id="save-rule-btn" class="btn-primary" style="padding:6px 14px;font-size:12.5px;">Save rule</button>`;
@@ -1306,10 +1324,11 @@ async function renderPartnerDetail(partnerId) {
     document.getElementById('save-rule-btn').addEventListener('click', async () => {
       let rule;
       try { rule = editor.getRule(); } catch(e) { alert('Invalid JSON: ' + e.message); return; }
+      const noPayout = !!document.getElementById('nopay-cb')?.checked;
       const btn = document.getElementById('save-rule-btn');
       btn.disabled = true; btn.textContent = 'Saving…';
-      await api('/partners/' + partnerId, { method: 'PUT', body: JSON.stringify({ rule }) });
-      p.rule = rule;
+      await api('/partners/' + partnerId, { method: 'PUT', body: JSON.stringify({ rule, noPayout }) });
+      p.rule = rule; p.noPayout = noPayout;
       showRuleView(machineModels);
     });
   }

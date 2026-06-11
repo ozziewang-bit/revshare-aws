@@ -44,6 +44,7 @@ export async function createBulkRunRoute(event) {
   for (const [partnerId, merchantRows] of Object.entries(groups)) {
     const partner = partnerMap[partnerId] || await getPartner(partnerId);
     if (!partner) { warnings.push(`Partner ${partnerId} not found, skipped`); continue; }
+    if (partner.noPayout) continue;   // marked "no payout" — not paid by design (skip silently)
     if (!partner.rule || !partner.rule.type) { warnings.push(`Partner "${partner.name}" has no rule, skipped`); continue; }
 
     const engineRows = merchantRows.map(m => ({
