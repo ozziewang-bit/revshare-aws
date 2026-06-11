@@ -259,7 +259,7 @@ async function api(path, opts = {}) {
   const headers = { 'content-type': 'application/json', ...(opts.headers || {}) };
   if (ID_TOKEN) headers['authorization'] = 'Bearer ' + ID_TOKEN;
   const res = await fetch(API_URL + path, { ...opts, headers });
-  if (res.status === 401) { ID_TOKEN = ''; localStorage.removeItem('rs_idtoken'); showLoginGate(); throw new Error('unauthenticated'); }
+  if (res.status === 401) { ID_TOKEN = ''; localStorage.removeItem('rs_idtoken'); showLoginGate(); initGsi(); throw new Error('unauthenticated'); }
   if (!res.ok) { const text = await res.text(); throw new Error(`HTTP ${res.status}: ${text}`); }
   return res.status === 204 ? null : res.json();
 }
