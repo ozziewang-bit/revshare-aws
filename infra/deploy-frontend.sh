@@ -4,6 +4,10 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUCKET="revshare-ozziemac-sea7"
 DIST_ID="${REVSHARE_CLOUDFRONT_DIST_ID:-E3JLOVJXN5DI24}"
 
+# Build stamp for live auto-update (the app polls version.json and reloads when it changes).
+printf '{"v":"%s"}\n' "$(date -u +%Y%m%d%H%M%S)" > "$ROOT/frontend/version.json"
+aws s3 cp "$ROOT/frontend/version.json" "s3://$BUCKET/version.json" --content-type "application/json" --cache-control "no-cache"
+
 # API URLs live in app.js (REGIONS config) — uploaded as-is, no injection.
 aws s3 cp "$ROOT/frontend/index.html"  "s3://$BUCKET/index.html"  --content-type "text/html"            --cache-control "no-cache"
 aws s3 cp "$ROOT/frontend/style.css"    "s3://$BUCKET/style.css"    --content-type "text/css"             --cache-control "no-cache"

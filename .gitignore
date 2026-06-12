@@ -7,3 +7,4 @@ _deploy.zip
 cdk.out/
 *.log
 lambda/**/node_modules/
+frontend/version.json

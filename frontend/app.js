@@ -2017,3 +2017,30 @@ async function downloadPdf(run) {
 
 // Boot
 boot();
+
+// ── Live auto-update: pick up new deploys without a manual hard-refresh ──
+// version.json (written by deploy-frontend.sh, served no-cache) carries the build stamp.
+// A background tab reloads itself silently on a new build; a focused tab shows a
+// click-to-update banner and reloads on its next blur. (Reload re-runs boot(); the stored
+// token keeps the user signed in.)
+(function liveUpdate() {
+  let loaded = null, pending = false;
+  const get = () => fetch('/version.json?_=' + Date.now(), { cache: 'no-store' }).then(r => r.ok ? r.json() : null).then(j => j && j.v).catch(() => null);
+  function banner() {
+    if (document.getElementById('update-banner')) return;
+    const b = document.createElement('div');
+    b.id = 'update-banner';
+    b.style.cssText = 'position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:3000;background:#1f2937;color:#fff;padding:9px 16px;border-radius:8px;font-size:13px;box-shadow:0 6px 22px rgba(0,0,0,.25);cursor:pointer';
+    b.textContent = '↻ New version available — click to update';
+    b.onclick = () => location.reload();
+    document.body.appendChild(b);
+  }
+  async function check() {
+    const v = await get(); if (!v) return;
+    if (loaded == null) { loaded = v; return; }
+    if (v !== loaded) { pending = true; if (document.hidden) location.reload(); else banner(); }
+  }
+  check();
+  setInterval(check, 60000);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) { if (pending) location.reload(); } else check(); });
+})();
