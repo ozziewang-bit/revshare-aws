@@ -188,6 +188,57 @@ function readExcel(file) {
   });
 }
 
+// ── Merchant-list (Businessmen list) parser ────────────────────────────────
+const RS_MODELS = ['S5','S8','S10','T8','T10','T20','T35','L20','L40'];
+
+function parseDeviceModel(deviceType) {
+  const s = String(deviceType || '').toUpperCase();
+  // trailing model code, e.g. "ADVERTISING PLAYER-S5" -> S5
+  const hit = RS_MODELS.filter(m => s.endsWith(m) || s.includes('-' + m) || s.includes(' ' + m));
+  return hit.length ? hit.sort((a, b) => b.length - a.length)[0] : null;
+}
+
+async function parseMerchantList(file) {
+  const wb = await readExcel(file);
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(ws, { defval: null });
+  return rows
+    .filter(r => String(r['Merchant Review State'] || '').trim().toLowerCase() === 'approved')
+    .map(r => ({
+      name: String(r['merchant name.'] || '').trim(),
+      nameEn: String(r['merchant name (English)'] || '').trim(),
+      partnerName: String(r['Merchant label'] || '').trim(),
+      model: parseDeviceModel(r['device type.']),
+      externalId: String(r['ID'] || '').trim(),
+    }))
+    .filter(r => r.name);
+}
+
+const MERCHANT_LIST_COLUMNS = [
+  'ID','merchant name.','merchant name (English)','contact','phone','Country','Province','City','County',
+  'Address','Address(English)','merchant type.','Merchant grade','Merchant label','Advertising State',
+  'Sharing amount','device type.','Cumulative Rental','Sales employee','Person in charge','Operator',
+  'Cumulative Return','entry time.','Create time','update time','Contract start date','Contract expire date',
+  'Location','Merchant Review State','Longitude','Latitude','Monday business hours',
+  'Tuesday Business Hours','Wednesday business hours','Thursday business hours',
+  'Business hours on Friday','Saturday business hours','Business hours on Sundays','Remark 1','Remark 2'
+];
+
+function downloadMerchantListSample() {
+  const example = MERCHANT_LIST_COLUMNS.map(col => {
+    if (col === 'merchant name.') return 'Example Store';
+    if (col === 'merchant name (English)') return 'Example Store';
+    if (col === 'Merchant label') return 'Example Partner';
+    if (col === 'device type.') return 'Advertising Player-S8';
+    if (col === 'Merchant Review State') return 'Approved';
+    return '';
+  });
+  const ws = XLSX.utils.aoa_to_sheet([MERCHANT_LIST_COLUMNS, example]);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Businessmen list');
+  XLSX.writeFile(wb, 'merchant-list-sample.xlsx');
+}
+
 // Friendly display labels + descriptions for the four leaf types.
 // Used by the rule-editor type pill and the add-component picker.
 const LEAF_META = {
