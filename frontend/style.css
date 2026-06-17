@@ -801,3 +801,6 @@ table.ts tfoot td {
   /* analytics search full width */
   .search-input { width: 100%; box-sizing: border-box; }
 }
+
+/* run wizard: locked (not-yet-reachable) steps */
+.wizard-step-locked { opacity: .5; pointer-events: none; }
