@@ -1,7 +1,7 @@
 # revshare-aws — handoff
 
-Last updated: 2026-06-08 (server-side rule-batch endpoint; rule model overhaul, S3 runs, Analytics/Update tabs, Thailand branding).
-Service-worker `CACHE_VERSION` is at `revshare-v65` (bump on every shell change).
+Last updated: 2026-06-17 (roster-driven 4-step run wizard; merchant-list roster; archive lock on bulk runs).
+Service-worker `CACHE_VERSION` is at `revshare-v70` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
 end-to-end before touching anything. The codebase is the ultimate source of
@@ -16,8 +16,9 @@ to produce an auditable payout breakdown plus a printable PDF statement.
 
 Full design spec: [`docs/superpowers/specs/2026-05-28-revshare-design.md`](docs/superpowers/specs/2026-05-28-revshare-design.md).
 Initial implementation plan (33 tasks): [`docs/superpowers/plans/2026-05-28-revshare.md`](docs/superpowers/plans/2026-05-28-revshare.md).
+Run-flow redesign spec + plan: [`docs/superpowers/specs/2026-06-17-revshare-run-flow-redesign-design.md`](docs/superpowers/specs/2026-06-17-revshare-run-flow-redesign-design.md) + [`docs/superpowers/plans/2026-06-17-revshare-run-flow-redesign.md`](docs/superpowers/plans/2026-06-17-revshare-run-flow-redesign.md).
 
-## 1b. CURRENT STATE (2026-05-31) — read this, the sections below are partly stale
+## 1b. CURRENT STATE (2026-06-17) — read this, the sections below are partly stale
 
 Branding: app is **"RevShare SEA"** with a topbar **Thailand/Singapore** switcher
 (`REGIONS` config in `app.js`; choice persists in `localStorage('rs_region')`,
@@ -32,21 +33,31 @@ is deprecated — the unified site lives on `d2t76jfby056ul`.
 
 **UI tabs (frontend/app.js):**
 - **Partners** — partner list + detail (Merchants / Rule / Analytics tabs).
-- **Run share** (was "Share Calculation") — bulk monthly calc. Upload an order
-  report (xlsx), it parses orders (excludes only `unpaid`; refunded kept),
-  groups by partner via merchant registry, runs each partner's rule, stores a run.
-  Run detail has: per-partner table w/ revenue-share %, unmatched-orders banner,
-  per-partner CSV zip download (`<year>_<month>_revshare.zip`), and per-run Delete.
+- **Run share** — roster-driven 4-step wizard for bulk monthly calc:
+  1. **Period** — pick period start/end.
+  2. **Merchant list** — upload the ChargeSpot "Businessmen list" `.xlsx` (Approved-only
+     roster). Partner name comes from the **`Merchant label`** column; machine model is
+     parsed from **`device type.`**. Calls `POST /bulk-runs/prepare`: upserts the merchant
+     registry, creates missing partners (empty rule), and returns rule-readiness.
+  3. **Review rules** — any roster partner with no usable rule is listed inline for immediate
+     editing. Step 4 is locked until every roster partner has a rule (or is `noPayout`).
+  4. **Order list** — upload the order report (`.xlsx`); orders are overlaid onto the roster.
+     Submits `POST /bulk-runs` with `merchants[]` + `orders[]`.
+  - **Roster-authoritative:** every roster machine becomes an engine row (rentals/revenue 0);
+    orders are overlaid by merchant name. Order-less merchants are still paid their fixed fees
+    (MG/placement) per rule. Orders whose merchant is not in the roster are **unmatched** (not
+    paid) — surfaced in a banner.
+  - Run detail: per-partner table w/ revenue-share %, unmatched-orders banner,
+    per-partner CSV zip download (`<year>_<month>_revshare.zip`), per-run Delete, and
+    **Archive** button (visible to `runCalcs` users). Archived runs show **🔒 Locked** —
+    Delete is blocked (409) and an **Unarchive** button appears for admins only.
 - **Analytics** (global + per-partner tab) — monthly combo chart (Revenue/Payout
   bars + Revenue-share % line, data labels). Global tab defaults to Total (all
   partners) with a partner search/filter. Built from stored run results.
 - **Device Types** — machine-model CRUD.
-- **Update** (was "Import") — **global rule batch update from CSV**. One file
-  updates many partners: columns `Partner Name, Merchant Name, Device Type,
-  GP (%), Electricity, Placement, Others, Min Guarantee, Payout Method`. Rows
-  group by Partner Name → existing partners' rules overwritten, new partners
-  created, merchants upserted. (KA Excel import was removed from the UI;
-  `parseKaExcel` + `/import/rev-share` code still exist but are unreachable.)
+- **Update** tab — **removed** (2026-06-17). Rule-batch CSV upload is no longer in the UI;
+  `POST /import/rule-batch` and `parseKaExcel` / `/import/rev-share` code still exist in
+  the backend but are unreachable from the frontend.
 
 **Rule model (NEW — replaces the old leaf-tree editor UX):** a partner's rule is
 built from **share terms** + a **payout method**. Terms: GP% (percent of revenue),
@@ -119,7 +130,7 @@ Account `<YOUR_AWS_ACCOUNT_ID>`, region `ap-northeast-1`. IAM user `<your-iam-us
 | `lambda/revshare-api/code/index.mjs` | Lambda entry: auth gate + route dispatch. |
 | `lambda/revshare-api/code/routes/merchants.mjs` | Merchant CRUD routes. |
 | `lambda/revshare-api/code/routes/import.mjs` | POST /import/rev-share — parses KA Excel JSON into partners + merchants. Exports `compileRule`, `parseDeviceType`. |
-| `lambda/revshare-api/code/routes/bulk-runs.mjs` | Bulk run routes. Exports `groupOrders` (pure). |
+| `lambda/revshare-api/code/routes/bulk-runs.mjs` | Bulk run routes. Exports `buildRosterRows` (roster-authoritative row seeding), `applyMerchantRoster` (upsert registry + create partners), `groupOrders` (legacy, order-only grouping). |
 | `lambda/revshare-api/tests/` | `engine.test.mjs` (25 tests), `csv.test.mjs` (6 tests). |
 | `frontend/index.html` | SPA shell + pre-paint auth gate. |
 | `frontend/style.css` | All styles (tokenized). |
@@ -181,10 +192,7 @@ exactly what was computed at the time.
 
 ## 6. Backend routes
 
-**No authentication.** Removed 2026-05-28 — single-user app, the operator
-controls who can reach the API URL by other means (custom domain + IP
-allowlist on CloudFront, or just sharing the URL only with the finance
-team). If auth becomes necessary, see §11.
+**Auth required** — Google Sign-In token (see §9). All routes except `GET /healthz` require a valid Bearer token from an `@inforich.com` / `@inforichjapan.com` account. Writes require specific permissions; reads are open to any authenticated user except `/users` (admin only).
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -198,10 +206,17 @@ team). If auth becomes necessary, see §11.
 | GET | `/partners/:id/runs` | List partner's runs |
 | GET | `/partners/:id/runs/:runId` | Get one run (incl. csvRaw, csvParsed, result) |
 | POST | `/partners/:id/runs/:runId/rerun` | Re-apply current rule to stored CSV |
-| POST | `/import/rule-batch` | Apply a whole rule-batch upload (Update tab) in ONE invocation — overwrites/creates partners, upserts merchants by `nameLower` with bounded concurrency (`mapPool`). Replaces the old browser-side per-partner/per-merchant fan-out that got throttled. |
+| POST | `/import/rule-batch` | Apply a whole rule-batch upload (Update tab — now removed from UI) in ONE invocation — overwrites/creates partners, upserts merchants by `nameLower` with bounded concurrency (`mapPool`). |
+| POST | `/bulk-runs/prepare` | Apply uploaded merchant list: upsert registry, create missing partners (empty rule). Returns `{rosterCount, partnerCount, newPartners, unassigned, partnersNeedingRules}`. Requires `runCalcs`. |
+| POST | `/bulk-runs` | Create bulk run. Body: `{periodStart, periodEnd, merchants[], orders[]}`. Re-applies roster idempotently, runs engine. Requires `runCalcs`. |
+| GET | `/bulk-runs` | List bulk run summaries. |
+| GET | `/bulk-runs/:id` | Get full bulk run (from S3). |
+| POST | `/bulk-runs/:id/archive` | Lock run (sets `archived: true`). Requires `runCalcs`. Locked runs block DELETE (409). |
+| POST | `/bulk-runs/:id/unarchive` | Remove lock. Requires `admin`. |
+| DELETE | `/bulk-runs/:id` | Delete run. Returns 409 if archived. Requires `deleteRuns`. |
 
 CORS configured on the API Gateway to allow `*` origin with headers
-`content-type, x-app-password`. Adjust the `AllowOrigins` once a custom
+`content-type, authorization`. Adjust the `AllowOrigins` once a custom
 domain exists.
 
 ## 7. Working conventions
