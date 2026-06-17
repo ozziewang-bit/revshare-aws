@@ -23,7 +23,9 @@ export function requiredPermission(method, path) {
   if (path.startsWith('/users')) return 'admin';
   if (path.startsWith('/partners') && /\/runs(\/|$)/.test(path)) return 'runCalcs';   // POST runs / rerun
   if (path.startsWith('/partners')) return 'editPartners';
-  if (path === '/bulk-runs') return 'runCalcs';
+  if (path === '/bulk-runs' || path === '/bulk-runs/prepare') return 'runCalcs';
+  if (/^\/bulk-runs\/[^/]+\/unarchive$/.test(path)) return 'admin';
+  if (/^\/bulk-runs\/[^/]+\/archive$/.test(path)) return 'runCalcs';
   if (path.startsWith('/bulk-runs/')) return 'deleteRuns';   // DELETE only mutating sub-route
   if (path.startsWith('/merchants')) return 'manageMerchants';
   if (path.startsWith('/machine-models')) return 'manageDeviceTypes';

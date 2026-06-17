@@ -19,7 +19,7 @@ import {
   updateMerchantRoute, deleteMerchantRoute
 } from './routes/merchants.mjs';
 import { importRevShareRoute } from './routes/import.mjs';
-import { createBulkRunRoute, listBulkRunsRoute, getBulkRunRoute, deleteBulkRunRoute } from './routes/bulk-runs.mjs';
+import { createBulkRunRoute, listBulkRunsRoute, getBulkRunRoute, deleteBulkRunRoute, prepareBulkRunRoute, archiveBulkRunRoute, unarchiveBulkRunRoute } from './routes/bulk-runs.mjs';
 import {
   listMachineModelsRoute, createMachineModelRoute,
   updateMachineModelRoute, deleteMachineModelRoute
@@ -78,8 +78,11 @@ export const handler = async (event) => {
     // Import
     else if (method === 'POST'   && path === '/import/rev-share')                               result = await importRevShareRoute(event);
     // Bulk runs
+    else if (method === 'POST'   && path === '/bulk-runs/prepare')                              result = await prepareBulkRunRoute(event);
     else if (method === 'POST'   && path === '/bulk-runs')                                      result = await createBulkRunRoute(event);
     else if (method === 'GET'    && path === '/bulk-runs')                                      result = await listBulkRunsRoute();
+    else if (method === 'POST'   && /^\/bulk-runs\/[^/]+\/archive$/.test(path))                result = await routeBulkRun(event, archiveBulkRunRoute);
+    else if (method === 'POST'   && /^\/bulk-runs\/[^/]+\/unarchive$/.test(path))              result = await routeBulkRun(event, unarchiveBulkRunRoute);
     else if (method === 'GET'    && /^\/bulk-runs\/[^/]+$/.test(path))                         result = await routeBulkRun(event, getBulkRunRoute);
     else if (method === 'DELETE' && /^\/bulk-runs\/[^/]+$/.test(path))                         result = await routeBulkRun(event, deleteBulkRunRoute);
     // Machine models

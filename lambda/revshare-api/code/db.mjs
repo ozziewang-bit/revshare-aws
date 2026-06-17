@@ -135,7 +135,8 @@ export async function putBulkRun(bulkRun) {
     unmatchedOrderCount: bulkRun.unmatchedOrderCount ?? 0,
     unmatchedRevenue: bulkRun.unmatchedRevenue ?? 0,
     totalPayout: bulkRun.totalPayout ?? 0,
-    warningCount: (bulkRun.warnings || []).length
+    warningCount: (bulkRun.warnings || []).length,
+    archived: bulkRun.archived || false
   };
   await ddb.send(new PutCommand({ TableName: TABLE, Item: item }));
   return bulkRun;
