@@ -673,12 +673,12 @@ async function renderBulkRunsList() {
   if (!runs.length) { out.innerHTML = '<p class="muted">No calculations yet.</p>'; return; }
   out.innerHTML = `<table class="ts"><thead><tr><th>Period</th><th>Uploaded</th><th>Partners</th><th>Total payout</th><th>Unmatched</th><th></th></tr></thead>
     <tbody>${runs.map(r => `<tr data-id="${r.runId}" style="cursor:pointer;">
-      <td>${escape(periodMonth(r.periodStart))}</td>
+      <td>${escape(periodMonth(r.periodStart))}${r.archived ? ' <span class="badge badge-neutral" title="Archived — cannot be deleted without unarchiving">🔒 Locked</span>' : ''}</td>
       <td>${escape(r.uploadedAt?.split('T')[0] || '')}</td>
       <td>${r.partnerCount}</td>
       <td>${(r.totalPayout || 0).toFixed(2)}</td>
       <td>${r.unmatchedCount > 0 ? `<span style="color:#f03e3e;">${r.unmatchedCount}</span>` : '0'}</td>
-      <td style="text-align:right;">${can('deleteRuns') ? `<button class="btn-ghost del-run" data-id="${r.runId}" style="color:var(--loss);">Delete</button>` : ''}</td>
+      <td style="text-align:right;">${(!r.archived && can('deleteRuns')) ? `<button class="btn-ghost del-run" data-id="${r.runId}" style="color:var(--loss);">Delete</button>` : ''}</td>
     </tr>`).join('')}</tbody></table>`;
   out.querySelectorAll('tr[data-id]').forEach(tr => {
     tr.addEventListener('click', () => renderBulkRunDetail(tr.dataset.id));
@@ -692,7 +692,11 @@ async function renderBulkRunsList() {
         await api('/bulk-runs/' + btn.dataset.id, { method: 'DELETE' });
         renderBulkRunsList();
       } catch (e) {
-        alert('Delete failed: ' + e.message);
+        if (e.message && e.message.includes('409')) {
+          alert('Unarchive first before deleting this run.');
+        } else {
+          alert('Delete failed: ' + e.message);
+        }
         btn.disabled = false; btn.textContent = 'Delete';
       }
     });
@@ -1111,7 +1115,30 @@ async function renderBulkRunDetail(runId) {
   const el = document.getElementById('br-detail');
   const totalRevenue = (run.results || []).reduce((s, r) => s + (r.revenue || 0), 0);
   const totalSharePct = totalRevenue > 0 ? ((run.totalPayout || 0) / totalRevenue * 100).toFixed(1) + '%' : '—';
+  const isArchived = !!run.archived;
+
+  // Archive / Unarchive / Delete action bar
+  const archiveBar = (() => {
+    const parts = [];
+    if (isArchived) {
+      parts.push(`<span class="badge badge-neutral" style="font-size:13px;">🔒 Locked (archived)</span>`);
+      if (can('admin')) {
+        parts.push(`<button id="br-unarchive" class="btn-ghost" style="margin-left:10px;">Unarchive</button>`);
+      }
+      // Delete is hidden/disabled when archived
+    } else {
+      if (can('runCalcs')) {
+        parts.push(`<button id="br-archive" class="btn-ghost">Archive</button>`);
+      }
+      if (can('deleteRuns')) {
+        parts.push(`<button id="br-delete" class="btn-ghost" style="color:var(--loss);">Delete</button>`);
+      }
+    }
+    return parts.length ? `<div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;">${parts.join('')}</div>` : '';
+  })();
+
   el.innerHTML = `
+    ${archiveBar}
     <p class="muted">Period: <strong>${escape(periodMonth(run.periodStart))}</strong> · Uploaded: ${escape(run.uploadedAt?.split('T')[0])} · ${run.orderCount} orders · ${run.partnerCount} partners</p>
     ${(run.results?.length) ? `<p><a href="#" id="dl-revshare-zip" class="zip-link">↓ ${escape(periodTag(run.periodStart))}_revshare</a> <span class="muted" style="font-size:12px;">(zip · one CSV per partner)</span></p>` : ''}
     ${run.unmatchedOrderCount ? `
@@ -1149,11 +1176,55 @@ async function renderBulkRunDetail(runId) {
         <p style="color:#868e96;font-size:13px;">These names were in the order report but not found in the merchant registry. Add them under the correct partner and re-run.</p>
         <ul style="font-size:13px;">${run.unmatched.map(n => `<li>${escape(n)}</li>`).join('')}</ul>
       </div>` : ''}`;
+
   el.querySelector('#dl-revshare-zip')?.addEventListener('click', (ev) => {
     ev.preventDefault();
     downloadRevshareZip(run);
   });
   el.querySelector('#dl-unmatched')?.addEventListener('click', () => downloadUnmatchedCsv(run));
+
+  el.querySelector('#br-archive')?.addEventListener('click', async () => {
+    if (!confirm('Archive this run? It will be locked and cannot be deleted until unarchived.')) return;
+    const btn = el.querySelector('#br-archive');
+    btn.disabled = true; btn.textContent = 'Archiving…';
+    try {
+      await api('/bulk-runs/' + runId + '/archive', { method: 'POST' });
+      renderBulkRunDetail(runId);
+    } catch (e) {
+      alert('Archive failed: ' + e.message);
+      btn.disabled = false; btn.textContent = 'Archive';
+    }
+  });
+
+  el.querySelector('#br-unarchive')?.addEventListener('click', async () => {
+    if (!confirm('Unarchive this run? It will no longer be locked.')) return;
+    const btn = el.querySelector('#br-unarchive');
+    btn.disabled = true; btn.textContent = 'Unarchiving…';
+    try {
+      await api('/bulk-runs/' + runId + '/unarchive', { method: 'POST' });
+      renderBulkRunDetail(runId);
+    } catch (e) {
+      alert('Unarchive failed: ' + e.message);
+      btn.disabled = false; btn.textContent = 'Unarchive';
+    }
+  });
+
+  el.querySelector('#br-delete')?.addEventListener('click', async () => {
+    if (!confirm('Delete this calculation? This cannot be undone.')) return;
+    const btn = el.querySelector('#br-delete');
+    btn.disabled = true; btn.textContent = 'Deleting…';
+    try {
+      await api('/bulk-runs/' + runId, { method: 'DELETE' });
+      renderBulkRunsList();
+    } catch (e) {
+      if (e.message && e.message.includes('409')) {
+        alert('Unarchive first before deleting this run.');
+      } else {
+        alert('Delete failed: ' + e.message);
+      }
+      btn.disabled = false; btn.textContent = 'Delete';
+    }
+  });
 }
 
 function downloadUnmatchedCsv(run) {
