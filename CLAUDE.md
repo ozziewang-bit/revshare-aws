@@ -107,7 +107,7 @@ data). **กะทู้** has the same `max(50% GP, S8=200)` shape and is still
 at every store, so whole == per_store — no change needed. The engine + per-merchant
 CSV already handle per_store correctly; this was a config issue, not a code bug.
 
-Tests: `npm test` → **50/50** pass.
+Tests: `npm test` → **58/58** pass (incl. `bulk-runs.test.mjs` — roster seeding + order-less fixed-fee).
 
 ## 2. Live URLs and resources
 
