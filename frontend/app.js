@@ -172,52 +172,7 @@ function csvHeaderIndex(headerLine) {
   };
 }
 
-// Parse the global rule-batch CSV: one row per merchant with partner, term amounts + a payout-method code.
-function parseRuleBatchCsv(text, machineModels) {
-  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-  if (!lines.length) return [];
-  const MODELS = new Set((machineModels || []).map(m => m.code).concat(['S5','S8','S10','T8','T10','T20','T35','L20','L40']));
-  const displayToCode = {};
-  (machineModels || []).forEach(m => { displayToCode[m.displayName.toLowerCase()] = m.code; });
-  const hasHeader = lines[0].toLowerCase().includes('name');
-  const idx = hasHeader ? csvHeaderIndex(lines[0]) : { partner: 0, name: 1, model: 2, gp: 3, elec: 4, place: 5, others: 6, mg: 7, method: 8 };
-  const dataLines = hasHeader ? lines.slice(1) : lines;
-  const num = v => Number(String(v ?? '').replace(/[^0-9.\-]/g, '')) || 0;
-  const at = (f, i) => i >= 0 ? f[i] : undefined;
-  return dataLines.map(line => {
-    const f = parseCsvLine(line);
-    const mi = (at(f, idx.model) || '').trim();
-    const model = MODELS.has(mi.toUpperCase()) ? mi.toUpperCase() : (displayToCode[mi.toLowerCase()] || null);
-    return {
-      partnerName: (at(f, idx.partner) || '').trim(),
-      name: (at(f, idx.name) || '').trim(),
-      model,
-      gpPercent: num(at(f, idx.gp)), electricity: num(at(f, idx.elec)), placement: num(at(f, idx.place)),
-      others: num(at(f, idx.others)), mg: num(at(f, idx.mg)), method: parseMethod(at(f, idx.method)),
-    };
-  }).filter(r => r.partnerName && r.name);
-}
 
-// Group rule-batch rows by partner name; build each partner's rule + merchant list.
-function buildRuleBatchUpdates(rows, partnerByName) {
-  const groups = {};
-  for (const r of rows) {
-    const key = r.partnerName.toLowerCase().trim();
-    (groups[key] = groups[key] || { partnerName: r.partnerName, rows: [] }).rows.push(r);
-  }
-  return Object.values(groups).map(g => {
-    const rs = g.rows, first = rs[0];
-    const placementRows = [], mgRows = [], merchants = [];
-    for (const r of rs) {
-      if (r.model && r.placement > 0 && !placementRows.some(x => x.model === r.model)) placementRows.push({ model: r.model, amount: r.placement });
-      if (r.model && r.mg > 0 && !mgRows.some(x => x.model === r.model)) mgRows.push({ model: r.model, amount: r.mg });
-      merchants.push({ name: r.name, model: r.model });
-    }
-    const pick = key => (rs.find(r => Number(r[key]) > 0) || first)[key] || 0;
-    const form = { gpPercent: pick('gpPercent'), electricity: pick('electricity'), others: pick('others'), placementRows, mgRows, method: first.method };
-    return { partnerName: g.partnerName, existing: partnerByName[g.partnerName.toLowerCase().trim()] || null, rule: compileRule(form), form, merchants };
-  });
-}
 
 function readExcel(file) {
   return new Promise((resolve, reject) => {
@@ -416,13 +371,11 @@ function renderNav() {
     ${can('runCalcs') ? '<button id="nav-bulk-runs" class="nav-btn">Run share</button>' : ''}
     <button id="nav-revshare-path" class="nav-btn">Analytics</button>
     <button id="nav-device-types" class="nav-btn">Device Types</button>
-    ${can('applyRuleBatch') ? '<button id="nav-import" class="nav-btn">Update</button>' : ''}
     ${can('admin') ? '<button id="nav-users" class="nav-btn">Users</button>' : ''}`;
   nav.querySelector('#nav-partners').addEventListener('click', () => { setActiveNav('nav-partners'); renderPartnersList(); });
   nav.querySelector('#nav-bulk-runs')?.addEventListener('click', () => { setActiveNav('nav-bulk-runs'); renderBulkRunsList(); });
   nav.querySelector('#nav-revshare-path').addEventListener('click', () => { setActiveNav('nav-revshare-path'); renderRevsharePathScreen(); });
   nav.querySelector('#nav-device-types').addEventListener('click', () => { setActiveNav('nav-device-types'); renderDeviceTypesScreen(); });
-  nav.querySelector('#nav-import')?.addEventListener('click', () => { setActiveNav('nav-import'); renderImportScreen(); });
   nav.querySelector('#nav-users')?.addEventListener('click', () => { setActiveNav('nav-users'); renderUsersScreen(); });
 }
 
@@ -430,95 +383,8 @@ function setActiveNav(id) {
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.id === id));
 }
 
-async function renderImportScreen() {
-  const main = document.getElementById('main');
-  main.innerHTML = `
-    <div class="page-head"><h2>Batch update partner rules (CSV)</h2></div>
-    <p class="muted">Upload a share-terms CSV with a <strong>Partner Name</strong> column (amounts + <strong>Payout Method</strong> name). Rows group by partner: <strong>existing partners' rules are overwritten</strong>, <strong>new partners are created</strong>, and every merchant is upserted (name + device type). Payout Method: <code>Default</code> · <code>Hybrid</code> · <code>Whichever higher</code> · <code>Hybrid-higher</code> (legacy codes D/H/WH/HH still accepted).</p>
-    <div style="display:flex;gap:8px;margin:8px 0 12px;">
-      <button id="rb-sample" class="btn">↓ Sample / template CSV</button>
-    </div>
-    <input id="rb-file" type="file" accept=".csv,text/csv" style="display:none">
-    <div id="rb-file-zone" class="upload-zone" style="cursor:pointer;max-width:520px;">
-      <p>Choose the rule CSV or drag it here</p>
-      <button type="button" id="rb-choose" class="btn">Choose file</button>
-      <div id="rb-file-name" class="upload-hint"></div>
-    </div>
-    <div id="rb-preview" style="margin-top:16px;"></div>`;
 
-  document.getElementById('rb-choose').addEventListener('click', () => document.getElementById('rb-file').click());
-  document.getElementById('rb-file-zone').addEventListener('click', e => { if (e.target.id !== 'rb-choose') document.getElementById('rb-file').click(); });
-  document.getElementById('rb-sample').addEventListener('click', async () => {
-    const machineModels = await api('/machine-models');
-    const q = s => `"${String(s).replace(/"/g, '""')}"`;
-    const d = (machineModels[0] || {}).displayName || 'ChargeSpot Station-S8';
-    const ex = [
-      `${q('Example Partner A')},${q('Example Store 1')},${q(d)},50,0,0,0,200,${q('Hybrid-higher')}`,
-      `${q('Example Partner B')},${q('Example Store 2')},${q(d)},25,0,1500,0,0,${q('Hybrid')}`,
-    ];
-    const csv = [SHARE_TERMS_CSV_HEADER, ...ex].join('\n') + '\n';
-    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = 'rule-batch-template.csv';
-    document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
-  });
-  document.getElementById('rb-file').addEventListener('change', async e => {
-    const file = e.target.files[0]; if (!file) return;
-    document.getElementById('rb-file-name').textContent = file.name;
-    const out = document.getElementById('rb-preview');
-    out.innerHTML = 'Parsing…';
-    try {
-      const [text, machineModels, partners] = await Promise.all([
-        file.text(), api('/machine-models'), api('/partners')
-      ]);
-      const rows = parseRuleBatchCsv(text, machineModels);
-      const partnerByName = Object.fromEntries(partners.map(p => [p.name.toLowerCase().trim(), p]));
-      const updates = buildRuleBatchUpdates(rows, partnerByName);
-      if (!updates.length) { out.innerHTML = `<p style="color:var(--loss);">No usable rows (need Partner Name + Merchant Name).</p>`; return; }
-      const newCount = updates.filter(u => !u.existing).length;
-      const mCount = updates.reduce((s, u) => s + u.merchants.length, 0);
-      out.innerHTML = `
-        <h3>Preview</h3>
-        <p>${updates.length} partner(s) — <strong>${updates.length - newCount} updated</strong>, <strong>${newCount} new</strong> — and ${mCount} merchant(s) upserted, from ${rows.length} row(s).</p>
-        <table class="ts"><thead><tr><th>Partner</th><th></th><th>Method</th><th>New payout formula</th><th>Merchants</th></tr></thead>
-        <tbody>${updates.map(u => `<tr>
-          <td>${escape(u.partnerName)}</td>
-          <td>${u.existing ? '<span class="muted">update</span>' : '<span style="color:#2f9e44;">new</span>'}</td>
-          <td>${escape((PAYOUT_METHOD_META.find(m => m.val === u.form.method) || {}).title || u.form.method)}</td>
-          <td style="font-family:var(--font-mono,monospace);font-size:12px;">${escape(payoutFormula(u.form))}</td>
-          <td>${u.merchants.length}</td>
-        </tr>`).join('')}</tbody></table>
-        <button id="rb-confirm" class="btn-primary" style="margin-top:16px;">Apply to ${updates.length} partner(s)</button>`;
-      document.getElementById('rb-confirm').addEventListener('click', async () => {
-        const btn = document.getElementById('rb-confirm');
-        btn.disabled = true; btn.textContent = 'Applying…';
-        // Single request: the server applies the whole batch in one invocation,
-        // so we never fire thousands of concurrent calls that get throttled.
-        const payload = { updates: updates.map(u => ({
-          partnerId: u.existing ? u.existing.partnerId : null,
-          partnerName: u.partnerName,
-          rule: u.rule,
-          merchants: u.merchants
-        })) };
-        try {
-          const r = await api('/import/rule-batch', { method: 'POST', body: JSON.stringify(payload) });
-          const fail = r.failedPartners || 0, mfail = r.failedMerchants || 0;
-          const warn = (r.warnings && r.warnings.length)
-            ? `<details style="margin-top:8px;"><summary>${r.warnings.length} warning(s)</summary><pre style="white-space:pre-wrap;font-size:12px;">${escape(r.warnings.join('\n'))}</pre></details>`
-            : '';
-          out.innerHTML = `<div style="color:#2f9e44;font-weight:600;">Done — ${r.updatedPartners} updated, ${r.newPartners} new partner(s), ${r.upsertedMerchants} merchant(s) upserted${fail ? `, ${fail} partner(s) failed` : ''}${mfail ? `, ${mfail} merchant(s) failed` : ''}.</div>${warn}`;
-        } catch (e) {
-          out.innerHTML = `<p style="color:var(--loss);">Error: ${escape(e.message)}</p>`;
-          btn.disabled = false; btn.textContent = `Apply to ${updates.length} partner(s)`;
-        }
-      });
-    } catch (err) {
-      out.innerHTML = `<p style="color:var(--loss);">Error: ${escape(err.message)}</p>`;
-    }
-  });
-}
-
-const PERM_LABELS = { editPartners:'Edit partners & rules', runCalcs:'Run calcs', deleteRuns:'Delete runs', manageMerchants:'Manage merchants', manageDeviceTypes:'Device types', applyRuleBatch:'Rule-batch', admin:'Admin' };
+const PERM_LABELS = { editPartners:'Edit partners & rules', runCalcs:'Run calcs', deleteRuns:'Delete runs', manageMerchants:'Manage merchants', manageDeviceTypes:'Device types', admin:'Admin' };
 async function renderUsersScreen() {
   const main = document.getElementById('main');
   main.innerHTML = '<h2>Users</h2><p class="muted">Grant per-feature access. Anyone with a company Google account can sign in (read-only) until granted more.</p><div id="users-out">Loading…</div>';

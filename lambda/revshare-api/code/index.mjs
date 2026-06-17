@@ -18,7 +18,7 @@ import {
   listMerchantsRoute, createMerchantRoute, getMerchantRoute,
   updateMerchantRoute, deleteMerchantRoute
 } from './routes/merchants.mjs';
-import { importRevShareRoute, applyRuleBatchRoute } from './routes/import.mjs';
+import { importRevShareRoute } from './routes/import.mjs';
 import { createBulkRunRoute, listBulkRunsRoute, getBulkRunRoute, deleteBulkRunRoute } from './routes/bulk-runs.mjs';
 import {
   listMachineModelsRoute, createMachineModelRoute,
@@ -77,7 +77,6 @@ export const handler = async (event) => {
     else if (method === 'DELETE' && /^\/merchants\/[^/]+$/.test(path))                          result = await routeMerchant(event, deleteMerchantRoute);
     // Import
     else if (method === 'POST'   && path === '/import/rev-share')                               result = await importRevShareRoute(event);
-    else if (method === 'POST'   && path === '/import/rule-batch')                              result = await applyRuleBatchRoute(event);
     // Bulk runs
     else if (method === 'POST'   && path === '/bulk-runs')                                      result = await createBulkRunRoute(event);
     else if (method === 'GET'    && path === '/bulk-runs')                                      result = await listBulkRunsRoute();
