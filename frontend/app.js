@@ -703,71 +703,228 @@ function renderNewBulkRunForm() {
   const now = new Date();
   const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
   const main = document.getElementById('main');
-  main.innerHTML = `
-    <div class="page-head">
-      <button id="back" class="btn-ghost">← Back</button>
-      <h2>New run</h2>
-    </div>
-    <label>Year <input type="number" id="br-year" min="2020" max="2035" value="${now.getFullYear()}" style="width:100px;margin-left:8px;"></label>
-    <label style="margin-top:12px;">Month
-      <select id="br-month" style="margin-left:8px;">
-        ${MONTHS.map((m, i) => `<option value="${i+1}" ${i===now.getMonth()?'selected':''}>${m}</option>`).join('')}
-      </select>
-    </label>
-    <div style="margin-top:12px;">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-        <span style="font-size:12.5px;color:var(--ink-soft);">Order report (.xlsx)</span>
-        <button type="button" id="br-sample" class="btn-ghost" style="font-size:12px;padding:2px 8px;">↓ Sample file</button>
+
+  // Wizard state
+  const wiz = { periodStart: null, periodEnd: null, merchants: null, prepare: null, orders: null };
+
+  function pad(n) { return String(n).padStart(2, '0'); }
+
+  function render() {
+    const step1Done = !!(wiz.periodStart && wiz.periodEnd);
+    const step2Done = !!(wiz.prepare);
+    const pendingRules = (wiz.prepare?.partnersNeedingRules || []);
+    const step3Done = step2Done && pendingRules.length === 0;
+
+    main.innerHTML = `
+      <div class="page-head">
+        <button id="wiz-back" class="btn-ghost">← Back</button>
+        <h2>New run</h2>
       </div>
-      <input type="file" id="br-file" accept=".xlsx" style="display:none">
-      <div id="br-file-zone" class="upload-zone" style="cursor:pointer;">
-        <p>Choose an Excel file or drag it here</p>
-        <button type="button" id="br-choose" class="btn">Choose file</button>
-        <div id="br-file-name" class="upload-hint"></div>
+
+      <!-- Step 1: Period -->
+      <div class="wizard-step" id="wiz-step1">
+        <div class="wizard-step-head"><span class="wizard-step-num">1</span> Period</div>
+        <div class="wizard-step-body">
+          <label>Year <input type="number" id="br-year" min="2020" max="2035" value="${now.getFullYear()}" style="width:100px;margin-left:8px;"></label>
+          <label style="margin-top:12px;">Month
+            <select id="br-month" style="margin-left:8px;">
+              ${MONTHS.map((m, i) => `<option value="${i+1}" ${(wiz.periodStart ? String(i+1) === wiz.periodStart.slice(5,7) : i === now.getMonth()) ? 'selected' : ''}>${m}</option>`).join('')}
+            </select>
+          </label>
+          <div style="margin-top:12px;">
+            <button id="wiz-period-next" class="btn-primary">Next →</button>
+          </div>
+          ${step1Done ? `<p class="muted" style="margin-top:8px;">Period: <strong>${escape(periodMonth(wiz.periodStart))}</strong></p>` : ''}
+        </div>
       </div>
-      <div class="upload-hint" style="margin-top:6px;">Required columns: <code style="font-size:11px;">Order No, Rental Merchant, Discount Amount, Payment Amount, Net Amount, Payment Status</code></div>
-    </div>
-    <div id="br-status" style="margin-top:16px;"></div>`;
-  document.getElementById('back').addEventListener('click', renderBulkRunsList);
-  document.getElementById('br-sample').addEventListener('click', () => {
-    const ws = XLSX.utils.aoa_to_sheet([
-      ['Order No', 'Rental Merchant', 'Discount Amount', 'Payment Amount', 'Net Amount', 'Payment Status'],
-      ['1001', 'Example Store 1', 0, 40, 40, 'Paid'],
-      ['1002', 'Example Store 2', 0, 20, 20, 'Paid'],
-      ['1003', 'Example Store 3', 0, 30, 30, 'Paid'],
-      ['1004', 'Example Store 4', 5, 45, 40, 'Paid'],
-    ]);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'ORDER REPORT');
-    XLSX.writeFile(wb, 'order-report-sample.xlsx');
-  });
-  document.getElementById('br-choose').addEventListener('click', () => document.getElementById('br-file').click());
-  document.getElementById('br-file-zone').addEventListener('click', e => { if (e.target.id !== 'br-choose') document.getElementById('br-file').click(); });
-  document.getElementById('br-file').addEventListener('change', async e => {
-    const file = e.target.files[0];
-    const nameEl = document.getElementById('br-file-name');
-    if (nameEl && file) nameEl.textContent = file.name;
-    const year = Number(document.getElementById('br-year').value);
-    const month = Number(document.getElementById('br-month').value);
-    if (!file || !year || !month) { alert('Select a year, month and file'); return; }
-    const pad = n => String(n).padStart(2, '0');
-    const start = `${year}-${pad(month)}-01`;
-    const end = `${year}-${pad(month)}-${pad(new Date(year, month, 0).getDate())}`;
-    const status = document.getElementById('br-status');
-    status.innerHTML = 'Parsing Excel…';
-    try {
-      const orders = await parseOrderReport(file);
-      status.innerHTML = `Parsed ${orders.length} rentals (unpaid excluded). <button id="run-bulk" class="btn-primary">Run calculation</button>`;
-      document.getElementById('run-bulk').addEventListener('click', async () => {
-        document.getElementById('run-bulk').disabled = true;
-        document.getElementById('run-bulk').textContent = 'Running…';
-        const run = await api('/bulk-runs', { method: 'POST', body: JSON.stringify({ orders, periodStart: start, periodEnd: end }) });
-        renderBulkRunDetail(run.runId);
+
+      <!-- Step 2: Merchant list -->
+      <div class="wizard-step ${!step1Done ? 'wizard-step-locked' : ''}" id="wiz-step2">
+        <div class="wizard-step-head"><span class="wizard-step-num">2</span> Merchant list (Businessmen list)</div>
+        <div class="wizard-step-body">
+          ${!step1Done ? '<p class="muted">Complete Step 1 first.</p>' : `
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+            <span style="font-size:12.5px;color:var(--ink-soft);">Businessmen list (.xlsx)</span>
+            <button type="button" id="wiz-ml-sample" class="btn-ghost" style="font-size:12px;padding:2px 8px;">↓ Sample file</button>
+          </div>
+          <input type="file" id="wiz-ml-file" accept=".xlsx" style="display:none">
+          <div id="wiz-ml-zone" class="upload-zone" style="cursor:pointer;">
+            <p>Choose the Businessmen list Excel file</p>
+            <button type="button" id="wiz-ml-choose" class="btn">Choose file</button>
+            <div id="wiz-ml-name" class="upload-hint"></div>
+          </div>
+          <div id="wiz-ml-status" style="margin-top:10px;"></div>
+          ${step2Done ? `<div style="margin-top:10px;padding:12px 16px;background:#ebfbee;border:1px solid #8ce99a;border-radius:8px;font-size:13.5px;">
+            <strong>Roster loaded:</strong> ${wiz.prepare.rosterCount} machines · ${wiz.prepare.partnerCount} partners
+            ${wiz.prepare.newPartners?.length ? `· <span style="color:#2b8a3e;">${wiz.prepare.newPartners.length} new partner(s) created</span>` : ''}
+            ${wiz.prepare.unassigned?.length ? `· <span style="color:#e67700;">${wiz.prepare.unassigned.length} unassigned store(s)</span>` : ''}
+          </div>` : ''}
+          `}
+        </div>
+      </div>
+
+      <!-- Step 3: Review rules -->
+      <div class="wizard-step ${!step2Done ? 'wizard-step-locked' : ''}" id="wiz-step3">
+        <div class="wizard-step-head"><span class="wizard-step-num">3</span> Review rules</div>
+        <div class="wizard-step-body">
+          ${!step2Done ? '<p class="muted">Complete Step 2 first.</p>' : (
+            pendingRules.length === 0
+              ? '<p style="color:#2b8a3e;">✓ All partners have rules — Step 4 is unlocked.</p>'
+              : `<p style="color:#e67700;"><strong>${pendingRules.length} partner(s) need a rule before you can run:</strong></p>
+                 <div id="wiz-rule-editors"></div>`
+          )}
+        </div>
+      </div>
+
+      <!-- Step 4: Order list -->
+      <div class="wizard-step ${!step3Done ? 'wizard-step-locked' : ''}" id="wiz-step4">
+        <div class="wizard-step-head"><span class="wizard-step-num">4</span> Order list</div>
+        <div class="wizard-step-body">
+          ${!step3Done ? '<p class="muted">Complete Steps 1–3 first.</p>' : `
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+            <span style="font-size:12.5px;color:var(--ink-soft);">Order report (.xlsx)</span>
+            <button type="button" id="wiz-ord-sample" class="btn-ghost" style="font-size:12px;padding:2px 8px;">↓ Sample file</button>
+          </div>
+          <input type="file" id="wiz-ord-file" accept=".xlsx" style="display:none">
+          <div id="wiz-ord-zone" class="upload-zone" style="cursor:pointer;">
+            <p>Choose the order report Excel file</p>
+            <button type="button" id="wiz-ord-choose" class="btn">Choose file</button>
+            <div id="wiz-ord-name" class="upload-hint"></div>
+          </div>
+          <div class="upload-hint" style="margin-top:6px;">Required columns: <code style="font-size:11px;">Order No, Rental Merchant, Discount Amount, Payment Amount, Net Amount, Payment Status</code></div>
+          <div id="wiz-ord-status" style="margin-top:10px;"></div>
+          `}
+        </div>
+      </div>`;
+
+    // Bind events
+    document.getElementById('wiz-back').addEventListener('click', renderBulkRunsList);
+
+    // Step 1 next
+    document.getElementById('wiz-period-next')?.addEventListener('click', () => {
+      const year = Number(document.getElementById('br-year').value);
+      const month = Number(document.getElementById('br-month').value);
+      if (!year || !month) { alert('Select a year and month'); return; }
+      wiz.periodStart = `${year}-${pad(month)}-01`;
+      wiz.periodEnd = `${year}-${pad(month)}-${pad(new Date(year, month, 0).getDate())}`;
+      render();
+    });
+
+    // Step 2 merchant list
+    if (step1Done) {
+      document.getElementById('wiz-ml-sample')?.addEventListener('click', downloadMerchantListSample);
+      document.getElementById('wiz-ml-choose')?.addEventListener('click', () => document.getElementById('wiz-ml-file').click());
+      document.getElementById('wiz-ml-zone')?.addEventListener('click', e => { if (e.target.id !== 'wiz-ml-choose') document.getElementById('wiz-ml-file').click(); });
+      document.getElementById('wiz-ml-file')?.addEventListener('change', async e => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const nameEl = document.getElementById('wiz-ml-name');
+        if (nameEl) nameEl.textContent = file.name;
+        const status = document.getElementById('wiz-ml-status');
+        status.innerHTML = 'Parsing merchant list…';
+        try {
+          const merchants = await parseMerchantList(file);
+          if (!merchants.length) { status.innerHTML = '<p style="color:#f03e3e;">No Approved merchants found in file.</p>'; return; }
+          status.innerHTML = `Parsed ${merchants.length} merchants. Preparing…`;
+          wiz.merchants = merchants;
+          const prepare = await api('/bulk-runs/prepare', { method: 'POST', body: JSON.stringify({ merchants }) });
+          wiz.prepare = prepare;
+          render();
+          // Populate rule editors after render
+          renderWizardRuleEditors();
+        } catch (err) {
+          status.innerHTML = `<p style="color:#f03e3e;">Error: ${escape(err.message)}</p>`;
+        }
       });
-    } catch (err) {
-      status.innerHTML = `<p style="color:#f03e3e;">Error: ${escape(err.message)}</p>`;
     }
-  });
+
+    // Step 3 rule editors (called after render if step2Done and pending rules)
+    if (step2Done && pendingRules.length > 0) {
+      renderWizardRuleEditors();
+    }
+
+    // Step 4 order list
+    if (step3Done) {
+      document.getElementById('wiz-ord-sample')?.addEventListener('click', () => {
+        const ws = XLSX.utils.aoa_to_sheet([
+          ['Order No', 'Rental Merchant', 'Discount Amount', 'Payment Amount', 'Net Amount', 'Payment Status'],
+          ['1001', 'Example Store 1', 0, 40, 40, 'Paid'],
+          ['1002', 'Example Store 2', 0, 20, 20, 'Paid'],
+          ['1003', 'Example Store 3', 0, 30, 30, 'Paid'],
+          ['1004', 'Example Store 4', 5, 45, 40, 'Paid'],
+        ]);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, 'ORDER REPORT');
+        XLSX.writeFile(wb, 'order-report-sample.xlsx');
+      });
+      document.getElementById('wiz-ord-choose')?.addEventListener('click', () => document.getElementById('wiz-ord-file').click());
+      document.getElementById('wiz-ord-zone')?.addEventListener('click', e => { if (e.target.id !== 'wiz-ord-choose') document.getElementById('wiz-ord-file').click(); });
+      document.getElementById('wiz-ord-file')?.addEventListener('change', async e => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const nameEl = document.getElementById('wiz-ord-name');
+        if (nameEl) nameEl.textContent = file.name;
+        const status = document.getElementById('wiz-ord-status');
+        status.innerHTML = 'Parsing order report…';
+        try {
+          const orders = await parseOrderReport(file);
+          wiz.orders = orders;
+          status.innerHTML = `Parsed ${orders.length} orders (unpaid excluded). <button id="wiz-run" class="btn-primary" style="margin-left:8px;">Run</button>`;
+          document.getElementById('wiz-run').addEventListener('click', async () => {
+            const btn = document.getElementById('wiz-run');
+            btn.disabled = true; btn.textContent = 'Running…';
+            try {
+              const run = await api('/bulk-runs', {
+                method: 'POST',
+                body: JSON.stringify({ periodStart: wiz.periodStart, periodEnd: wiz.periodEnd, merchants: wiz.merchants, orders: wiz.orders })
+              });
+              renderBulkRunDetail(run.runId);
+            } catch (err) {
+              status.innerHTML += `<p style="color:#f03e3e;">Error: ${escape(err.message)}</p>`;
+              btn.disabled = false; btn.textContent = 'Run';
+            }
+          });
+        } catch (err) {
+          status.innerHTML = `<p style="color:#f03e3e;">Error: ${escape(err.message)}</p>`;
+        }
+      });
+    }
+  }
+
+  // Render inline rule editors for each partner needing a rule (Task 11)
+  async function renderWizardRuleEditors() {
+    const slot = document.getElementById('wiz-rule-editors');
+    if (!slot) return;
+    const pendingRules = wiz.prepare?.partnersNeedingRules || [];
+    if (!pendingRules.length) return;
+    slot.innerHTML = '';
+    for (const { partnerId, name } of pendingRules) {
+      const card = document.createElement('div');
+      card.dataset.partnerId = partnerId;
+      card.style.cssText = 'border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:16px;';
+      card.innerHTML = `<div style="font-weight:600;margin-bottom:12px;">${escape(name)}</div><div class="re-slot"></div>`;
+      slot.appendChild(card);
+      const editorSlot = card.querySelector('.re-slot');
+      let partner;
+      try {
+        partner = await api('/partners/' + partnerId);
+      } catch (e) {
+        editorSlot.innerHTML = `<p style="color:#f03e3e;">Could not load partner: ${escape(e.message)}</p>`;
+        continue;
+      }
+      await renderRuleEditorInto(editorSlot, partner, () => {
+        // Drop this partner from pending list and re-check unlock
+        wiz.prepare.partnersNeedingRules = wiz.prepare.partnersNeedingRules.filter(p => p.partnerId !== partnerId);
+        card.innerHTML = `<p style="color:#2b8a3e;">✓ ${escape(name)} — rule saved</p>`;
+        // Check if all done → re-render to unlock step 4
+        if (wiz.prepare.partnersNeedingRules.length === 0) {
+          render();
+        }
+      });
+    }
+  }
+
+  render();
 }
 
 async function parseOrderReport(file) {
@@ -1229,6 +1386,50 @@ function renderStructuredRuleEditor(container, initialRule, machineModels, { rea
       return compileRule(form);
     }
   };
+}
+
+// Reusable inline rule editor: renders the full share-terms + payout-method
+// form into `container`, with its own Save button; calls `onSaved()` on success.
+// Used by both the partner Rule tab (via showRuleEdit) and the wizard Step 3.
+async function renderRuleEditorInto(container, partner, onSaved) {
+  const machineModels = await api('/machine-models');
+  const editor = renderStructuredRuleEditor(container, partner.rule, machineModels, { readOnly: false });
+
+  // noPayout toggle (mirrored from showRuleEdit)
+  const npDiv = document.createElement('div');
+  npDiv.style.cssText = 'margin-bottom:12px;';
+  npDiv.innerHTML = `<label class="nopay-toggle"><input type="checkbox" id="re-nopay-cb" ${partner.noPayout ? 'checked' : ''}><span><span class="t1">🚫 No revenue share — not paid</span><span class="t2">This partner is excluded from all payouts and skipped in bulk runs.</span></span></label>`;
+  container.insertBefore(npDiv, container.firstChild);
+
+  const cb = npDiv.querySelector('#re-nopay-cb');
+  const lab = npDiv.querySelector('.nopay-toggle');
+  const ruleArea = container.querySelector('.rule-form') || container.children[1];
+  const dim = () => {
+    if (lab) lab.classList.toggle('on', cb.checked);
+    if (ruleArea) { ruleArea.style.opacity = cb.checked ? '.45' : '1'; ruleArea.style.pointerEvents = cb.checked ? 'none' : ''; }
+  };
+  cb.addEventListener('change', dim); dim();
+
+  const actBar = document.createElement('div');
+  actBar.style.cssText = 'margin-top:14px;display:flex;gap:8px;';
+  actBar.innerHTML = `<button id="re-save-btn" class="btn-primary">Save rule</button>`;
+  container.appendChild(actBar);
+
+  actBar.querySelector('#re-save-btn').addEventListener('click', async () => {
+    let rule;
+    try { rule = editor.getRule(); } catch (e) { alert('Invalid rule JSON: ' + e.message); return; }
+    const noPayout = !!container.querySelector('#re-nopay-cb')?.checked;
+    const btn = actBar.querySelector('#re-save-btn');
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      await api('/partners/' + partner.partnerId, { method: 'PUT', body: JSON.stringify({ rule, noPayout }) });
+      partner.rule = rule; partner.noPayout = noPayout;
+      onSaved();
+    } catch (e) {
+      alert('Save failed: ' + e.message);
+      btn.disabled = false; btn.textContent = 'Save rule';
+    }
+  });
 }
 
 async function renderPartnerDetail(partnerId) {
