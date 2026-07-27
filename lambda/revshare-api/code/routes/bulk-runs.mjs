@@ -1,6 +1,17 @@
 import { listMerchants, listPartners, getPartner, putPartner, putMerchant, putBulkRun, listBulkRuns, getBulkRun, deleteBulkRun, listMachineModels, ulid } from '../db.mjs';
 import { evaluateRun } from '../engine.mjs';
 
+// Run fn over items with at most `limit` in flight. Keeps a full-roster (~1600 writes)
+// well under the 29s API Gateway timeout that a sequential loop would blow past.
+async function mapPool(items, limit, fn) {
+  const results = new Array(items.length);
+  let i = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (i < items.length) { const idx = i++; results[idx] = await fn(items[idx], idx); }
+  }));
+  return results;
+}
+
 // Roster-authoritative grouping: one row per roster machine (0/0), orders overlaid by
 // merchant name; orders with no roster merchant are unmatched (not paid).
 export function buildRosterRows(roster, orders) {
@@ -31,24 +42,38 @@ export async function applyMerchantRoster(merchants) {
   const merchantByName = {};
   for (const m of existingMerchants) merchantByName[m.nameLower] = m;
 
-  const roster = [], unassigned = [], newPartners = [];
-  const seenPartner = {};
+  const unassigned = [], newPartners = [];
 
+  // Pass 1 (in memory): split rows, and collect distinct partner labels that don't exist yet.
+  const validRows = [];
+  const newLabels = new Map();   // lowerLabel -> display label (deduped so each partner is created once)
   for (const src of merchants) {
     const label = (src.partnerName || '').trim();
     if (!label || label === '-') { unassigned.push(src.name); continue; }
-    let partner = partnerByName[label.toLowerCase()];
-    if (!partner) {
-      partner = await putPartner({ partnerId: ulid(), name: label, currency: 'THB', aggregationMode: 'per_store', rule: null, notes: '', archived: false, noPayout: false });
-      partnerByName[label.toLowerCase()] = partner;
-      newPartners.push(label);
-    }
+    const key = label.toLowerCase();
+    if (!partnerByName[key] && !newLabels.has(key)) newLabels.set(key, label);
+    validRows.push({ src, key });
+  }
+
+  // Pass 2: create the missing partners (deduped → no double-create under concurrency).
+  await mapPool([...newLabels.entries()], 20, async ([key, label]) => {
+    const partner = await putPartner({ partnerId: ulid(), name: label, currency: 'THB', aggregationMode: 'per_store', rule: null, notes: '', archived: false, noPayout: false });
+    partnerByName[key] = partner;
+    newPartners.push(label);
+  });
+
+  // Pass 3: write every merchant concurrently — these are independent, so a bounded pool
+  // turns ~1600 serial writes (which timed out) into a handful of parallel batches.
+  const roster = [];
+  const seenPartner = {};
+  await mapPool(validRows, 25, async ({ src, key }) => {
+    const partner = partnerByName[key];
     const ex = merchantByName[(src.name || '').toLowerCase().trim()];
     const merchantId = ex?.merchantId || ulid();
     const saved = await putMerchant({ merchantId, createdAt: ex?.createdAt, name: src.name, partnerId: partner.partnerId, machineModel: src.model || null, externalId: src.externalId || ex?.externalId || null, notes: ex?.notes || '' });
     roster.push({ merchantId, name: src.name, nameLower: saved.nameLower, partnerId: partner.partnerId, model: src.model || null });
     seenPartner[partner.partnerId] = partner;
-  }
+  });
 
   const partnersNeedingRules = Object.values(seenPartner)
     .filter(p => !p.noPayout && (!p.rule || !p.rule.type))
@@ -107,8 +132,14 @@ export async function createBulkRunRoute(event) {
   const ruleSnapshots = {};
   const warnings = [];
 
+  // Pre-fetch every partner in parallel (bounded) instead of one await per group.
+  const partnerIds = Object.keys(groups);
+  const fetched = await mapPool(partnerIds, 25, id => getPartner(id));
+  const partnerById = {};
+  partnerIds.forEach((id, i) => { partnerById[id] = fetched[i]; });
+
   for (const [partnerId, merchantRows] of Object.entries(groups)) {
-    const partner = await getPartner(partnerId);
+    const partner = partnerById[partnerId];
     if (!partner) { warnings.push(`Partner ${partnerId} not found, skipped`); continue; }
     if (partner.noPayout) continue;
     if (!partner.rule || !partner.rule.type) { warnings.push(`Partner "${partner.name}" has no rule, skipped`); continue; }
