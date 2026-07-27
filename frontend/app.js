@@ -729,10 +729,10 @@ function renderNewBulkRunForm() {
       <div class="wizard-step" id="wiz-step1">
         <div class="wizard-step-head"><span class="wizard-step-num">1</span> Period</div>
         <div class="wizard-step-body">
-          <label>Year <input type="number" id="br-year" min="2020" max="2035" value="${now.getFullYear()}" style="width:100px;margin-left:8px;"></label>
+          <label>Year <input type="number" id="br-year" min="2020" max="2035" value="${wiz.periodStart ? wiz.periodStart.slice(0, 4) : now.getFullYear()}" style="width:100px;margin-left:8px;"></label>
           <label style="margin-top:12px;">Month
             <select id="br-month" style="margin-left:8px;">
-              ${MONTHS.map((m, i) => `<option value="${i+1}" ${(wiz.periodStart ? String(i+1) === wiz.periodStart.slice(5,7) : i === now.getMonth()) ? 'selected' : ''}>${m}</option>`).join('')}
+              ${MONTHS.map((m, i) => `<option value="${i+1}" ${(wiz.periodStart ? pad(i + 1) === wiz.periodStart.slice(5, 7) : i === now.getMonth()) ? 'selected' : ''}>${m}</option>`).join('')}
             </select>
           </label>
           <div style="margin-top:12px;">
