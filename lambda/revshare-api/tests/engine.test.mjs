@@ -334,3 +334,26 @@ test('unknown machine model throws', () => {
     aggregationMode: 'whole'
   }), /unknown machine model/);
 });
+
+test('sum( max(...) , flat_per_partner_total ) is legal in per_store and charges the lump once', () => {
+  const result = evaluateRun({
+    rule: { type: 'sum', children: [
+      { type: 'max', children: [
+        { type: 'percent', rows: [{ model: 'ALL', percent: 10 }] },
+        { type: 'flat_per_machine', rows: [{ model: 'ALL', amount: 300 }] },
+      ]},
+      { type: 'flat_per_partner_total', amount: 500 },
+    ]},
+    rows: [
+      { storeId: 'A', machineSerial: 'M1', model: 'S5', rentals: 1, revenue: 1000 },
+      { storeId: 'B', machineSerial: 'M2', model: 'S5', rentals: 1, revenue: 8000 },
+    ],
+    aggregationMode: 'per_store'
+  });
+  // Store A: max(10% of 1000 = 100, MG 300) = 300
+  // Store B: max(10% of 8000 = 800, MG 300) = 800
+  // Electricity lump: 500, once for the partner — not once per store
+  assert.equal(result.totalPayout, 1600);
+  assert.equal(result.byStore.length, 2);
+  assert.equal(result.topLevel.payout, 500);
+});
