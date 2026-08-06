@@ -685,23 +685,63 @@ function daysToEnd(c) {
   return Math.round((new Date(c.endDate) - new Date()) / 86400000);
 }
 
+// Canonical string form of a value for structural equality checks — key-order-insensitive
+// (compileRule emits `_method` last, so plain JSON.stringify gives false negatives when
+// comparing a freshly compiled rule against one stored earlier with different key order).
+const canon = v => JSON.stringify(v, (k, val) =>
+  val && typeof val === 'object' && !Array.isArray(val)
+    ? Object.fromEntries(Object.keys(val).sort().map(kk => [kk, val[kk]]))
+    : val);
+
+// What the grid would recompile a rule to right now, with no edits applied — this is
+// exactly what a true no-op blur produces, and it's also the round-trip probe for
+// representability below.
+const roundTripRule = r => compileRule(decompileRule(r));
+
+// A rule is representable in the grid's five-term form when decompiling then
+// recompiling reproduces it exactly. Non-representable shapes (tiered_percent, min, or
+// anything else compileRule can't emit) must stay edit-in-the-Rule-tab-only — the grid's
+// round trip would otherwise silently collapse them to "percent ALL 0%". A partner with
+// no rule at all is always representable: creating a rule from the grid is legitimate,
+// and saveTerms's no-op guard (below) stops an accidental blur from fabricating one.
+function isRepresentable(r) {
+  if (!r || !r.type) return true;
+  return canon(roundTripRule(r)) === canon(r);
+}
+
 // Term cells read the partner's stored rule — the contract row never stores share terms.
+// Returns the linked partner, or null when unlinked OR when the id doesn't resolve — e.g.
+// an archived partner: GET /partners excludes archived rows and DELETE /partners/:id
+// doesn't clear contract.partnerId, so a stale link must fail closed here rather than
+// throwing when a click handler dereferences `.rule` on `undefined`.
+function termPartner(c) {
+  return c.partnerId ? (PARTNERS_BY_ID.get(c.partnerId) || null) : null;
+}
 function termForm(c) {
-  const p = c.partnerId ? PARTNERS_BY_ID.get(c.partnerId) : null;
+  const p = termPartner(c);
   return p ? decompileRule(p.rule) : null;
 }
 
 function termCellHtml(c, col) {
-  const f = termForm(c);
-  if (!f) return '<span class="muted" title="Link this row to a partner to edit terms">—</span>';
+  const p = termPartner(c);
+  if (!p) return '<span class="muted" title="Link this row to a partner to edit terms">—</span>';
+  const f = decompileRule(p.rule);
+  const hasRule = !!(p.rule && p.rule.type);
   const sub = col.key.split('.')[1];
-  if (sub === 'method') return escape(methodToName(f.method));
-  if (sub === 'gpPercent') return f.gpPercent ? escape(String(f.gpPercent)) : '';
-  if (sub === 'electricity') return f.electricity ? escape(String(f.electricity)) : '';
-  const rows = sub === 'mg' ? (f.mgRows || []) : (f.placementRows || []);
-  if (!rows.length) return '';
-  if (rows.length === 1 && rows[0].model === 'ALL') return escape(String(rows[0].amount));
-  return `<span class="ct-multi">per-machine (${rows.length}) ▾</span>`;
+  let disp;
+  if (sub === 'method') disp = hasRule ? escape(methodToName(f.method)) : '';   // blank, not a confident guess, when there's no rule yet
+  else if (sub === 'gpPercent') disp = f.gpPercent ? escape(String(f.gpPercent)) : '';
+  else if (sub === 'electricity') disp = f.electricity ? escape(String(f.electricity)) : '';
+  else {
+    const rows = sub === 'mg' ? (f.mgRows || []) : (f.placementRows || []);
+    disp = !rows.length ? ''
+      : (rows.length === 1 && rows[0].model === 'ALL') ? escape(String(rows[0].amount))
+      : `<span class="ct-multi">per-machine (${rows.length}) ▾</span>`;
+  }
+  if (!isRepresentable(p.rule)) {
+    return `<span class="ct-locked" title="This rule can't be shown in the simplified grid form — edit it in the partner's Rule tab.">${disp || '—'}</span>`;
+  }
+  return disp;
 }
 
 function contractRowHtml(c) {
@@ -784,14 +824,22 @@ function startCellEdit(td) {
   if (td.querySelector('input, select')) return;
   const id = td.dataset.id, key = td.dataset.key;
   const col = CONTRACT_GRID_COLUMNS.find(c => c.key === key);
-  if (!col || !can('manageMerchants')) return;
+  if (!col) return;
+  // Term cells write to the PARTNER (PUT /partners/:id → editPartners); every other
+  // column writes to the CONTRACT (PUT /contracts/:id → manageMerchants). Gating both
+  // kinds on manageMerchants let a manageMerchants-only user open a term editor that
+  // would always 403 on save.
+  const isTerm = col.type && col.type.startsWith('term-');
+  if (!can(isTerm ? 'editPartners' : 'manageMerchants')) return;
   const c = CONTRACTS.find(x => x.contractId === id);
   const cur = cellValue(c, key);
 
-  if (col.type && col.type.startsWith('term-')) {
-    if (!c.partnerId) { alert('Link this row to a partner before editing share terms.'); return; }
+  if (isTerm) {
+    const p = termPartner(c);
+    if (!p) { alert('Link this row to a partner (and confirm the partner is not archived) before editing share terms.'); return; }
+    if (!isRepresentable(p.rule)) return;   // read-only: shape doesn't fit the grid form — edit in the Rule tab
     const sub = col.key.split('.')[1];
-    const f = decompileRule(PARTNERS_BY_ID.get(c.partnerId).rule);
+    const f = decompileRule(p.rule);
     if (col.type === 'term-model') return openModelPopover(td, c.partnerId, sub, f);
     if (col.type === 'term-mode') {
       const sel = document.createElement('select');
@@ -800,7 +848,20 @@ function startCellEdit(td) {
         `<option value="${m.val}"${m.val === f.method ? ' selected' : ''}>${m.title}</option>`).join('')
         + '<option value="" disabled>Sliding Scale (not supported yet)</option>';
       td.innerHTML = ''; td.appendChild(sel); sel.focus();
-      sel.addEventListener('change', () => saveTerms(c.partnerId, { method: sel.value }));
+      sel.addEventListener('change', () => {
+        const nextMethod = sel.value;
+        const mgRows = f.mgRows || [];
+        // WH/HH are the only methods that use MG; switching to Default/Hybrid drops it
+        // by construction (compileRule never emits the MG leaf for them) — irreversible
+        // from the grid, so confirm with the exact rows about to be lost.
+        if ((nextMethod === 'default' || nextMethod === 'hybrid') && mgRows.length > 0) {
+          const models = mgRows.map(r => r.model).join(', ');
+          const n = mgRows.length;
+          const ok = confirm(`Switching to ${methodToName(nextMethod)} removes this partner's ${n} minimum-guarantee row${n === 1 ? '' : 's'} (${models}). This cannot be undone. Continue?`);
+          if (!ok) { sel.value = f.method; return; }
+        }
+        saveTerms(c.partnerId, { method: nextMethod });
+      });
       sel.addEventListener('blur', () => paintContracts());
       return;
     }
@@ -881,6 +942,14 @@ async function saveTerms(partnerId, patch) {
   if (!p) return;
   const form = { ...decompileRule(p.rule), ...patch };
   const rule = compileRule(form);
+  // Never PUT (or touch the cache) when nothing actually changed. For an existing
+  // representable rule "nothing changed" means the recompiled rule matches p.rule
+  // exactly. For a partner with no rule yet, the equivalent baseline is what an
+  // unedited form already round-trips to (roundTripRule) — compileRule never returns
+  // null, so comparing straight against a null/empty p.rule would never match and a
+  // plain accidental blur (no value typed) would still fabricate a real 0% rule.
+  const baseline = (p.rule && p.rule.type) ? p.rule : roundTripRule(p.rule);
+  if (canon(rule) === canon(baseline)) { paintContracts(); return; }
   try {
     const updated = await api('/partners/' + encodeURIComponent(partnerId),
       { method: 'PUT', body: JSON.stringify({ rule }) });
@@ -902,15 +971,24 @@ function openModelPopover(td, partnerId, sub, form) {
   const pop = document.createElement('div');
   pop.className = 'ct-pop';
   const draw = () => {
-    pop.innerHTML = rows.map((r, i) => `
+    pop.innerHTML = rows.map((r, i) => {
+      // A stored code that isn't in the managed Device Types list must not silently
+      // fall back to the <select>'s first option ("All device types") — a <select> with
+      // no `selected` option defaults there, which would turn one specific model's MG/
+      // placement into an ALL-models amount on save. Not reachable with today's data
+      // (every stored code is in the cache) but kept explicit so it can't happen quietly.
+      const known = r.model === 'ALL' || MACHINE_MODELS_CACHE.some(m => m.code === r.model);
+      return `
       <div class="ct-pop-row">
         <select data-i="${i}" class="ct-pop-model">
           <option value="ALL"${r.model === 'ALL' ? ' selected' : ''}>All device types</option>
           ${MACHINE_MODELS_CACHE.map(m => `<option value="${escape(m.code)}"${m.code === r.model ? ' selected' : ''}>${escape(m.displayName)}</option>`).join('')}
+          ${known ? '' : `<option value="${escape(r.model)}" selected>${escape(r.model)} (not in Device Types)</option>`}
         </select>
-        <input data-i="${i}" class="ct-pop-amt" type="number" value="${r.amount ?? ''}">
+        <input data-i="${i}" class="ct-pop-amt" type="number" value="${escape(String(r.amount ?? ''))}">
         <button data-del="${i}" class="btn-icon" title="Remove">×</button>
-      </div>`).join('')
+      </div>`;
+    }).join('')
       + `<div class="ct-pop-actions">
            <button id="ct-pop-add" class="btn btn-sm">+ model</button>
            <button id="ct-pop-save" class="btn btn-sm btn-primary">Save</button>
@@ -922,13 +1000,24 @@ function openModelPopover(td, partnerId, sub, form) {
   td.style.position = 'relative';
   td.innerHTML = ''; td.appendChild(pop);
   pop.addEventListener('click', ev => {
+    // Without this, a click on the popover's own padding (not on a select/input/button)
+    // bubbles to #ct-body's click delegate, which re-finds this SAME td and calls
+    // startCellEdit again. The reentry guard there (`td.querySelector('input, select')`)
+    // only saves it when the popover already has rows — with zero MG/placement rows the
+    // popover has no <select>/<input> at all, so a stray padding click would silently
+    // redraw the popover from scratch and drop any not-yet-saved "+ model" row.
+    ev.stopPropagation();
     const del = ev.target.dataset.del;
     if (del != null) { rows.splice(Number(del), 1); draw(); }
     if (ev.target.id === 'ct-pop-add') { rows.push({ model: 'ALL', amount: 0 }); draw(); }
     if (ev.target.id === 'ct-pop-save') {
       pop.querySelectorAll('.ct-pop-model').forEach(s => { rows[Number(s.dataset.i)].model = s.value; });
       pop.querySelectorAll('.ct-pop-amt').forEach(inp => { rows[Number(inp.dataset.i)].amount = Number(inp.value || 0); });
-      saveTerms(partnerId, { [rowsKey]: rows.filter(r => r.model && Number(r.amount) > 0) });
+      // Dedupe by model — last row wins. Two rows for the same model would otherwise
+      // both survive into rule.rows and evalFlatPerMachine would pay each matching
+      // machine twice (it sums every row, it doesn't merge by model).
+      const deduped = [...new Map(rows.map(r => [r.model, r])).values()];
+      saveTerms(partnerId, { [rowsKey]: deduped.filter(r => r.model && Number(r.amount) > 0) });
     }
   });
 }

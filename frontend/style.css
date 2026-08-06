@@ -834,3 +834,5 @@ table.ts tfoot td {
   box-shadow: 0 8px 24px rgba(0,0,0,.14); min-width: 230px; }
 .ct-pop-row { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
 .ct-pop-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
+/* Non-representable rule (e.g. tiered_percent/min) — term cell is read-only, edit in the Rule tab. */
+.ct-locked { color: var(--ink-soft); cursor: not-allowed; }
