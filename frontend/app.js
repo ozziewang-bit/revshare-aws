@@ -641,6 +641,12 @@ async function renderDeviceTypesScreen() {
 
 // ── Contracts ──────────────────────────────────────────────────────────────
 let CONTRACTS = [];
+// partnerId → partner (incl. rule), loaded alongside contracts so term cells can
+// decompile/compile the SAME rule the Rule tab edits — never a second source of truth.
+let PARTNERS_BY_ID = new Map();
+// Managed device-types list ({code, displayName}), loaded once with the grid and
+// cached module-scope — the per-model popover must not re-fetch on every open.
+let MACHINE_MODELS_CACHE = [];
 
 const CONTRACT_GRID_COLUMNS = [
   { key: 'merchantName',          label: 'Merchant',      type: 'text',   width: 190 },
@@ -658,6 +664,11 @@ const CONTRACT_GRID_COLUMNS = [
   { key: 'declineToRenew',        label: 'Decline',       type: 'bool',   width: 80  },
   { key: 'autoRenewal',           label: 'Auto-renewal',  type: 'select', width: 170 },
   { key: 'contractLink',          label: 'Contract',      type: 'url',    width: 110 },
+  { key: 'term.method',      label: 'Mode',         type: 'term-mode',  width: 160 },
+  { key: 'term.gpPercent',   label: 'Rev-share %',  type: 'term-num',   width: 100 },
+  { key: 'term.placement',   label: 'Fixed rental', type: 'term-model', width: 130 },
+  { key: 'term.electricity', label: 'Electricity',  type: 'term-num',   width: 100 },
+  { key: 'term.mg',          label: 'Min guarantee',type: 'term-model', width: 140 },
 ];
 
 const MERCHANT_TYPES = ['F&B', 'Hospitality', 'Lifestyle', 'Shopping Malls', 'Nightlife',
@@ -674,13 +685,33 @@ function daysToEnd(c) {
   return Math.round((new Date(c.endDate) - new Date()) / 86400000);
 }
 
+// Term cells read the partner's stored rule — the contract row never stores share terms.
+function termForm(c) {
+  const p = c.partnerId ? PARTNERS_BY_ID.get(c.partnerId) : null;
+  return p ? decompileRule(p.rule) : null;
+}
+
+function termCellHtml(c, col) {
+  const f = termForm(c);
+  if (!f) return '<span class="muted" title="Link this row to a partner to edit terms">—</span>';
+  const sub = col.key.split('.')[1];
+  if (sub === 'method') return escape(methodToName(f.method));
+  if (sub === 'gpPercent') return f.gpPercent ? escape(String(f.gpPercent)) : '';
+  if (sub === 'electricity') return f.electricity ? escape(String(f.electricity)) : '';
+  const rows = sub === 'mg' ? (f.mgRows || []) : (f.placementRows || []);
+  if (!rows.length) return '';
+  if (rows.length === 1 && rows[0].model === 'ALL') return escape(String(rows[0].amount));
+  return `<span class="ct-multi">per-machine (${rows.length}) ▾</span>`;
+}
+
 function contractRowHtml(c) {
   const d = daysToEnd(c);
   const cls = d == null ? '' : (d < 0 ? 'ct-expired' : (d <= 60 ? 'ct-soon' : ''));
   const cells = CONTRACT_GRID_COLUMNS.map((col, i) => {
     const v = cellValue(c, col.key);
     let disp;
-    if (col.type === 'bool') disp = v ? '✓' : '';
+    if (col.type && col.type.startsWith('term-')) disp = termCellHtml(c, col);
+    else if (col.type === 'bool') disp = v ? '✓' : '';
     else if (col.type === 'url') {
       disp = !v ? ''
         : (/^https?:\/\//i.test(v)
@@ -699,7 +730,12 @@ function contractRowHtml(c) {
 async function renderContractsScreen() {
   const el = document.getElementById('main');
   el.innerHTML = '<h1>Contracts</h1><p class="muted">Loading…</p>';
-  CONTRACTS = await api('/contracts');
+  const [contracts, partners, machineModels] = await Promise.all([
+    api('/contracts'), api('/partners'), api('/machine-models')
+  ]);
+  CONTRACTS = contracts;
+  PARTNERS_BY_ID = new Map(partners.map(p => [p.partnerId, p]));
+  MACHINE_MODELS_CACHE = machineModels;
   const head = CONTRACT_GRID_COLUMNS
     .map((c, i) => `<th style="min-width:${c.width}px"${i === 0 ? ' class="ct-sticky"' : ''}>${c.label}</th>`)
     .join('') + '<th>Link</th>';
@@ -751,6 +787,35 @@ function startCellEdit(td) {
   if (!col || !can('manageMerchants')) return;
   const c = CONTRACTS.find(x => x.contractId === id);
   const cur = cellValue(c, key);
+
+  if (col.type && col.type.startsWith('term-')) {
+    if (!c.partnerId) { alert('Link this row to a partner before editing share terms.'); return; }
+    const sub = col.key.split('.')[1];
+    const f = decompileRule(PARTNERS_BY_ID.get(c.partnerId).rule);
+    if (col.type === 'term-model') return openModelPopover(td, c.partnerId, sub, f);
+    if (col.type === 'term-mode') {
+      const sel = document.createElement('select');
+      sel.className = 'ct-input';
+      sel.innerHTML = PAYOUT_METHOD_META.map(m =>
+        `<option value="${m.val}"${m.val === f.method ? ' selected' : ''}>${m.title}</option>`).join('')
+        + '<option value="" disabled>Sliding Scale (not supported yet)</option>';
+      td.innerHTML = ''; td.appendChild(sel); sel.focus();
+      sel.addEventListener('change', () => saveTerms(c.partnerId, { method: sel.value }));
+      sel.addEventListener('blur', () => paintContracts());
+      return;
+    }
+    const inp = document.createElement('input');
+    inp.type = 'number'; inp.className = 'ct-input';
+    inp.value = sub === 'gpPercent' ? (f.gpPercent || '') : (f.electricity || '');
+    td.innerHTML = ''; td.appendChild(inp); inp.focus();
+    let saved = false;
+    inp.addEventListener('blur', () => {
+      if (saved) return; saved = true;
+      saveTerms(c.partnerId, { [sub]: Number(inp.value || 0) });
+    });
+    inp.addEventListener('keydown', e => { if (e.key === 'Enter') inp.blur(); });
+    return;
+  }
 
   let field;
   if (col.type === 'select') {
@@ -805,6 +870,67 @@ async function saveCell(contractId, key, value) {
     paintContracts();
     alert('Could not save: ' + err.message);
   }
+}
+
+// Decompile the partner's current rule, apply one change, recompile with the SAME
+// compiler the Rule tab uses, and PUT. Never builds a rule tree by hand.
+// On failure PARTNERS_BY_ID is left untouched (the pre-edit partner) and the grid
+// repaints from that known-good state — mirrors saveCell's rollback-on-failure.
+async function saveTerms(partnerId, patch) {
+  const p = PARTNERS_BY_ID.get(partnerId);
+  if (!p) return;
+  const form = { ...decompileRule(p.rule), ...patch };
+  const rule = compileRule(form);
+  try {
+    const updated = await api('/partners/' + encodeURIComponent(partnerId),
+      { method: 'PUT', body: JSON.stringify({ rule }) });
+    PARTNERS_BY_ID.set(partnerId, { ...p, ...updated, rule });
+  } catch (err) {
+    alert('Could not save: ' + err.message);
+  }
+  paintContracts();
+}
+
+// MG and Placement are per machine model. A flat cell would collapse
+// 7-Eleven's S8=200 / S5=150 into one number, so those cells open this instead.
+// Model options come from the managed Device Types list (GET /machine-models,
+// cached module-scope as MACHINE_MODELS_CACHE) — the same source the Rule tab's
+// per-model dropdowns use — never the parser-only RS_MODELS constant.
+function openModelPopover(td, partnerId, sub, form) {
+  const rowsKey = sub === 'mg' ? 'mgRows' : 'placementRows';
+  const rows = (form[rowsKey] || []).map(r => ({ ...r }));
+  const pop = document.createElement('div');
+  pop.className = 'ct-pop';
+  const draw = () => {
+    pop.innerHTML = rows.map((r, i) => `
+      <div class="ct-pop-row">
+        <select data-i="${i}" class="ct-pop-model">
+          <option value="ALL"${r.model === 'ALL' ? ' selected' : ''}>All device types</option>
+          ${MACHINE_MODELS_CACHE.map(m => `<option value="${escape(m.code)}"${m.code === r.model ? ' selected' : ''}>${escape(m.displayName)}</option>`).join('')}
+        </select>
+        <input data-i="${i}" class="ct-pop-amt" type="number" value="${r.amount ?? ''}">
+        <button data-del="${i}" class="btn-icon" title="Remove">×</button>
+      </div>`).join('')
+      + `<div class="ct-pop-actions">
+           <button id="ct-pop-add" class="btn btn-sm">+ model</button>
+           <button id="ct-pop-save" class="btn btn-sm btn-primary">Save</button>
+         </div>`;
+  };
+  draw();
+  // .ct-pop is position:absolute; anchor it to this cell (td.ct-cell has no
+  // positioning of its own) rather than the page's initial containing block.
+  td.style.position = 'relative';
+  td.innerHTML = ''; td.appendChild(pop);
+  pop.addEventListener('click', ev => {
+    const del = ev.target.dataset.del;
+    if (del != null) { rows.splice(Number(del), 1); draw(); }
+    if (ev.target.id === 'ct-pop-add') { rows.push({ model: 'ALL', amount: 0 }); draw(); }
+    if (ev.target.id === 'ct-pop-save') {
+      pop.querySelectorAll('.ct-pop-model').forEach(s => { rows[Number(s.dataset.i)].model = s.value; });
+      pop.querySelectorAll('.ct-pop-amt').forEach(inp => { rows[Number(inp.dataset.i)].amount = Number(inp.value || 0); });
+      saveTerms(partnerId, { [rowsKey]: rows.filter(r => r.model && Number(r.amount) > 0) });
+    }
+  });
 }
 
 async function parseKaExcel(file) {

@@ -828,3 +828,9 @@ table.ts tfoot td {
 .ct-soon { color: #b45309; font-weight: 600; }
 .ct-input { width: 100%; min-width: 60px; font: inherit; padding: 3px 5px;
   border: 1px solid var(--accent, #3b5bdb); border-radius: 5px; background: var(--surface, #fff); }
+.ct-multi { color: var(--accent, #3b5bdb); cursor: pointer; }
+.ct-pop { position: absolute; z-index: 30; background: var(--surface, #fff);
+  border: 1px solid var(--border); border-radius: 9px; padding: 10px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.14); min-width: 230px; }
+.ct-pop-row { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+.ct-pop-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
