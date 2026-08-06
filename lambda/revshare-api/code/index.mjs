@@ -18,6 +18,9 @@ import {
   listMerchantsRoute, createMerchantRoute, getMerchantRoute,
   updateMerchantRoute, deleteMerchantRoute
 } from './routes/merchants.mjs';
+import {
+  listContractsRoute, createContractRoute, updateContractRoute, deleteContractRoute,
+} from './routes/contracts.mjs';
 import { importRevShareRoute } from './routes/import.mjs';
 import { createBulkRunRoute, listBulkRunsRoute, getBulkRunRoute, deleteBulkRunRoute, prepareBulkRunRoute, archiveBulkRunRoute, unarchiveBulkRunRoute } from './routes/bulk-runs.mjs';
 import {
@@ -75,6 +78,11 @@ export const handler = async (event) => {
     else if (method === 'GET'    && /^\/merchants\/[^/]+$/.test(path))                          result = await routeMerchant(event, getMerchantRoute);
     else if (method === 'PUT'    && /^\/merchants\/[^/]+$/.test(path))                          result = await routeMerchant(event, updateMerchantRoute);
     else if (method === 'DELETE' && /^\/merchants\/[^/]+$/.test(path))                          result = await routeMerchant(event, deleteMerchantRoute);
+    // Contracts
+    else if (method === 'GET'    && path === '/contracts')                                     result = await listContractsRoute();
+    else if (method === 'POST'   && path === '/contracts')                                     result = await createContractRoute(event);
+    else if (method === 'PUT'    && /^\/contracts\/[^/]+$/.test(path))                        result = await routeContract(event, updateContractRoute);
+    else if (method === 'DELETE' && /^\/contracts\/[^/]+$/.test(path))                        result = await routeContract(event, deleteContractRoute);
     // Import
     else if (method === 'POST'   && path === '/import/rev-share')                               result = await importRevShareRoute(event);
     // Bulk runs
@@ -127,6 +135,12 @@ async function routeMerchant(event, fn) {
   const m = path.match(/\/merchants\/([^/]+)/);
   event.pathParameters = { ...(event.pathParameters || {}), merchantId: m?.[1] };
   return fn(event);
+}
+
+function routeContract(event, handler) {
+  const path = event.requestContext?.http?.path ?? event.rawPath ?? event.path ?? '';
+  const m = path.match(/\/contracts\/([^/]+)/);
+  return handler({ ...event, pathParameters: { contractId: m ? m[1] : null } });
 }
 
 async function routeBulkRun(event, fn) {

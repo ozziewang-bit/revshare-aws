@@ -108,6 +108,46 @@ export async function deleteMerchant(merchantId) {
   }));
 }
 
+// ── Contracts ─────────────────────────────────────────────────────────────
+
+export async function listContracts() {
+  const out = await ddb.send(new QueryCommand({
+    TableName: TABLE,
+    KeyConditionExpression: 'pk = :p',
+    ExpressionAttributeValues: { ':p': 'CONTRACT' },
+  }));
+  return out.Items || [];
+}
+
+export async function getContract(contractId) {
+  const out = await ddb.send(new GetCommand({
+    TableName: TABLE,
+    Key: { pk: 'CONTRACT', sk: `CONTRACT#${contractId}` }
+  }));
+  return out.Item || null;
+}
+
+export async function putContract(contract) {
+  const now = new Date().toISOString();
+  const item = {
+    pk: 'CONTRACT',
+    sk: `CONTRACT#${contract.contractId}`,
+    ...contract,
+    merchantNameLower: (contract.merchantName || '').toLowerCase().trim(),
+    updatedAt: now,
+    createdAt: contract.createdAt || now
+  };
+  await ddb.send(new PutCommand({ TableName: TABLE, Item: item }));
+  return item;
+}
+
+export async function deleteContract(contractId) {
+  await ddb.send(new DeleteCommand({
+    TableName: TABLE,
+    Key: { pk: 'CONTRACT', sk: `CONTRACT#${contractId}` }
+  }));
+}
+
 // ── Bulk Runs ─────────────────────────────────────────────────────────────
 
 export async function putBulkRun(bulkRun) {

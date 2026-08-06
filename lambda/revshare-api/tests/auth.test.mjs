@@ -37,3 +37,15 @@ test('requiredPermission maps mutations to the right permission', () => {
   assert.equal(requiredPermission('PUT', '/users/a@b.com'), 'admin');
   assert.equal(requiredPermission('GET', '/me'), null);
 });
+
+test('requiredPermission: contract reads are open', () => {
+  assert.equal(requiredPermission('GET', '/contracts'), null);
+  assert.equal(requiredPermission('GET', '/contracts/abc'), null);
+});
+
+test('requiredPermission: contract writes need manageMerchants', () => {
+  assert.equal(requiredPermission('POST', '/contracts'), 'manageMerchants');
+  assert.equal(requiredPermission('PUT', '/contracts/abc'), 'manageMerchants');
+  assert.equal(requiredPermission('DELETE', '/contracts/abc'), 'manageMerchants');
+  assert.equal(requiredPermission('POST', '/contracts/import'), 'manageMerchants');
+});

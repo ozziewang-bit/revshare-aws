@@ -28,6 +28,7 @@ export function requiredPermission(method, path) {
   if (/^\/bulk-runs\/[^/]+\/archive$/.test(path)) return 'runCalcs';
   if (path.startsWith('/bulk-runs/')) return 'deleteRuns';   // DELETE only mutating sub-route
   if (path.startsWith('/merchants')) return 'manageMerchants';
+  if (path.startsWith('/contracts')) return 'manageMerchants';
   if (path.startsWith('/machine-models')) return 'manageDeviceTypes';
   if (path.startsWith('/import/')) return 'applyRuleBatch';
   return 'admin';   // unknown mutation → require admin (fail-closed)
