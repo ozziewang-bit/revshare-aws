@@ -94,6 +94,10 @@ export function buildImportPlan(rows, existingContracts, partners, links = {}) {
   const byName = new Map((partners || []).map(p => [key(p.name), p]));
   const byContract = new Map((existingContracts || []).map(c => [c.merchantNameLower, c]));
   const creates = [], updates = [], unmatched = [];
+  // Tracks entries already planned in *this* call, keyed the same way as byContract, so
+  // that two sheet rows for the same merchant (e.g. the real sheet's duplicate "IMPACT"
+  // rows) merge into one planned row instead of racing to create two DB rows.
+  const planned = new Map();
 
   for (const row of rows || []) {
     if (!row) continue;
@@ -104,9 +108,19 @@ export function buildImportPlan(rows, existingContracts, partners, links = {}) {
     if (partnerId == null && override === undefined && !auto) unmatched.push(row.merchantName);
 
     const { sheetTerms, ...contractFields } = row;   // drop preview-only terms
+
+    const already = planned.get(k);
+    if (already) {
+      Object.assign(already, contractFields, { partnerId });   // later row in the batch wins per field
+      continue;
+    }
+
     const existing = byContract.get(k);
-    if (existing) updates.push({ ...existing, ...contractFields, partnerId });
-    else creates.push({ ...contractFields, partnerId, notes: '' });
+    const entry = existing
+      ? { ...existing, ...contractFields, partnerId }
+      : { ...contractFields, partnerId, notes: '' };
+    (existing ? updates : creates).push(entry);
+    planned.set(k, entry);
   }
   return { creates, updates, unmatched };
 }

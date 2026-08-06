@@ -157,10 +157,42 @@ test('buildImportPlan updates an existing contract in place, keeping its id', ()
 test('buildImportPlan NEVER emits rule or share-term fields', () => {
   const plan = buildImportPlan([mk('7-Eleven')], [], [{ partnerId: 'p2', name: '7-Eleven' }], {});
   const written = JSON.stringify(plan.creates[0]);
-  for (const k of ['rule', 'sheetTerms', 'shareMode', 'revSharePct', 'minGuarantee',
+  for (const k of ['rule', 'sheetTerms', 'shareMode', 'revSharePct', 'fixedRental', 'minGuarantee',
                    'gpPercent', 'electricity', 'mgRows', 'aggregationMode']) {
     assert.equal(written.includes(k), false, `import must not write ${k}`);
   }
+});
+
+test('buildImportPlan NEVER emits rule or share-term fields on the update path', () => {
+  const existing = [{ contractId: 'c2', merchantNameLower: '7-eleven', merchantName: '7-Eleven' }];
+  const plan = buildImportPlan([mk('7-Eleven')], existing, [{ partnerId: 'p2', name: '7-Eleven' }], {});
+  const written = JSON.stringify(plan.updates[0]);
+  for (const k of ['rule', 'sheetTerms', 'shareMode', 'revSharePct', 'fixedRental', 'minGuarantee',
+                   'gpPercent', 'mgRows', 'aggregationMode']) {
+    assert.equal(written.includes(k), false, `import must not write ${k}`);
+  }
+});
+
+test('buildImportPlan merges intra-batch duplicate rows into a single create', () => {
+  const plan = buildImportPlan(
+    [mk('IMPACT', { counterParty: 'First Co' }), mk('IMPACT', { counterParty: 'Second Co' })],
+    [], [], {}
+  );
+  assert.equal(plan.creates.length, 1);
+  assert.equal(plan.updates.length, 0);
+  assert.equal(plan.creates[0].counterParty, 'Second Co');   // later row in the same batch wins
+});
+
+test('buildImportPlan merges intra-batch duplicate rows against an existing contract into a single update', () => {
+  const existing = [{ contractId: 'c3', merchantNameLower: 'impact', merchantName: 'IMPACT' }];
+  const plan = buildImportPlan(
+    [mk('IMPACT', { counterParty: 'First Co' }), mk('IMPACT', { counterParty: 'Second Co' })],
+    existing, [], {}
+  );
+  assert.equal(plan.creates.length, 0);
+  assert.equal(plan.updates.length, 1);
+  assert.equal(plan.updates[0].contractId, 'c3');
+  assert.equal(plan.updates[0].counterParty, 'Second Co');
 });
 
 test('buildImportPlan honours explicit link overrides for unmatched names', () => {
