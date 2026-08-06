@@ -20,6 +20,7 @@ import {
 } from './routes/merchants.mjs';
 import {
   listContractsRoute, createContractRoute, updateContractRoute, deleteContractRoute,
+  importContractsRoute,
 } from './routes/contracts.mjs';
 import { importRevShareRoute } from './routes/import.mjs';
 import { createBulkRunRoute, listBulkRunsRoute, getBulkRunRoute, deleteBulkRunRoute, prepareBulkRunRoute, archiveBulkRunRoute, unarchiveBulkRunRoute } from './routes/bulk-runs.mjs';
@@ -81,6 +82,7 @@ export const handler = async (event) => {
     // Contracts
     else if (method === 'GET'    && path === '/contracts')                                     result = await listContractsRoute();
     else if (method === 'POST'   && path === '/contracts')                                     result = await createContractRoute(event);
+    else if (method === 'POST'   && path === '/contracts/import')                              result = await importContractsRoute(event);
     else if (method === 'PUT'    && /^\/contracts\/[^/]+$/.test(path))                        result = await routeContract(event, updateContractRoute);
     else if (method === 'DELETE' && /^\/contracts\/[^/]+$/.test(path))                        result = await routeContract(event, deleteContractRoute);
     // Import

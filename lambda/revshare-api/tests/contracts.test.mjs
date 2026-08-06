@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { CONTRACT_COLUMNS, normalizeContractRow, matchContracts } from '../code/contracts.mjs';
+import { CONTRACT_COLUMNS, normalizeContractRow, matchContracts, buildImportPlan } from '../code/contracts.mjs';
 
 // Sheet order: No, Merchant, Type, CounterParty, Units, S5, S8, M10, LL20, LL40,
 //              Start, End, Notice, DeclineRenew, AutoRenewal, COC, Mode, Pct,
@@ -126,4 +126,57 @@ test('normalizeContractRow takes a date-only string as-is', () => {
 test('normalizeContractRow returns null for an unparseable date string', () => {
   const c = normalizeContractRow(row({ 10: 'not a date' }));
   assert.equal(c.startDate, null);
+});
+
+const mk = (name, over = {}) => ({
+  merchantName: name, merchantType: null, counterParty: null, installedUnits: null,
+  units: {}, startDate: null, endDate: null, terminationNoticeDays: null,
+  declineToRenew: false, autoRenewal: null, contractLink: null,
+  sheetTerms: { shareMode: 'hybrid', revSharePct: 0.5, fixedRental: 0, electricity: 0, minGuarantee: 0 },
+  ...over,
+});
+
+test('buildImportPlan creates contracts for new merchants', () => {
+  const plan = buildImportPlan([mk('BITEC')], [], [{ partnerId: 'p1', name: 'BITEC' }], {});
+  assert.equal(plan.creates.length, 1);
+  assert.equal(plan.updates.length, 0);
+  assert.equal(plan.creates[0].merchantName, 'BITEC');
+  assert.equal(plan.creates[0].partnerId, 'p1');
+});
+
+test('buildImportPlan updates an existing contract in place, keeping its id', () => {
+  const existing = [{ contractId: 'c1', merchantNameLower: 'bitec', merchantName: 'BITEC', notes: 'keep me' }];
+  const plan = buildImportPlan([mk('BITEC', { counterParty: 'Prinn Co' })], existing, [], {});
+  assert.equal(plan.creates.length, 0);
+  assert.equal(plan.updates.length, 1);
+  assert.equal(plan.updates[0].contractId, 'c1');
+  assert.equal(plan.updates[0].counterParty, 'Prinn Co');
+  assert.equal(plan.updates[0].notes, 'keep me');   // fields not in the sheet survive
+});
+
+test('buildImportPlan NEVER emits rule or share-term fields', () => {
+  const plan = buildImportPlan([mk('7-Eleven')], [], [{ partnerId: 'p2', name: '7-Eleven' }], {});
+  const written = JSON.stringify(plan.creates[0]);
+  for (const k of ['rule', 'sheetTerms', 'shareMode', 'revSharePct', 'minGuarantee',
+                   'gpPercent', 'electricity', 'mgRows', 'aggregationMode']) {
+    assert.equal(written.includes(k), false, `import must not write ${k}`);
+  }
+});
+
+test('buildImportPlan honours explicit link overrides for unmatched names', () => {
+  const plan = buildImportPlan([mk('Big C')], [], [{ partnerId: 'p3', name: 'BIG-C' }],
+                               { 'big c': 'p3' });
+  assert.equal(plan.creates[0].partnerId, 'p3');
+  assert.equal(plan.unmatched.length, 0);
+});
+
+test('buildImportPlan reports unmatched names with no override', () => {
+  const plan = buildImportPlan([mk('Big C')], [], [{ partnerId: 'p3', name: 'BIG-C' }], {});
+  assert.equal(plan.creates[0].partnerId, null);
+  assert.deepEqual(plan.unmatched, ['Big C']);
+});
+
+test('buildImportPlan skips null rows', () => {
+  const plan = buildImportPlan([null, mk('BITEC'), null], [], [], {});
+  assert.equal(plan.creates.length, 1);
 });

@@ -85,3 +85,28 @@ export function matchContracts(rows, partners) {
   }
   return { matched, unmatched };
 }
+
+// Turn normalized sheet rows into create/update sets. Pure — no IO, so it is unit-tested.
+// `links` maps a lowercased sheet merchant name to a partnerId the user picked in the
+// review step, for names that did not match automatically.
+// Share terms are deliberately absent from everything this returns.
+export function buildImportPlan(rows, existingContracts, partners, links = {}) {
+  const byName = new Map((partners || []).map(p => [key(p.name), p]));
+  const byContract = new Map((existingContracts || []).map(c => [c.merchantNameLower, c]));
+  const creates = [], updates = [], unmatched = [];
+
+  for (const row of rows || []) {
+    if (!row) continue;
+    const k = key(row.merchantName);
+    const override = Object.prototype.hasOwnProperty.call(links, k) ? links[k] : undefined;
+    const auto = byName.get(k);
+    const partnerId = override !== undefined ? override : (auto ? auto.partnerId : null);
+    if (partnerId == null && override === undefined && !auto) unmatched.push(row.merchantName);
+
+    const { sheetTerms, ...contractFields } = row;   // drop preview-only terms
+    const existing = byContract.get(k);
+    if (existing) updates.push({ ...existing, ...contractFields, partnerId });
+    else creates.push({ ...contractFields, partnerId, notes: '' });
+  }
+  return { creates, updates, unmatched };
+}
