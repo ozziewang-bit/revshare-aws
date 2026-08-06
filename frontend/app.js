@@ -709,6 +709,17 @@ function isRepresentable(r) {
   return canon(roundTripRule(r)) === canon(r);
 }
 
+// compileRule's universal fallback (`zero()`) when every term is empty — a bare 0% GP
+// leaf, whatever payout method it's tagged with. Compared with `_method` stripped: the
+// harmful case is this exact empty shape re-tagged with a NEW method (e.g. picking a
+// Mode on a rule-less partner with every term still 0), which the plain no-op guard in
+// saveTerms can't catch on its own since the rule object genuinely did change.
+function isEmptyCompiledRule(rule) {
+  if (!rule) return true;
+  const { _method, ...rest } = rule;
+  return canon(rest) === canon({ type: 'percent', _t: 'gp', rows: [{ model: 'ALL', percent: 0 }] });
+}
+
 // Term cells read the partner's stored rule — the contract row never stores share terms.
 // Returns the linked partner, or null when unlinked OR when the id doesn't resolve — e.g.
 // an archived partner: GET /partners excludes archived rows and DELETE /partners/:id
@@ -938,13 +949,22 @@ async function saveTerms(partnerId, patch) {
   if (!p) return;
   const form = { ...decompileRule(p.rule), ...patch };
   const rule = compileRule(form);
+  const hadNoRule = !(p.rule && p.rule.type);
+  // A partner with no rule yet must not gain one just because a term cell was touched
+  // but produced nothing real — e.g. picking a payout Mode while every term is still
+  // empty, or blurring an emptied Rev-share % input. Only a rule with at least one real
+  // term may be written; otherwise the partner silently stops being flagged by the run
+  // wizard's `!p.rule || !p.rule.type` readiness gate while still being paid 0. Checked
+  // here — the one save path shared by the Mode select, the numeric term inputs, and the
+  // popover — so every entry point is covered the same way, not just the Mode select.
+  if (hadNoRule && isEmptyCompiledRule(rule)) { paintContracts(); return; }
   // Never PUT (or touch the cache) when nothing actually changed. For an existing
   // representable rule "nothing changed" means the recompiled rule matches p.rule
   // exactly. For a partner with no rule yet, the equivalent baseline is what an
   // unedited form already round-trips to (roundTripRule) — compileRule never returns
   // null, so comparing straight against a null/empty p.rule would never match and a
   // plain accidental blur (no value typed) would still fabricate a real 0% rule.
-  const baseline = (p.rule && p.rule.type) ? p.rule : roundTripRule(p.rule);
+  const baseline = hadNoRule ? roundTripRule(p.rule) : p.rule;
   if (canon(rule) === canon(baseline)) { paintContracts(); return; }
   try {
     const updated = await api('/partners/' + encodeURIComponent(partnerId),
@@ -1009,11 +1029,14 @@ function openModelPopover(td, partnerId, sub, form) {
     if (ev.target.id === 'ct-pop-save') {
       pop.querySelectorAll('.ct-pop-model').forEach(s => { rows[Number(s.dataset.i)].model = s.value; });
       pop.querySelectorAll('.ct-pop-amt').forEach(inp => { rows[Number(inp.dataset.i)].amount = Number(inp.value || 0); });
-      // Dedupe by model — last row wins. Two rows for the same model would otherwise
-      // both survive into rule.rows and evalFlatPerMachine would pay each matching
-      // machine twice (it sums every row, it doesn't merge by model).
-      const deduped = [...new Map(rows.map(r => [r.model, r])).values()];
-      saveTerms(partnerId, { [rowsKey]: deduped.filter(r => r.model && Number(r.amount) > 0) });
+      // Filter FIRST, dedupe SECOND. Deduping before the filter let a blank duplicate
+      // (e.g. the {ALL,0} row `+ model` pushes) evict a real row from the Map and then
+      // get discarded itself by the filter, deleting the live term entirely. Filtering
+      // first means only real (model + amount>0) rows compete for a model slot; a
+      // genuine duplicate among survivors still resolves last-wins.
+      const kept = rows.filter(r => r.model && Number(r.amount) > 0);
+      const deduped = [...new Map(kept.map(r => [r.model, r])).values()];
+      saveTerms(partnerId, { [rowsKey]: deduped });
     }
   });
 }
