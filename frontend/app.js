@@ -813,7 +813,7 @@ async function renderContractsScreen() {
         <option value="name">Sort: merchant</option>
         <option value="end">Sort: contract end</option>
       </select>
-      ${can('manageMerchants') ? '<label class="btn btn-sm">Upload sheet<input id="ct-file" type="file" accept=".xlsx" hidden></label>' : ''}
+      ${can('manageMerchants') ? '<button type="button" id="ct-file-choose" class="btn">Upload sheet</button><input type="file" id="ct-file" accept=".xlsx" style="display:none">' : ''}
       <span class="muted" id="ct-count"></span>
     </div>
     <div class="ct-scroll"><table class="ct-table"><thead><tr>${head}</tr></thead>
@@ -826,6 +826,7 @@ async function renderContractsScreen() {
     const td = ev.target.closest('td.ct-cell');
     if (td && td.dataset.key) startCellEdit(td);
   });
+  el.querySelector('#ct-file-choose')?.addEventListener('click', () => el.querySelector('#ct-file').click());
   el.querySelector('#ct-file')?.addEventListener('change', async ev => {
     const file = ev.target.files[0]; if (!file) return;
     ev.target.value = '';
@@ -847,7 +848,7 @@ async function renderImportReview(rows, skipped) {
   const opts = partners.map(p => `<option value="${escape(p.partnerId)}">${escape(p.name)}</option>`).join('');
   el.innerHTML = `
     <h1>Import contracts</h1>
-    <p><strong>${rows.length}</strong> merchant rows read${skipped ? `, ${skipped} blank rows skipped` : ''}.
+    <p><strong>${rows.length}</strong> merchant rows read${skipped > 0 && skipped < 50 ? `, ${skipped} blank rows skipped` : ''}.
        <strong>${names.length - unmatched.length}</strong> matched an existing partner automatically.</p>
     <p class="muted">Share terms in this sheet are ignored — importing never changes a partner's rule.</p>
     ${unmatched.length ? `<h2>${unmatched.length} unmatched — link or leave unlinked</h2>
