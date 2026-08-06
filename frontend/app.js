@@ -947,17 +947,47 @@ async function saveCell(contractId, key, value) {
 async function saveTerms(partnerId, patch) {
   const p = PARTNERS_BY_ID.get(partnerId);
   if (!p) return;
-  const form = { ...decompileRule(p.rule), ...patch };
-  const rule = compileRule(form);
+  let form = { ...decompileRule(p.rule), ...patch };
+  let rule = compileRule(form);
+
+  // compileRule only uses MG under higher/hybrid-higher — under default/hybrid it is
+  // silently excluded from every compiled result (mgLeaf never enters `allTerms`). A
+  // patch that just added/changed real MG rows while the effective method is
+  // default/hybrid — true for a null-rule partner (decompileRule(null) defaults to
+  // 'hybrid') AND for any existing partner already on default/hybrid — would otherwise
+  // "save successfully" and throw the MG data away with no confirmation. This is the
+  // mirror image of the Mode select's own confirm (which warns before DROPPING MG on a
+  // method change); this one warns before dropping MG on an MG change. Must run, and
+  // possibly switch the method, BEFORE the emptiness check below, so that check sees the
+  // final (possibly hybrid-higher) rule rather than the pre-switch one — otherwise the
+  // two guards fight and a legitimate MG-only save for a null-rule partner gets silently
+  // swallowed by the emptiness guard before this rescue ever gets a chance to run.
+  const patchMgRows = Array.isArray(patch.mgRows)
+    ? patch.mgRows.filter(r => r.model && Number(r.amount) > 0) : [];
+  if (patchMgRows.length > 0 && (form.method === 'default' || form.method === 'hybrid')) {
+    const models = patchMgRows.map(r => r.model).join(', ');
+    const n = patchMgRows.length;
+    const ok = confirm(`Minimum guarantee only applies to the "Whichever is higher" and "Hybrid-higher" payout methods. Switch this partner to Hybrid-higher and save the ${n} MG row${n === 1 ? '' : 's'} (${models})?`);
+    if (!ok) { paintContracts(); return; }   // decline — abort without saving anything
+    form = { ...form, method: 'hybrid-higher' };
+    rule = compileRule(form);
+  }
+
   const hadNoRule = !(p.rule && p.rule.type);
-  // A partner with no rule yet must not gain one just because a term cell was touched
-  // but produced nothing real — e.g. picking a payout Mode while every term is still
-  // empty, or blurring an emptied Rev-share % input. Only a rule with at least one real
-  // term may be written; otherwise the partner silently stops being flagged by the run
-  // wizard's `!p.rule || !p.rule.type` readiness gate while still being paid 0. Checked
-  // here — the one save path shared by the Mode select, the numeric term inputs, and the
-  // popover — so every entry point is covered the same way, not just the Mode select.
-  if (hadNoRule && isEmptyCompiledRule(rule)) { paintContracts(); return; }
+  // Never swallow a patch that carried real data. A method-only patch is not "data" (see
+  // the fabrication guard immediately below) and stays silently skipped — but a value the
+  // user actually entered must not vanish with no feedback just because, given the
+  // current method, it compiled to nothing. The MG rescue above already handles the only
+  // way that happens today; this alert is the safety net for the rest.
+  const patchHasData = Object.entries(patch).some(([k, v]) =>
+    Array.isArray(v) ? v.some(r => r.model && Number(r.amount) > 0)
+                     : (k !== 'method' && Number(v) > 0));
+  if (hadNoRule && isEmptyCompiledRule(rule)) {
+    if (!patchHasData) { paintContracts(); return; }
+    alert("Nothing was saved: these values compile to an empty rule under the current payout method. Pick a method that uses this term, or enter a term the current method does use.");
+    paintContracts();
+    return;
+  }
   // Never PUT (or touch the cache) when nothing actually changed. For an existing
   // representable rule "nothing changed" means the recompiled rule matches p.rule
   // exactly. For a partner with no rule yet, the equivalent baseline is what an
