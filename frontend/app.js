@@ -782,6 +782,16 @@ async function parseAllMerchantSheet(file) {
   const ws = wb.Sheets['All_Merchant'];
   if (!ws) throw new Error('Sheet "All_Merchant" not found in this workbook');
   const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, raw: true, blankrows: false });
+  // Everything below reads by fixed column INDEX, not header name, because merged group
+  // cells in row 1 make header-keyed parsing unreliable. That makes a column inserted
+  // anywhere left of W silently shift every field one slot — dates become numbers, links
+  // vanish, MG lands in the Electricity slot — with no error and no way to tell from the
+  // "N rows read" summary. Check two fixed anchors on header row 2 before trusting any
+  // index below: this is a human-maintained spreadsheet, so a column insert is a *when*.
+  const header2 = aoa[1] || [];
+  if (!/merchant/i.test(String(header2[1] || '')) || !/link/i.test(String(header2[22] || ''))) {
+    throw new Error('This workbook\'s "All_Merchant" sheet layout has changed — column positions no longer match what the importer expects. Check for inserted/removed/reordered columns before re-uploading.');
+  }
   const body = aoa.slice(2);
   const rows = body
     .map(r => { const c = new Array(23).fill(null); for (let i = 0; i < 23; i++) c[i] = r[i] ?? null; return c; })
@@ -944,7 +954,12 @@ function startCellEdit(td) {
     let saved = false;
     inp.addEventListener('blur', () => {
       if (saved) return; saved = true;
-      saveTerms(c.partnerId, { [sub]: Number(inp.value || 0) });
+      // An empty/unparseable input (e.g. a paste like "50%" that <input type=number>
+      // rejects down to '') is not "the user entered zero" — treat it as no edit rather
+      // than silently zeroing (and thereby dropping) this term. See saveTerms below for
+      // the matching guard on partners who already had a rule.
+      if (inp.value.trim() === '') { paintContracts(); return; }
+      saveTerms(c.partnerId, { [sub]: Number(inp.value) });
     });
     inp.addEventListener('keydown', e => { if (e.key === 'Enter') inp.blur(); });
     return;
@@ -953,9 +968,17 @@ function startCellEdit(td) {
   let field;
   if (col.type === 'select') {
     const opts = key === 'merchantType' ? MERCHANT_TYPES : AUTO_RENEWAL_OPTIONS;
+    // A stored value that isn't in the (necessarily incomplete — hand-maintained sheet
+    // data has more variants than any hardcoded list) options must still show as itself
+    // and stay selected, exactly like openModelPopover does for an unknown model code.
+    // Without this, opening the cell on such a value selects nothing, and the blur-commit
+    // below would silently overwrite real data with null. Spec §3 also requires the Type
+    // dropdown to accept a typed value not in the list, which this doubles as supporting.
+    const known = cur == null || cur === '' || opts.includes(cur);
     field = document.createElement('select');
     field.innerHTML = '<option value=""></option>' +
-      opts.map(o => `<option${o === cur ? ' selected' : ''}>${o}</option>`).join('');
+      opts.map(o => `<option${o === cur ? ' selected' : ''}>${o}</option>`).join('') +
+      (known ? '' : `<option value="${escape(cur)}" selected>${escape(cur)}</option>`);
   } else if (col.type === 'bool') {
     field = document.createElement('input'); field.type = 'checkbox'; field.checked = !!cur;
   } else {
@@ -972,6 +995,11 @@ function startCellEdit(td) {
     const raw = col.type === 'bool' ? field.checked : field.value;
     const val = col.type === 'number' ? (raw === '' ? null : Number(raw))
               : (col.type === 'bool' ? raw : (String(raw).trim() || null));
+    // A stray click into the cell and back out (no actual edit) must never fire a PUT —
+    // most concretely for the select case above, where an untouched dropdown blurring
+    // with its injected "current value" option still selected must be a true no-op.
+    const before = cur == null ? null : cur;
+    if (val === before) { paintContracts(); return; }
     await saveCell(id, key, val);
   };
   field.addEventListener('blur', commit);
@@ -1053,6 +1081,18 @@ async function saveTerms(partnerId, patch) {
     paintContracts();
     return;
   }
+  // A partner that already had a real rule must never be silently collapsed to a bare
+  // 0% GP leaf by emptying every term — compileRule's zero() fallback has a `.type`, so
+  // without this it would sail past the bulk-run readiness gate and get paid 0 with no
+  // warning. Confirm before writing an empty rule over a non-empty one. Mutually
+  // exclusive with the hadNoRule branch above, so this never double-prompts.
+  if (!hadNoRule && isEmptyCompiledRule(rule) && !isEmptyCompiledRule(p.rule)) {
+    const name = (p && p.name) || CONTRACTS.find(c => c.partnerId === partnerId)?.merchantName || 'this partner';
+    if (!confirm(`This removes every share term for ${name}. The rule becomes 0% and the partner will be paid 0 in future runs. Continue?`)) {
+      paintContracts();
+      return;
+    }
+  }
   // Never PUT (or touch the cache) when nothing actually changed. For an existing
   // representable rule "nothing changed" means the recompiled rule matches p.rule
   // exactly. For a partner with no rule yet, the equivalent baseline is what an
@@ -1123,7 +1163,13 @@ function openModelPopover(td, partnerId, sub, form) {
     if (ev.target.id === 'ct-pop-add') { rows.push({ model: 'ALL', amount: 0 }); draw(); }
     if (ev.target.id === 'ct-pop-save') {
       pop.querySelectorAll('.ct-pop-model').forEach(s => { rows[Number(s.dataset.i)].model = s.value; });
-      pop.querySelectorAll('.ct-pop-amt').forEach(inp => { rows[Number(inp.dataset.i)].amount = Number(inp.value || 0); });
+      // Same empty-input protection as the plain term-num cells: a blank/unparseable
+      // amount (e.g. a rejected paste) must not silently coerce to 0 and evict the row
+      // via the amount>0 filter below — leave that row's amount as it was.
+      pop.querySelectorAll('.ct-pop-amt').forEach(inp => {
+        if (inp.value.trim() === '') return;
+        rows[Number(inp.dataset.i)].amount = Number(inp.value);
+      });
       // Filter FIRST, dedupe SECOND. Deduping before the filter let a blank duplicate
       // (e.g. the {ALL,0} row `+ model` pushes) evict a real row from the Map and then
       // get discarded itself by the filter, deleting the live term entirely. Filtering

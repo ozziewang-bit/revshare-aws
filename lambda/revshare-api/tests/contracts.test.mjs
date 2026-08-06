@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { CONTRACT_COLUMNS, normalizeContractRow, matchContracts, buildImportPlan } from '../code/contracts.mjs';
+import { normalizeContractRow, matchContracts, buildImportPlan } from '../code/contracts.mjs';
 
 // Sheet order: No, Merchant, Type, CounterParty, Units, S5, S8, M10, LL20, LL40,
 //              Start, End, Notice, DeclineRenew, AutoRenewal, COC, Mode, Pct,
@@ -16,12 +16,6 @@ const row = (over = {}) => {
   for (const [k, v] of Object.entries(over)) c[Number(k)] = v;
   return c;
 };
-
-test('CONTRACT_COLUMNS has 23 entries in sheet order', () => {
-  assert.equal(CONTRACT_COLUMNS.length, 23);
-  assert.equal(CONTRACT_COLUMNS[1], 'merchantName');
-  assert.equal(CONTRACT_COLUMNS[22], 'contractLink');
-});
 
 test('normalizeContractRow maps a full row', () => {
   const c = normalizeContractRow(row());
@@ -168,9 +162,27 @@ test('buildImportPlan NEVER emits rule or share-term fields on the update path',
   const plan = buildImportPlan([mk('7-Eleven')], existing, [{ partnerId: 'p2', name: '7-Eleven' }], {});
   const written = JSON.stringify(plan.updates[0]);
   for (const k of ['rule', 'sheetTerms', 'shareMode', 'revSharePct', 'fixedRental', 'minGuarantee',
-                   'gpPercent', 'mgRows', 'aggregationMode']) {
+                   'gpPercent', 'electricity', 'mgRows', 'aggregationMode']) {
     assert.equal(written.includes(k), false, `import must not write ${k}`);
   }
+});
+
+test('buildImportPlan preserves an existing manual partnerId when the name no longer auto-matches and no override is given', () => {
+  // e.g. a contract linked earlier to a partner whose name has since drifted, or whose
+  // partner was archived (archived partners are excluded from `partners` entirely) —
+  // re-importing must not silently null out the link just because this pass can't
+  // independently re-derive it.
+  const existing = [{ contractId: 'c9', merchantNameLower: 'big c', merchantName: 'Big C', partnerId: 'p-manual' }];
+  const plan = buildImportPlan([mk('Big C')], existing, [], {});
+  assert.equal(plan.updates.length, 1);
+  assert.equal(plan.updates[0].partnerId, 'p-manual');
+});
+
+test('buildImportPlan lets an explicit override win over a preserved existing partnerId', () => {
+  const existing = [{ contractId: 'c9', merchantNameLower: 'big c', merchantName: 'Big C', partnerId: 'p-manual' }];
+  const plan = buildImportPlan([mk('Big C')], existing, [{ partnerId: 'p3', name: 'BIG-C' }],
+                               { 'big c': 'p3' });
+  assert.equal(plan.updates[0].partnerId, 'p3');
 });
 
 test('buildImportPlan merges intra-batch duplicate rows into a single create', () => {

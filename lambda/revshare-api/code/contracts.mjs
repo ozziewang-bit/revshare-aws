@@ -1,16 +1,18 @@
 // Pure contract-sheet normalizer + partner matcher. No AWS imports — unit-tested.
 // Source: the `All_Merchant` sheet of the merchant workbook. Two header rows; data
 // starts at row 3. The browser sends raw positional cell arrays; every coercion is here.
-
-// Sheet order. `_dead` marks columns that are empty or broken in all 208 rows and are
-// deliberately not carried: A (No — #NAME?), P (COC Clause), V (unlabeled).
-export const CONTRACT_COLUMNS = Object.freeze([
-  '_dead', 'merchantName', 'merchantType', 'counterParty', 'installedUnits',
-  'S5', 'S8', 'M10', 'LL20', 'LL40',
-  'startDate', 'endDate', 'terminationNoticeDays', 'declineToRenew', 'autoRenewal',
-  '_dead', 'shareMode', 'revSharePct', 'fixedRental', 'electricity', 'minGuarantee',
-  '_dead', 'contractLink',
-]);
+//
+// Column layout (sheet order; A=0). `normalizeContractRow` below reads these indices
+// directly via `at(i)` — there is deliberately no separate column-name table: a constant
+// that merely lists field names in order pins nothing (nothing reads it, so editing the
+// normalizer's indices silently desyncs it from a name list no test can catch), so it was
+// removed rather than kept as decoration. The frontend's `parseAllMerchantSheet` checks
+// two header anchors (col 1 = "Merchant", col 22 = "Link Contract") before parsing, which
+// is the actual defense against a shifted column layout.
+//   A=_dead(No/#NAME?) B=merchantName C=merchantType D=counterParty E=installedUnits
+//   F-J=S5,S8,M10,LL20,LL40  K=startDate L=endDate M=terminationNoticeDays
+//   N=declineToRenew O=autoRenewal P=_dead(COC Clause) Q=shareMode R=revSharePct
+//   S=fixedRental T=electricity U=minGuarantee V=_dead(unlabeled) W=contractLink
 
 const str = v => {
   const s = v == null ? '' : String(v).trim();
@@ -104,7 +106,14 @@ export function buildImportPlan(rows, existingContracts, partners, links = {}) {
     const k = key(row.merchantName);
     const override = Object.prototype.hasOwnProperty.call(links, k) ? links[k] : undefined;
     const auto = byName.get(k);
-    const partnerId = override !== undefined ? override : (auto ? auto.partnerId : null);
+    const existing = byContract.get(k);   // hoisted so a previously-linked row isn't unlinked below
+    // Precedence: an explicit review-step override always wins; failing that, a fresh
+    // name match; failing that, keep whatever partnerId this contract already had (e.g.
+    // a manually-linked row whose sheet name no longer auto-matches, or whose partner was
+    // since archived and so no longer appears in `partners`) — never fall through to null
+    // just because this re-import didn't independently re-derive the link.
+    const partnerId = override !== undefined ? override
+      : (auto ? auto.partnerId : (existing ? (existing.partnerId ?? null) : null));
     if (partnerId == null && override === undefined && !auto) unmatched.push(row.merchantName);
 
     const { sheetTerms, ...contractFields } = row;   // drop preview-only terms
@@ -115,7 +124,6 @@ export function buildImportPlan(rows, existingContracts, partners, links = {}) {
       continue;
     }
 
-    const existing = byContract.get(k);
     const entry = existing
       ? { ...existing, ...contractFields, partnerId }
       : { ...contractFields, partnerId, notes: '' };
