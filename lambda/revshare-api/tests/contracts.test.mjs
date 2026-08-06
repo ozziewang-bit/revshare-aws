@@ -107,3 +107,23 @@ test('matchContracts handles an empty partner list', () => {
   assert.equal(matched.length, 0);
   assert.equal(unmatched.length, 1);
 });
+
+test('normalizeContractRow takes the date part verbatim from a naive datetime string (no offset)', () => {
+  const c = normalizeContractRow(row({ 10: '2025-08-21T00:00:00' }));
+  assert.equal(c.startDate, '2025-08-21');
+});
+
+test('normalizeContractRow takes the date part verbatim from a Z-suffixed datetime string', () => {
+  const c = normalizeContractRow(row({ 10: '2025-08-21T00:00:00.000Z' }));
+  assert.equal(c.startDate, '2025-08-21');
+});
+
+test('normalizeContractRow takes a date-only string as-is', () => {
+  const c = normalizeContractRow(row({ 10: '2025-08-21' }));
+  assert.equal(c.startDate, '2025-08-21');
+});
+
+test('normalizeContractRow returns null for an unparseable date string', () => {
+  const c = normalizeContractRow(row({ 10: 'not a date' }));
+  assert.equal(c.startDate, null);
+});

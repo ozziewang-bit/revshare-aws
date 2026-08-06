@@ -31,7 +31,10 @@ function toDate(v) {
   if (typeof v === 'number' && Number.isFinite(v)) {
     return new Date(EXCEL_EPOCH_UTC + Math.round(v) * 86400000).toISOString().slice(0, 10);
   }
-  const d = new Date(v);
+  const s = String(v).trim();
+  const iso = s.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (iso) return iso[1];          // date-only or ISO datetime — take the date part as written
+  const d = new Date(s);
   return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
 }
 
