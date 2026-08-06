@@ -722,6 +722,10 @@ async function renderContractsScreen() {
   ['ct-search', 'ct-type', 'ct-sort'].forEach(id =>
     el.querySelector('#' + id).addEventListener('input', paintContracts));
   paintContracts();
+  el.querySelector('#ct-body').addEventListener('click', ev => {
+    const td = ev.target.closest('td.ct-cell');
+    if (td && td.dataset.key) startCellEdit(td);
+  });
 }
 
 function paintContracts() {
@@ -736,6 +740,68 @@ function paintContracts() {
     : (a, b) => (a.merchantName || '').localeCompare(b.merchantName || ''));
   document.getElementById('ct-body').innerHTML = rows.map(contractRowHtml).join('');
   document.getElementById('ct-count').textContent = `${rows.length} of ${CONTRACTS.length}`;
+}
+
+// One cell at a time. Click → input; blur or Enter commits; Escape reverts.
+function startCellEdit(td) {
+  if (td.querySelector('input, select')) return;
+  const id = td.dataset.id, key = td.dataset.key;
+  const col = CONTRACT_GRID_COLUMNS.find(c => c.key === key);
+  if (!col || !can('manageMerchants')) return;
+  const c = CONTRACTS.find(x => x.contractId === id);
+  const cur = cellValue(c, key);
+
+  let field;
+  if (col.type === 'select') {
+    const opts = key === 'merchantType' ? MERCHANT_TYPES : AUTO_RENEWAL_OPTIONS;
+    field = document.createElement('select');
+    field.innerHTML = '<option value=""></option>' +
+      opts.map(o => `<option${o === cur ? ' selected' : ''}>${o}</option>`).join('');
+  } else if (col.type === 'bool') {
+    field = document.createElement('input'); field.type = 'checkbox'; field.checked = !!cur;
+  } else {
+    field = document.createElement('input');
+    field.type = col.type === 'number' ? 'number' : (col.type === 'date' ? 'date' : 'text');
+    field.value = cur == null ? '' : String(cur);
+  }
+  field.className = 'ct-input';
+  td.innerHTML = ''; td.appendChild(field); field.focus();
+
+  let done = false;
+  const commit = async () => {
+    if (done) return; done = true;
+    const raw = col.type === 'bool' ? field.checked : field.value;
+    const val = col.type === 'number' ? (raw === '' ? null : Number(raw))
+              : (col.type === 'bool' ? raw : (String(raw).trim() || null));
+    await saveCell(id, key, val);
+  };
+  field.addEventListener('blur', commit);
+  field.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); field.blur(); }
+    if (e.key === 'Escape') { done = true; paintContracts(); }
+  });
+}
+
+async function saveCell(contractId, key, value) {
+  const c = CONTRACTS.find(x => x.contractId === contractId);
+  if (!c) return;
+  const before = JSON.parse(JSON.stringify(c));
+  if (key.includes('.')) {
+    const [obj, sub] = key.split('.');
+    c[obj] = { ...(c[obj] || {}) };
+    if (value == null) delete c[obj][sub]; else c[obj][sub] = value;
+  } else {
+    c[key] = value;
+  }
+  paintContracts();
+  try {
+    const body = key.includes('.') ? { units: c.units } : { [key]: value };
+    await api('/contracts/' + encodeURIComponent(contractId), { method: 'PUT', body: JSON.stringify(body) });
+  } catch (err) {
+    Object.assign(c, before);
+    paintContracts();
+    alert('Could not save: ' + err.message);
+  }
 }
 
 async function parseKaExcel(file) {
