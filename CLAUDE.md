@@ -76,9 +76,12 @@ is deprecated — the unified site lives on `d2t76jfby056ul`.
   to switch to `hybrid-higher` instead of silently discarding them. MG and Placement
   cells open a per-model popover sourced from `GET /machine-models` (the managed
   Device Types list), not the parser-only `RS_MODELS` constant. Rows with no linked
-  partner have their term cells disabled. `Sliding Scale` (4 merchants, ladder
-  15/20/25/30/35% at 99/199/299/399/400+) is listed but disabled — the engine has
-  `tiered_percent` but no editor. Import: the `All_Merchant` sheet has 208 rows; 132
+  partner have their term cells disabled. `Sliding Scale` is listed as a Mode option
+  but disabled — the engine has `tiered_percent` but no editor for it yet. (The
+  uploaded `All_Merchant` **workbook** — not the app or DDB — describes 4 merchants
+  on a sliding-scale ladder of 15/20/25/30/35% at 99/199/299/399/400+; that tier
+  data isn't imported or stored anywhere the app can calculate it today.) Import:
+  the `All_Merchant` sheet has 208 rows; 132
   match an existing partner by name (131 unique names — `IMPACT` appears twice and
   both rows match), 76 are unmatched; a clean import creates 207 contracts (the
   backend collapses the duplicate `IMPACT` match into one contract).
@@ -171,7 +174,7 @@ Account `<YOUR_AWS_ACCOUNT_ID>`, region `ap-northeast-1`. IAM user `<your-iam-us
 | `lambda/revshare-api/code/routes/bulk-runs.mjs` | Bulk run routes. Exports `buildRosterRows` (roster-authoritative row seeding), `applyMerchantRoster` (upsert registry + create partners), `groupOrders` (legacy, order-only grouping). |
 | `lambda/revshare-api/code/contracts.mjs` | Contract sheet-row normalisation, name matching (`matchContracts`), import diffing (`buildImportPlan`). Contract fields only — never touches a rule. |
 | `lambda/revshare-api/code/routes/contracts.mjs` | Contract CRUD + import routes. |
-| `lambda/revshare-api/tests/` | `engine.test.mjs` (25 tests), `csv.test.mjs` (6 tests), `contracts.test.mjs`, others — 94 total. |
+| `lambda/revshare-api/tests/` | `engine.test.mjs`, `csv.test.mjs`, `contracts.test.mjs`, others — `npm test` → 94 total. |
 | `frontend/index.html` | SPA shell + pre-paint auth gate. |
 | `frontend/style.css` | All styles (tokenized). |
 | `frontend/app.js` | All app JS: auth, screens, rule editor, run flow, PDF. |
@@ -210,7 +213,7 @@ npm test    # from repo root
 
 ## 5. Data model
 
-Single DDB table `RevsharePartner`. Three row families:
+Single DDB table `RevsharePartner`. Four row families:
 
 | pk | sk | What |
 |---|---|---|
