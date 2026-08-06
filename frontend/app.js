@@ -29,27 +29,37 @@ const PAYOUT_METHODS = ['default', 'hybrid', 'higher', 'hybrid-higher'];
 function compileRule(form) {
   const { gpPercent, electricity, placementRows, others, mgRows } = form;
   const method = PAYOUT_METHODS.includes(form.method) ? form.method : 'hybrid';
-  const terms = [];
-  if (Number(gpPercent) > 0) terms.push({ type: 'percent', _t: 'gp', rows: [{ model: 'ALL', percent: Number(gpPercent) }] });
-  if (Number(electricity) > 0) terms.push({ type: 'flat_per_partner_total', _t: 'elec', amount: Number(electricity) });
+
+  const gpLeaf = Number(gpPercent) > 0
+    ? { type: 'percent', _t: 'gp', rows: [{ model: 'ALL', percent: Number(gpPercent) }] } : null;
+  const elecLeaf = Number(electricity) > 0
+    ? { type: 'flat_per_partner_total', _t: 'elec', amount: Number(electricity) } : null;
   const vp = (placementRows || []).filter(r => r.model && Number(r.amount) > 0);
-  if (vp.length) terms.push({ type: 'flat_per_machine', _t: 'placement', rows: vp.map(r => ({ model: r.model, amount: Number(r.amount) })) });
-  if (Number(others) > 0) terms.push({ type: 'flat_per_partner_total', _t: 'others', amount: Number(others) });
+  const placementLeaf = vp.length
+    ? { type: 'flat_per_machine', _t: 'placement', rows: vp.map(r => ({ model: r.model, amount: Number(r.amount) })) } : null;
+  const othersLeaf = Number(others) > 0
+    ? { type: 'flat_per_partner_total', _t: 'others', amount: Number(others) } : null;
   const vmg = (mgRows || []).filter(r => r.model && Number(r.amount) > 0);
-  const mgLeaf = vmg.length ? { type: 'flat_per_machine', _t: 'mg', rows: vmg.map(r => ({ model: r.model, amount: Number(r.amount) })) } : null;
+  const mgLeaf = vmg.length
+    ? { type: 'flat_per_machine', _t: 'mg', rows: vmg.map(r => ({ model: r.model, amount: Number(r.amount) })) } : null;
+
+  // Electricity is a cost reimbursement — it never competes in a max(), it is added to
+  // whatever the comparison settles on. Keep in lockstep with routes/import.mjs.
+  const cmpTerms = [gpLeaf, placementLeaf, othersLeaf].filter(Boolean);
+  const allTerms = [gpLeaf, elecLeaf, placementLeaf, othersLeaf].filter(Boolean);
 
   const zero = () => ({ type: 'percent', _t: 'gp', rows: [{ model: 'ALL', percent: 0 }] });
-  const sumOf = list => list.length === 0 ? zero() : (list.length === 1 ? list[0] : { type: 'sum', children: list });
+  const nest = (type, list) => list.length === 0 ? null : (list.length === 1 ? list[0] : { type, children: list });
+  const addElec = core => elecLeaf ? (core ? { type: 'sum', children: [core, elecLeaf] } : elecLeaf) : (core || zero());
 
   let rule;
   if (method === 'higher') {
-    const cands = mgLeaf ? [...terms, mgLeaf] : [...terms];
-    rule = cands.length === 0 ? zero() : (cands.length === 1 ? cands[0] : { type: 'max', children: cands });
+    rule = addElec(nest('max', mgLeaf ? [...cmpTerms, mgLeaf] : cmpTerms));
   } else if (method === 'hybrid-higher') {
-    const s = sumOf(terms);
-    rule = mgLeaf ? { type: 'max', children: [s, mgLeaf] } : s;
+    const s = nest('sum', cmpTerms);
+    rule = addElec(mgLeaf ? (s ? { type: 'max', children: [s, mgLeaf] } : mgLeaf) : s);
   } else {
-    rule = sumOf(terms);   // default | hybrid (MG not used)
+    rule = nest('sum', allTerms) || zero();   // default | hybrid (MG not used)
   }
   return { ...rule, _method: method };
 }
@@ -86,10 +96,14 @@ function decompileRule(rule) {
     else if (role === 'mg') f.mgRows.push(...rowsOf(node));
   }
 
+  // The comparison node is the root max, or a max wrapped in a root sum alongside the
+  // always-added electricity lump.
+  const cmpNode = rule.type === 'max' ? rule
+    : (rule.type === 'sum' ? (rule.children || []).find(c => c.type === 'max') : null);
   if (PAYOUT_METHODS.includes(rule._method)) {
     f.method = rule._method;
-  } else if (rule.type === 'max') {
-    f.method = (rule.children || []).some(c => c.type === 'sum') ? 'hybrid-higher' : 'higher';
+  } else if (cmpNode) {
+    f.method = (cmpNode.children || []).some(c => c.type === 'sum') ? 'hybrid-higher' : 'higher';
   } else {
     const termCount = [f.gpPercent > 0, f.electricity > 0, f.placementRows.length > 0, f.others > 0].filter(Boolean).length;
     f.method = termCount <= 1 ? 'default' : 'hybrid';
@@ -100,8 +114,8 @@ function decompileRule(rule) {
 const PAYOUT_METHOD_META = [
   { val: 'default',       code: 'D',  title: 'Default',             desc: 'Single term — just pay it' },
   { val: 'hybrid',        code: 'H',  title: 'Hybrid',              desc: 'All terms summed' },
-  { val: 'higher',        code: 'WH', title: 'Whichever is higher', desc: 'Highest of each term, incl. MG' },
-  { val: 'hybrid-higher', code: 'HH', title: 'Hybrid-higher',       desc: 'max( summed terms , MG )' },
+  { val: 'higher',        code: 'WH', title: 'Whichever is higher', desc: 'Highest of each term, incl. MG — electricity added on top' },
+  { val: 'hybrid-higher', code: 'HH', title: 'Hybrid-higher',       desc: 'max( summed terms , MG ) — electricity added on top' },
 ];
 // Accept the payout-method NAME (default / hybrid / whichever higher / hybrid-higher); legacy codes (D/H/WH/HH) still work.
 const parseMethod = input => {
@@ -130,15 +144,19 @@ function presentTermLabels(form) {
 // Readable payout formula for the selected method.
 function payoutFormula(form) {
   const labels = presentTermLabels(form);
+  const hasElec = Number(form.electricity) > 0;
+  const cmp = labels.filter(l => l !== 'Electricity');   // electricity never competes
   const hasMg = (form.mgRows || []).some(r => r.model && Number(r.amount) > 0);
   const method = form.method || 'hybrid';
+  const withElec = base => hasElec ? (base ? `${base} + Electricity` : 'Electricity') : (base || '0');
+
   if (method === 'higher') {
-    const c = hasMg ? [...labels, 'MG'] : [...labels];
-    return c.length === 0 ? '0' : (c.length === 1 ? c[0] : `max( ${c.join(' , ')} )`);
+    const c = hasMg ? [...cmp, 'MG'] : [...cmp];
+    return withElec(c.length === 0 ? '' : (c.length === 1 ? c[0] : `max( ${c.join(' , ')} )`));
   }
   if (method === 'hybrid-higher') {
-    const s = labels.join(' + ') || '0';
-    return hasMg ? `max( ${s} , MG )` : s;
+    const s = cmp.join(' + ');
+    return withElec(hasMg ? (s ? `max( ${s} , MG )` : 'MG') : s);
   }
   return labels.join(' + ') || '0';   // default | hybrid
 }
