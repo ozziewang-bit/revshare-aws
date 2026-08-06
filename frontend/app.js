@@ -444,11 +444,13 @@ function renderNav() {
     ${can('runCalcs') ? '<button id="nav-bulk-runs" class="nav-btn">Run share</button>' : ''}
     <button id="nav-revshare-path" class="nav-btn">Analytics</button>
     <button id="nav-device-types" class="nav-btn">Device Types</button>
+    <button id="nav-contracts" class="nav-btn">Contracts</button>
     ${can('admin') ? '<button id="nav-users" class="nav-btn">Users</button>' : ''}`;
   nav.querySelector('#nav-partners').addEventListener('click', () => { setActiveNav('nav-partners'); renderPartnersList(); });
   nav.querySelector('#nav-bulk-runs')?.addEventListener('click', () => { setActiveNav('nav-bulk-runs'); renderBulkRunsList(); });
   nav.querySelector('#nav-revshare-path').addEventListener('click', () => { setActiveNav('nav-revshare-path'); renderRevsharePathScreen(); });
   nav.querySelector('#nav-device-types').addEventListener('click', () => { setActiveNav('nav-device-types'); renderDeviceTypesScreen(); });
+  nav.querySelector('#nav-contracts').addEventListener('click', () => { setActiveNav('nav-contracts'); renderContractsScreen(); });
   nav.querySelector('#nav-users')?.addEventListener('click', () => { setActiveNav('nav-users'); renderUsersScreen(); });
 }
 
@@ -635,6 +637,100 @@ async function renderDeviceTypesScreen() {
   }
 
   loadModels();
+}
+
+// ── Contracts ──────────────────────────────────────────────────────────────
+let CONTRACTS = [];
+
+const CONTRACT_GRID_COLUMNS = [
+  { key: 'merchantName',          label: 'Merchant',      type: 'text',   width: 190 },
+  { key: 'merchantType',          label: 'Type',          type: 'select', width: 150 },
+  { key: 'counterParty',          label: 'Counter party', type: 'text',   width: 220 },
+  { key: 'installedUnits',        label: 'Units',         type: 'number', width: 70  },
+  { key: 'units.S5',              label: 'S5',            type: 'number', width: 60  },
+  { key: 'units.S8',              label: 'S8',            type: 'number', width: 60  },
+  { key: 'units.M10',             label: 'M10',           type: 'number', width: 60  },
+  { key: 'units.L20',             label: 'L20',           type: 'number', width: 60  },
+  { key: 'units.L40',             label: 'L40',           type: 'number', width: 60  },
+  { key: 'startDate',             label: 'Start',         type: 'date',   width: 120 },
+  { key: 'endDate',               label: 'End',           type: 'date',   width: 120 },
+  { key: 'terminationNoticeDays', label: 'Notice (d)',    type: 'number', width: 90  },
+  { key: 'declineToRenew',        label: 'Decline',       type: 'bool',   width: 80  },
+  { key: 'autoRenewal',           label: 'Auto-renewal',  type: 'select', width: 170 },
+  { key: 'contractLink',          label: 'Contract',      type: 'url',    width: 110 },
+];
+
+const MERCHANT_TYPES = ['F&B', 'Hospitality', 'Lifestyle', 'Shopping Malls', 'Nightlife',
+                        'Exhibition Center', 'Convenience Store', 'other'];
+const AUTO_RENEWAL_OPTIONS = ['Yes', 'No (Need to contact)'];
+
+const cellValue = (c, key) => key.includes('.')
+  ? (c[key.split('.')[0]] || {})[key.split('.')[1]]
+  : c[key];
+
+// Days until the contract ends; null when there is no end date.
+function daysToEnd(c) {
+  if (!c.endDate) return null;
+  return Math.round((new Date(c.endDate) - new Date()) / 86400000);
+}
+
+function contractRowHtml(c) {
+  const d = daysToEnd(c);
+  const cls = d == null ? '' : (d < 0 ? 'ct-expired' : (d <= 60 ? 'ct-soon' : ''));
+  const cells = CONTRACT_GRID_COLUMNS.map((col, i) => {
+    const v = cellValue(c, col.key);
+    let disp;
+    if (col.type === 'bool') disp = v ? '✓' : '';
+    else if (col.type === 'url') disp = v ? `<a href="${escape(v)}" target="_blank" rel="noopener">open ↗</a>` : '';
+    else disp = v == null || v === '' ? '' : escape(String(v));
+    const sticky = i === 0 ? ' ct-sticky' : '';
+    const flag = col.key === 'endDate' ? ` ${cls}` : '';
+    return `<td class="ct-cell${sticky}${flag}" data-id="${escape(c.contractId)}" data-key="${col.key}">${disp}</td>`;
+  }).join('');
+  const link = c.partnerId ? '' : '<span class="badge badge-warn">unlinked</span>';
+  return `<tr data-id="${escape(c.contractId)}">${cells}<td class="ct-cell">${link}</td></tr>`;
+}
+
+async function renderContractsScreen() {
+  const el = document.getElementById('main');
+  el.innerHTML = '<h1>Contracts</h1><p class="muted">Loading…</p>';
+  CONTRACTS = await api('/contracts');
+  const head = CONTRACT_GRID_COLUMNS
+    .map((c, i) => `<th style="min-width:${c.width}px"${i === 0 ? ' class="ct-sticky"' : ''}>${c.label}</th>`)
+    .join('') + '<th>Link</th>';
+  el.innerHTML = `
+    <h1>Contracts</h1>
+    <div class="ct-toolbar">
+      <input id="ct-search" class="input" placeholder="Search merchant…" style="max-width:240px">
+      <select id="ct-type" class="input" style="max-width:200px">
+        <option value="">All types</option>
+        ${MERCHANT_TYPES.map(t => `<option>${t}</option>`).join('')}
+      </select>
+      <select id="ct-sort" class="input" style="max-width:200px">
+        <option value="name">Sort: merchant</option>
+        <option value="end">Sort: contract end</option>
+      </select>
+      <span class="muted" id="ct-count"></span>
+    </div>
+    <div class="ct-scroll"><table class="ct-table"><thead><tr>${head}</tr></thead>
+      <tbody id="ct-body"></tbody></table></div>`;
+  ['ct-search', 'ct-type', 'ct-sort'].forEach(id =>
+    el.querySelector('#' + id).addEventListener('input', paintContracts));
+  paintContracts();
+}
+
+function paintContracts() {
+  const q = (document.getElementById('ct-search')?.value || '').toLowerCase().trim();
+  const type = document.getElementById('ct-type')?.value || '';
+  const sort = document.getElementById('ct-sort')?.value || 'name';
+  let rows = CONTRACTS.filter(c =>
+    (!q || (c.merchantName || '').toLowerCase().includes(q)) &&
+    (!type || c.merchantType === type));
+  rows.sort(sort === 'end'
+    ? (a, b) => (a.endDate || '9999').localeCompare(b.endDate || '9999')
+    : (a, b) => (a.merchantName || '').localeCompare(b.merchantName || ''));
+  document.getElementById('ct-body').innerHTML = rows.map(contractRowHtml).join('');
+  document.getElementById('ct-count').textContent = `${rows.length} of ${CONTRACTS.length}`;
 }
 
 async function parseKaExcel(file) {

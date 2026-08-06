@@ -805,3 +805,15 @@ table.ts tfoot td {
 
 /* run wizard: locked (not-yet-reachable) steps */
 .wizard-step-locked { opacity: .5; pointer-events: none; }
+
+/* ============ CONTRACTS GRID ============ */
+.ct-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+.ct-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; }
+.ct-table { border-collapse: separate; border-spacing: 0; font-size: 13px; white-space: nowrap; }
+.ct-table th { position: sticky; top: 0; z-index: 2; background: var(--bg-soft, #f5f5f4);
+  text-align: left; font-weight: 600; padding: 9px 10px; border-bottom: 1px solid var(--border); }
+.ct-cell { padding: 7px 10px; border-bottom: 1px solid var(--border); }
+.ct-sticky { position: sticky; left: 0; z-index: 1; background: var(--surface, #fff); }
+.ct-table thead .ct-sticky { z-index: 3; background: var(--bg-soft, #f5f5f4); }
+.ct-expired { color: #c23434; font-weight: 600; }
+.ct-soon { color: #b45309; font-weight: 600; }
