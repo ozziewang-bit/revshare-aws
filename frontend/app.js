@@ -717,10 +717,6 @@ function isRepresentable(r) {
 function termPartner(c) {
   return c.partnerId ? (PARTNERS_BY_ID.get(c.partnerId) || null) : null;
 }
-function termForm(c) {
-  const p = termPartner(c);
-  return p ? decompileRule(p.rule) : null;
-}
 
 function termCellHtml(c, col) {
   const p = termPartner(c);
