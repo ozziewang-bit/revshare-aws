@@ -723,6 +723,7 @@ async function renderContractsScreen() {
     el.querySelector('#' + id).addEventListener('input', paintContracts));
   paintContracts();
   el.querySelector('#ct-body').addEventListener('click', ev => {
+    if (ev.target.closest('a')) return;          // let the contract link open normally
     const td = ev.target.closest('td.ct-cell');
     if (td && td.dataset.key) startCellEdit(td);
   });
@@ -785,8 +786,10 @@ function startCellEdit(td) {
 async function saveCell(contractId, key, value) {
   const c = CONTRACTS.find(x => x.contractId === contractId);
   if (!c) return;
-  const before = JSON.parse(JSON.stringify(c));
-  if (key.includes('.')) {
+  const dotted = key.includes('.');
+  const beforeUnits = dotted ? { ...(c.units || {}) } : null;
+  const beforeValue = dotted ? undefined : c[key];
+  if (dotted) {
     const [obj, sub] = key.split('.');
     c[obj] = { ...(c[obj] || {}) };
     if (value == null) delete c[obj][sub]; else c[obj][sub] = value;
@@ -795,10 +798,10 @@ async function saveCell(contractId, key, value) {
   }
   paintContracts();
   try {
-    const body = key.includes('.') ? { units: c.units } : { [key]: value };
+    const body = dotted ? { units: c.units } : { [key]: value };
     await api('/contracts/' + encodeURIComponent(contractId), { method: 'PUT', body: JSON.stringify(body) });
   } catch (err) {
-    Object.assign(c, before);
+    if (dotted) c.units = beforeUnits; else c[key] = beforeValue;
     paintContracts();
     alert('Could not save: ' + err.message);
   }
