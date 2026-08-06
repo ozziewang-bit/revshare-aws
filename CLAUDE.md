@@ -1,7 +1,7 @@
 # revshare-aws — handoff
 
-Last updated: 2026-06-17 (roster-driven 4-step run wizard; merchant-list roster; archive lock on bulk runs).
-Service-worker `CACHE_VERSION` is at `revshare-v70` (bump on every shell change).
+Last updated: 2026-08-06 (electricity fee excluded from WH/HH max() comparison, added on top instead).
+Service-worker `CACHE_VERSION` is at `revshare-v72` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
 end-to-end before touching anything. The codebase is the ultimate source of
@@ -62,15 +62,22 @@ is deprecated — the unified site lives on `d2t76jfby056ul`.
 **Rule model (NEW — replaces the old leaf-tree editor UX):** a partner's rule is
 built from **share terms** + a **payout method**. Terms: GP% (percent of revenue),
 Electricity (lump), Placement (**per machine type**), Others (lump), and MG
-(Minimum Guarantee, **per machine type**). Four payout methods (`form.method`):
+(Minimum Guarantee, **per machine type**). `compileRule`/`decompileRule` (frontend `app.js` + backend `routes/import.mjs`)
+tag leaves with `_t` (term) and the root with `_method` so decompile is exact;
+legacy untagged rules fall back to heuristics. Four payout methods (`form.method`):
 - `default` (code **D**) — single term, just pay it.
 - `hybrid` (code **H**) — sum of all terms.
-- `higher` (code **WH**) — `max(each term…, MG)`.
-- `hybrid-higher` (code **HH**) — `max(sum of terms, MG)`.
-`compileRule`/`decompileRule` (frontend `app.js` + backend `routes/import.mjs`)
-tag leaves with `_t` (term) and the root with `_method` so decompile is exact;
-legacy untagged rules fall back to heuristics. **Engine is unchanged** — it still
-just evaluates `sum`/`max`/`percent`/`flat_per_machine`/`flat_per_partner_total`.
+- `higher` (code **WH**) — `max(each comparable term…, MG) + Electricity`.
+- `hybrid-higher` (code **HH**) — `max(sum of comparable terms, MG) + Electricity`.
+
+**Electricity never competes (2026-08-06):** the electricity fee is a reimbursement of a
+cost the partner actually incurs, so it is excluded from the WH/HH comparison and added
+to whatever the comparison settles on. Compiled as `sum( max(…) , elecLeaf )`. `Others`
+*does* still compete. `default`/`hybrid` are unchanged (they already sum every term).
+Side effect: the electricity leaf is now a legal root-`sum` child, so a `per_store`
+partner with electricity no longer throws in `validatePerStoreTree` and is charged the
+lump once per partner rather than once per store. No stored rule was affected — verified
+that none of the 6 max-root partners carried an electricity term.
 
 **No-payout partners (2026-06-11):** a partner can carry `noPayout: true` (set via the Rule
 tab / new-partner form checkbox "No revenue share — not paid"). Such partners show a calm
@@ -107,7 +114,7 @@ data). **กะทู้** has the same `max(50% GP, S8=200)` shape and is still
 at every store, so whole == per_store — no change needed. The engine + per-merchant
 CSV already handle per_store correctly; this was a config issue, not a code bug.
 
-Tests: `npm test` → **58/58** pass (incl. `bulk-runs.test.mjs` — roster seeding + order-less fixed-fee).
+Tests: `npm test` → **66/66** pass (incl. `bulk-runs.test.mjs` — roster seeding + order-less fixed-fee).
 
 ## 2. Live URLs and resources
 
