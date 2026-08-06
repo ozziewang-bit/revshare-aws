@@ -2213,7 +2213,7 @@ async function downloadPdf(run) {
         <tbody>${run.result.byStore.map(s => `<tr><td style="padding:4px 8px;border-bottom:1px solid #e5e7eb;">${escape(s.storeId)}</td><td style="padding:4px 8px;border-bottom:1px solid #e5e7eb;text-align:right;">${cur(s.payout)}</td></tr>`).join('')}</tbody>
       </table>` : ''}
     ${run.result.topLevel ? `<p style="font-size:11px;margin-top:14px;">Top-level lump-sum: ${escape(partner.currency)} ${cur(run.result.topLevel.payout)}</p>` : ''}
-    <div style="margin-top:36px;font-size:9px;color:#94a3b8;text-align:center;">RevShare SEA · ${R().name} · Generated automatically · Not a tax document</div>`;
+    <div style="margin-top:36px;font-size:9px;color:#94a3b8;text-align:center;">Merchant Contract &amp; Revenue Share Management · ${R().name} · Generated automatically · Not a tax document</div>`;
   document.body.appendChild(statement);
   const canvas = await window.html2canvas(statement, { scale: 2, useCORS: true });
   document.body.removeChild(statement);
