@@ -1,7 +1,7 @@
 # revshare-aws — handoff
 
-Last updated: 2026-08-06 (electricity fee excluded from WH/HH max() comparison, added on top instead).
-Service-worker `CACHE_VERSION` is at `revshare-v72` (bump on every shell change).
+Last updated: 2026-08-06 (Contracts tab — flat editable merchant-contract grid, seeded from the `All_Merchant` sheet).
+Service-worker `CACHE_VERSION` is at `revshare-v83` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
 end-to-end before touching anything. The codebase is the ultimate source of
@@ -56,6 +56,32 @@ is deprecated — the unified site lives on `d2t76jfby056ul`.
   bars + Revenue-share % line, data labels). Global tab defaults to Total (all
   partners) with a partner search/filter. Built from stored run results.
 - **Device Types** — machine-model CRUD.
+- **Contracts** — one flat, fully editable grid of every merchant's contract terms
+  (type, counter party, per-model unit counts, start/end, termination notice,
+  decline-to-renew, auto-renewal, contract-doc link) plus the partner's share terms.
+  Seeded by uploading the `All_Merchant` sheet of the merchant workbook.
+  **The importer writes contract fields only and never touches a partner rule** —
+  the sheet's share terms are shown in the preview and discarded. Mapping sheet terms
+  onto app rules is deliberately deferred. Share-term cells write through the **same
+  `compileRule`/`decompileRule`** the Rule tab uses — never a second compiler. A rule
+  the grid's five-term form can't faithfully represent (checked by round-tripping:
+  `canon(compileRule(decompileRule(r))) === canon(r)`, e.g. `tiered_percent`, `min`,
+  legacy untagged rules) renders **read-only**, directing edits to the Rule tab instead
+  of silently flattening it to `percent ALL 0%`. `saveTerms` never PUTs when nothing
+  changed — for a rule-less partner the no-change baseline is the round-tripped form,
+  not raw `null`, so a stray blur can't fabricate a `0%` rule that would then pass
+  `applyMerchantRoster`'s readiness gate and get silently paid 0 in a bulk run.
+  Switching Mode to `default`/`hybrid` while MG rows exist **confirms first** (those
+  methods drop MG in `compileRule`); adding MG rows while on `default`/`hybrid` offers
+  to switch to `hybrid-higher` instead of silently discarding them. MG and Placement
+  cells open a per-model popover sourced from `GET /machine-models` (the managed
+  Device Types list), not the parser-only `RS_MODELS` constant. Rows with no linked
+  partner have their term cells disabled. `Sliding Scale` (4 merchants, ladder
+  15/20/25/30/35% at 99/199/299/399/400+) is listed but disabled — the engine has
+  `tiered_percent` but no editor. Import: the `All_Merchant` sheet has 208 rows; 132
+  match an existing partner by name (131 unique names — `IMPACT` appears twice and
+  both rows match), 76 are unmatched; a clean import creates 207 contracts (the
+  backend collapses the duplicate `IMPACT` match into one contract).
 - **Update** tab — **removed** (2026-06-17). Rule-batch CSV upload is no longer in the UI.
   The `POST /import/rule-batch` route itself is gone from the backend entirely (no handler
   is registered). `parseKaExcel` still exists as dead code in `frontend/app.js` — defined,
@@ -119,7 +145,7 @@ data). **กะทู้** has the same `max(50% GP, S8=200)` shape and is still
 at every store, so whole == per_store — no change needed. The engine + per-merchant
 CSV already handle per_store correctly; this was a config issue, not a code bug.
 
-Tests: `npm test` → **66/66** pass (incl. `bulk-runs.test.mjs` — roster seeding + order-less fixed-fee).
+Tests: `npm test` → **94/94** pass (incl. `bulk-runs.test.mjs` — roster seeding + order-less fixed-fee; `contracts.test.mjs` — sheet-row normalisation, name matching, and import-plan diffing, all contract-fields-only/no-rule-touch).
 
 ## 2. Live URLs and resources
 
@@ -143,7 +169,9 @@ Account `<YOUR_AWS_ACCOUNT_ID>`, region `ap-northeast-1`. IAM user `<your-iam-us
 | `lambda/revshare-api/code/routes/merchants.mjs` | Merchant CRUD routes. |
 | `lambda/revshare-api/code/routes/import.mjs` | POST /import/rev-share — parses KA Excel JSON into partners + merchants. Exports `compileRule`, `parseDeviceType`. |
 | `lambda/revshare-api/code/routes/bulk-runs.mjs` | Bulk run routes. Exports `buildRosterRows` (roster-authoritative row seeding), `applyMerchantRoster` (upsert registry + create partners), `groupOrders` (legacy, order-only grouping). |
-| `lambda/revshare-api/tests/` | `engine.test.mjs` (25 tests), `csv.test.mjs` (6 tests). |
+| `lambda/revshare-api/code/contracts.mjs` | Contract sheet-row normalisation, name matching (`matchContracts`), import diffing (`buildImportPlan`). Contract fields only — never touches a rule. |
+| `lambda/revshare-api/code/routes/contracts.mjs` | Contract CRUD + import routes. |
+| `lambda/revshare-api/tests/` | `engine.test.mjs` (25 tests), `csv.test.mjs` (6 tests), `contracts.test.mjs`, others — 94 total. |
 | `frontend/index.html` | SPA shell + pre-paint auth gate. |
 | `frontend/style.css` | All styles (tokenized). |
 | `frontend/app.js` | All app JS: auth, screens, rule editor, run flow, PDF. |
@@ -178,7 +206,7 @@ Run all tests:
 ```bash
 npm test    # from repo root
 ```
-31/31 should pass.
+94/94 should pass.
 
 ## 5. Data model
 
@@ -189,6 +217,7 @@ Single DDB table `RevsharePartner`. Three row families:
 | `PARTNER` | `META#<partnerId>` | Partner config + frozen rule tree. |
 | `RUN#<partnerId>` | `RUN#<runId>` | One run = one CSV upload + computed result. Includes `ruleSnapshot` (rule frozen at calc time) + `csvRaw` (base64) + `csvParsed` + `result`. |
 | `BULKRUN` | `BULKRUN#<runId>` | **Slim summary index only** (counts, totals, `s3Key`). Full payload (results, unmatched names, ruleSnapshots) lives in S3 — see below. |
+| `CONTRACT` | `CONTRACT#<contractId>` | Merchant contract terms + optional `partnerId` link. No share terms — those live on the partner rule. |
 
 **Bulk-run payloads live in S3, not DynamoDB.** A bulk run over a full month
 (20k+ orders → ~1.5k merchants) exceeds DynamoDB's hard 400 KB item limit.
@@ -225,6 +254,11 @@ exactly what was computed at the time.
 | POST | `/bulk-runs/:id/archive` | Lock run (sets `archived: true`). Requires `runCalcs`. Locked runs block DELETE (409). |
 | POST | `/bulk-runs/:id/unarchive` | Remove lock. Requires `admin`. |
 | DELETE | `/bulk-runs/:id` | Delete run. Returns 409 if archived. Requires `deleteRuns`. |
+| GET | `/contracts` | List all contracts |
+| POST | `/contracts` | Create contract. Requires `manageMerchants`. |
+| PUT | `/contracts/:id` | Update contract fields (partial merge). Requires `manageMerchants`. |
+| DELETE | `/contracts/:id` | Delete contract. Requires `manageMerchants`. |
+| POST | `/contracts/import` | Bulk upsert from the parsed `All_Merchant` sheet, contract fields only. Requires `manageMerchants`. |
 
 CORS configured on the API Gateway to allow `*` origin with headers
 `content-type, authorization`. Adjust the `AllowOrigins` once a custom
