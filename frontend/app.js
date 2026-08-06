@@ -681,7 +681,12 @@ function contractRowHtml(c) {
     const v = cellValue(c, col.key);
     let disp;
     if (col.type === 'bool') disp = v ? '✓' : '';
-    else if (col.type === 'url') disp = v ? `<a href="${escape(v)}" target="_blank" rel="noopener">open ↗</a>` : '';
+    else if (col.type === 'url') {
+      disp = !v ? ''
+        : (/^https?:\/\//i.test(v)
+            ? `<a href="${escape(v)}" target="_blank" rel="noopener">open ↗</a>`
+            : escape(String(v)));
+    }
     else disp = v == null || v === '' ? '' : escape(String(v));
     const sticky = i === 0 ? ' ct-sticky' : '';
     const flag = col.key === 'endDate' ? ` ${cls}` : '';
