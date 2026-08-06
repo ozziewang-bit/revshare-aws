@@ -1,35 +1,6 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-
-// Copy of the pure functions from routes/import.mjs (tested in isolation)
-function parseDeviceType(deviceType) {
-  if (!deviceType) return null;
-  const m = String(deviceType).match(/-(S5|S8|S10|T8|T10|T20|T35|LL?20|LL?40)$/i);
-  if (!m) return null;
-  return m[1].toUpperCase().replace('LL', 'L');
-}
-
-function compileRule({ gpPercent, electricity, placementRows, mgRows, others }) {
-  const adds = [];
-  if (Number(gpPercent) > 0) adds.push({ type: 'percent', _t: 'gp', _m: 'add', rows: [{ model: 'ALL', percent: Number(gpPercent) }] });
-  if (Number(electricity) > 0) adds.push({ type: 'flat_per_partner_total', _t: 'elec', _m: 'add', amount: Number(electricity) });
-  const vp = (placementRows || []).filter(r => r.model && Number(r.amount) > 0);
-  if (vp.length) adds.push({ type: 'flat_per_machine', _t: 'placement', _m: 'add', rows: vp.map(r => ({ model: r.model, amount: Number(r.amount) })) });
-  if (Number(others) > 0) adds.push({ type: 'flat_per_partner_total', _t: 'others', _m: 'add', amount: Number(others) });
-  const vmg = (mgRows || []).filter(r => r.model && Number(r.amount) > 0);
-  const mgLeaf = vmg.length ? { type: 'flat_per_machine', _t: 'mg', rows: vmg.map(r => ({ model: r.model, amount: Number(r.amount) })) } : null;
-
-  let rule;
-  if (mgLeaf) {
-    const s = adds.length === 0 ? { type: 'percent', _t: 'gp', rows: [{ model: 'ALL', percent: 0 }] }
-      : (adds.length === 1 ? adds[0] : { type: 'sum', children: adds });
-    rule = { type: 'max', children: [s, mgLeaf] };
-    return { ...rule, _method: 'hybrid-higher' };
-  }
-  if (!adds.length) return { type: 'percent', _t: 'gp', rows: [{ model: 'ALL', percent: 0 }], _method: 'default' };
-  if (adds.length === 1) return { ...adds[0], _method: 'default' };
-  return { type: 'sum', children: adds, _method: 'hybrid' };
-}
+import { compileRule, parseDeviceType } from '../code/routes/import.mjs';
 
 test('parseDeviceType: S5', () => assert.equal(parseDeviceType('Advertising Player-S5'), 'S5'));
 test('parseDeviceType: S8', () => assert.equal(parseDeviceType('ChargeSpot Station-S8'), 'S8'));
@@ -68,4 +39,91 @@ test('compileRule: zero fees are omitted', () => {
   const rule = compileRule({ gpPercent: 30, electricity: 0, placementRows: [{ model: 'S8', amount: 500 }], mgRows: [], others: 0 });
   assert.equal(rule.type, 'sum');
   assert.equal(rule.children.length, 2);
+});
+
+// ── Electricity is a cost reimbursement: always added, never a comparison candidate ──
+
+test('compileRule WH: GP + electricity + MG → sum( max(GP, MG) , Elec )', () => {
+  const rule = compileRule({
+    gpPercent: 50, electricity: 600, placementRows: [],
+    mgRows: [{ model: 'S8', amount: 200 }], others: 0, method: 'higher',
+  });
+  assert.equal(rule.type, 'sum');
+  assert.equal(rule._method, 'higher');
+  assert.equal(rule.children.length, 2);
+  assert.equal(rule.children[0].type, 'max');
+  assert.equal(rule.children[0].children[0]._t, 'gp');
+  assert.equal(rule.children[0].children[1]._t, 'mg');
+  assert.equal(rule.children[1]._t, 'elec');
+  assert.equal(rule.children[1].amount, 600);
+});
+
+test('compileRule HH: GP + placement + electricity + MG → sum( max( sum(GP,Placement) , MG ) , Elec )', () => {
+  const rule = compileRule({
+    gpPercent: 20, electricity: 600, placementRows: [{ model: 'S8', amount: 3300 }],
+    mgRows: [{ model: 'S8', amount: 200 }], others: 0, method: 'hybrid-higher',
+  });
+  assert.equal(rule.type, 'sum');
+  assert.equal(rule._method, 'hybrid-higher');
+  assert.equal(rule.children.length, 2);
+  const cmp = rule.children[0];
+  assert.equal(cmp.type, 'max');
+  assert.equal(cmp.children[0].type, 'sum');
+  assert.equal(cmp.children[0].children.length, 2);
+  assert.equal(cmp.children[0].children[0]._t, 'gp');
+  assert.equal(cmp.children[0].children[1]._t, 'placement');
+  assert.equal(cmp.children[1]._t, 'mg');
+  assert.equal(rule.children[1]._t, 'elec');
+});
+
+test('compileRule WH: electricity only, no MG → bare electricity leaf', () => {
+  const rule = compileRule({
+    gpPercent: 0, electricity: 600, placementRows: [], mgRows: [], others: 0, method: 'higher',
+  });
+  assert.equal(rule.type, 'flat_per_partner_total');
+  assert.equal(rule._t, 'elec');
+  assert.equal(rule.amount, 600);
+  assert.equal(rule._method, 'higher');
+});
+
+test('compileRule WH: electricity + MG only → sum( MG , Elec )', () => {
+  const rule = compileRule({
+    gpPercent: 0, electricity: 600, placementRows: [],
+    mgRows: [{ model: 'S8', amount: 200 }], others: 0, method: 'higher',
+  });
+  assert.equal(rule.type, 'sum');
+  assert.equal(rule.children.length, 2);
+  assert.equal(rule.children[0]._t, 'mg');
+  assert.equal(rule.children[1]._t, 'elec');
+});
+
+test('compileRule HH without electricity is unchanged: max( GP , MG )', () => {
+  const rule = compileRule({
+    gpPercent: 50, electricity: 0, placementRows: [],
+    mgRows: [{ model: 'S8', amount: 200 }], others: 0, method: 'hybrid-higher',
+  });
+  assert.equal(rule.type, 'max');
+  assert.equal(rule.children[0]._t, 'gp');
+  assert.equal(rule.children[1]._t, 'mg');
+});
+
+test('compileRule hybrid still sums electricity inline, in editor order', () => {
+  const rule = compileRule({
+    gpPercent: 20, electricity: 600, placementRows: [{ model: 'S8', amount: 3300 }],
+    mgRows: [], others: 0, method: 'hybrid',
+  });
+  assert.equal(rule.type, 'sum');
+  assert.equal(rule.children.length, 3);
+  assert.equal(rule.children[0]._t, 'gp');
+  assert.equal(rule.children[1]._t, 'elec');
+  assert.equal(rule.children[2]._t, 'placement');
+});
+
+test('compileRule default: electricity as the only term', () => {
+  const rule = compileRule({
+    gpPercent: 0, electricity: 600, placementRows: [], mgRows: [], others: 0, method: 'default',
+  });
+  assert.equal(rule.type, 'flat_per_partner_total');
+  assert.equal(rule._t, 'elec');
+  assert.equal(rule._method, 'default');
 });
