@@ -774,6 +774,21 @@ function contractRowHtml(c) {
   return `<tr data-id="${escape(c.contractId)}">${cells}<td class="ct-cell">${link}</td></tr>`;
 }
 
+// `All_Merchant` has a two-row header (row 1 groups, row 2 sub-headers); data starts
+// at row 3. Merged group cells make header-keyed parsing unreliable, so read by index
+// and let the backend normalizer do every coercion.
+async function parseAllMerchantSheet(file) {
+  const wb = await readExcel(file);
+  const ws = wb.Sheets['All_Merchant'];
+  if (!ws) throw new Error('Sheet "All_Merchant" not found in this workbook');
+  const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, raw: true, blankrows: false });
+  const body = aoa.slice(2);
+  const rows = body
+    .map(r => { const c = new Array(23).fill(null); for (let i = 0; i < 23; i++) c[i] = r[i] ?? null; return c; })
+    .filter(c => String(c[1] || '').trim());
+  return { rows, skipped: body.length - rows.length };
+}
+
 async function renderContractsScreen() {
   const el = document.getElementById('main');
   el.innerHTML = '<h1>Contracts</h1><p class="muted">Loading…</p>';
@@ -798,6 +813,7 @@ async function renderContractsScreen() {
         <option value="name">Sort: merchant</option>
         <option value="end">Sort: contract end</option>
       </select>
+      ${can('manageMerchants') ? '<label class="btn btn-sm">Upload sheet<input id="ct-file" type="file" accept=".xlsx" hidden></label>' : ''}
       <span class="muted" id="ct-count"></span>
     </div>
     <div class="ct-scroll"><table class="ct-table"><thead><tr>${head}</tr></thead>
@@ -809,6 +825,54 @@ async function renderContractsScreen() {
     if (ev.target.closest('a')) return;          // let the contract link open normally
     const td = ev.target.closest('td.ct-cell');
     if (td && td.dataset.key) startCellEdit(td);
+  });
+  el.querySelector('#ct-file')?.addEventListener('change', async ev => {
+    const file = ev.target.files[0]; if (!file) return;
+    ev.target.value = '';
+    try {
+      const { rows, skipped } = await parseAllMerchantSheet(file);
+      await renderImportReview(rows, skipped);
+    } catch (err) { alert('Could not read that file: ' + err.message); }
+  });
+}
+
+// Nothing is written until the user confirms. Unmatched names get a partner dropdown;
+// the chosen links are posted alongside the rows.
+async function renderImportReview(rows, skipped) {
+  const partners = await api('/partners');
+  const byName = new Map(partners.map(p => [p.name.toLowerCase().trim(), p]));
+  const names = rows.map(r => String(r[1]).trim());
+  const unmatched = names.filter(n => !byName.has(n.toLowerCase().trim()));
+  const el = document.getElementById('main');
+  const opts = partners.map(p => `<option value="${escape(p.partnerId)}">${escape(p.name)}</option>`).join('');
+  el.innerHTML = `
+    <h1>Import contracts</h1>
+    <p><strong>${rows.length}</strong> merchant rows read${skipped ? `, ${skipped} blank rows skipped` : ''}.
+       <strong>${names.length - unmatched.length}</strong> matched an existing partner automatically.</p>
+    <p class="muted">Share terms in this sheet are ignored — importing never changes a partner's rule.</p>
+    ${unmatched.length ? `<h2>${unmatched.length} unmatched — link or leave unlinked</h2>
+      <table class="table"><tbody>${unmatched.map(n => `
+        <tr><td>${escape(n)}</td><td>
+          <select class="input ct-link" data-name="${escape(n.toLowerCase().trim())}">
+            <option value="">— keep unlinked —</option>${opts}
+          </select></td></tr>`).join('')}</tbody></table>` : ''}
+    <div style="margin-top:18px;display:flex;gap:10px;">
+      <button id="ct-import-go" class="btn btn-primary">Import ${rows.length} rows</button>
+      <button id="ct-import-cancel" class="btn">Cancel</button>
+    </div>`;
+  el.querySelector('#ct-import-cancel').addEventListener('click', renderContractsScreen);
+  el.querySelector('#ct-import-go').addEventListener('click', async ev => {
+    ev.target.disabled = true; ev.target.textContent = 'Importing…';
+    const links = {};
+    el.querySelectorAll('.ct-link').forEach(s => { if (s.value) links[s.dataset.name] = s.value; });
+    try {
+      const r = await api('/contracts/import', { method: 'POST', body: JSON.stringify({ rows, links }) });
+      alert(`Imported. ${r.created} created, ${r.updated} updated, ${r.linked} linked to partners.`);
+      renderContractsScreen();
+    } catch (err) {
+      alert('Import failed: ' + err.message);
+      ev.target.disabled = false; ev.target.textContent = `Import ${rows.length} rows`;
+    }
   });
 }
 

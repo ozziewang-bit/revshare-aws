@@ -234,6 +234,23 @@ table.ts tfoot td {
   background: var(--surface-muted);
   border-top: 2px solid var(--border);
 }
+/* Plain review-style table (e.g. contracts import unmatched-name list): no header row,
+   lighter chrome than table.ts. */
+table.table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+table.table td {
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13.5px;
+}
+table.table tr:last-child td { border-bottom: none; }
 .row-clickable { cursor: pointer; transition: background .12s; }
 .row-clickable:hover { background: var(--surface-muted); }
 
