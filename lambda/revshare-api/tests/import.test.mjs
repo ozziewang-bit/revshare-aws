@@ -127,3 +127,40 @@ test('compileRule default: electricity as the only term', () => {
   assert.equal(rule._t, 'elec');
   assert.equal(rule._method, 'default');
 });
+
+// ── Others stays INSIDE the comparison; only electricity leaves it ──────────
+
+test('compileRule WH: GP + others + electricity + MG → others is inside max, elec is outside', () => {
+  const rule = compileRule({
+    gpPercent: 50, electricity: 600, placementRows: [],
+    mgRows: [{ model: 'S8', amount: 200 }], others: 100, method: 'higher',
+  });
+  assert.equal(rule.type, 'sum');
+  assert.equal(rule._method, 'higher');
+  assert.equal(rule.children.length, 2);
+  const cmp = rule.children[0];
+  assert.equal(cmp.type, 'max');
+  assert.equal(cmp.children.length, 3);
+  assert.equal(cmp.children[0]._t, 'gp');
+  assert.equal(cmp.children[1]._t, 'others');
+  assert.equal(cmp.children[2]._t, 'mg');
+  assert.equal(rule.children[1]._t, 'elec');
+});
+
+test('compileRule HH: GP + others + electricity + MG → others is inside the summed comparison, elec is outside', () => {
+  const rule = compileRule({
+    gpPercent: 20, electricity: 600, placementRows: [],
+    mgRows: [{ model: 'S8', amount: 200 }], others: 100, method: 'hybrid-higher',
+  });
+  assert.equal(rule.type, 'sum');
+  assert.equal(rule._method, 'hybrid-higher');
+  assert.equal(rule.children.length, 2);
+  const cmp = rule.children[0];
+  assert.equal(cmp.type, 'max');
+  assert.equal(cmp.children[0].type, 'sum');
+  assert.equal(cmp.children[0].children.length, 2);
+  assert.equal(cmp.children[0].children[0]._t, 'gp');
+  assert.equal(cmp.children[0].children[1]._t, 'others');
+  assert.equal(cmp.children[1]._t, 'mg');
+  assert.equal(rule.children[1]._t, 'elec');
+});

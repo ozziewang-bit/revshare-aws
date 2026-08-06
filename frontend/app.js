@@ -21,8 +21,12 @@ const CURRENCIES = ['TWD', 'USD', 'HKD', 'JPY', 'IDR', 'THB', 'SGD'];
 // Four payout methods (form.method):
 //   default       → single term payout (just the one term)
 //   hybrid        → sum of all terms
-//   higher        → max( each term … , MG )           — highest single term incl. MG
-//   hybrid-higher → max( sum of terms , MG )           — summed terms vs MG, whichever higher
+//   higher        → max( each comparable term … , MG ) + Electricity  — highest of
+//                   GP/Placement/Others/MG, with electricity always added on top
+//   hybrid-higher → max( sum of comparable terms , MG ) + Electricity — summed
+//                   GP/Placement/Others vs MG, whichever higher, plus electricity
+// Electricity is a cost reimbursement, not a comparison candidate: it is excluded from
+// the WH/HH max() and added to whatever the comparison settles on (2026-08-06).
 // Leaves are tagged (_t = term), root tagged (_method) so decompile is exact.
 const PAYOUT_METHODS = ['default', 'hybrid', 'higher', 'hybrid-higher'];
 

@@ -17,6 +17,7 @@ to produce an auditable payout breakdown plus a printable PDF statement.
 Full design spec: [`docs/superpowers/specs/2026-05-28-revshare-design.md`](docs/superpowers/specs/2026-05-28-revshare-design.md).
 Initial implementation plan (33 tasks): [`docs/superpowers/plans/2026-05-28-revshare.md`](docs/superpowers/plans/2026-05-28-revshare.md).
 Run-flow redesign spec + plan: [`docs/superpowers/specs/2026-06-17-revshare-run-flow-redesign-design.md`](docs/superpowers/specs/2026-06-17-revshare-run-flow-redesign-design.md) + [`docs/superpowers/plans/2026-06-17-revshare-run-flow-redesign.md`](docs/superpowers/plans/2026-06-17-revshare-run-flow-redesign.md).
+Electricity-outside-comparison spec + plan: [`docs/superpowers/specs/2026-08-06-electricity-outside-comparison-design.md`](docs/superpowers/specs/2026-08-06-electricity-outside-comparison-design.md) + [`docs/superpowers/plans/2026-08-06-electricity-outside-comparison.md`](docs/superpowers/plans/2026-08-06-electricity-outside-comparison.md).
 
 ## 1b. CURRENT STATE (2026-06-17) — read this, the sections below are partly stale
 
@@ -55,9 +56,11 @@ is deprecated — the unified site lives on `d2t76jfby056ul`.
   bars + Revenue-share % line, data labels). Global tab defaults to Total (all
   partners) with a partner search/filter. Built from stored run results.
 - **Device Types** — machine-model CRUD.
-- **Update** tab — **removed** (2026-06-17). Rule-batch CSV upload is no longer in the UI;
-  `POST /import/rule-batch` and `parseKaExcel` / `/import/rev-share` code still exist in
-  the backend but are unreachable from the frontend.
+- **Update** tab — **removed** (2026-06-17). Rule-batch CSV upload is no longer in the UI.
+  The `POST /import/rule-batch` route itself is gone from the backend entirely (no handler
+  is registered). `parseKaExcel` still exists as dead code in `frontend/app.js` — defined,
+  never called. `/import/rev-share` (`routes/import.mjs`) still exists and is registered in
+  the backend, reachable via a direct API call, but has no caller wired up in the frontend.
 
 **Rule model (NEW — replaces the old leaf-tree editor UX):** a partner's rule is
 built from **share terms** + a **payout method**. Terms: GP% (percent of revenue),
@@ -77,7 +80,9 @@ to whatever the comparison settles on. Compiled as `sum( max(…) , elecLeaf )`.
 Side effect: the electricity leaf is now a legal root-`sum` child, so a `per_store`
 partner with electricity no longer throws in `validatePerStoreTree` and is charged the
 lump once per partner rather than once per store. No stored rule was affected — verified
-that none of the 6 max-root partners carried an electricity term.
+that none of the 6 max-root partners carried an electricity term. **Engine is
+unchanged** — it still just evaluates `sum`/`max`/`percent`/`flat_per_machine`/
+`flat_per_partner_total`.
 
 **No-payout partners (2026-06-11):** a partner can carry `noPayout: true` (set via the Rule
 tab / new-partner form checkbox "No revenue share — not paid"). Such partners show a calm
@@ -213,7 +218,6 @@ exactly what was computed at the time.
 | GET | `/partners/:id/runs` | List partner's runs |
 | GET | `/partners/:id/runs/:runId` | Get one run (incl. csvRaw, csvParsed, result) |
 | POST | `/partners/:id/runs/:runId/rerun` | Re-apply current rule to stored CSV |
-| POST | `/import/rule-batch` | Apply a whole rule-batch upload (Update tab — now removed from UI) in ONE invocation — overwrites/creates partners, upserts merchants by `nameLower` with bounded concurrency (`mapPool`). |
 | POST | `/bulk-runs/prepare` | Apply uploaded merchant list: upsert registry, create missing partners (empty rule). Returns `{rosterCount, partnerCount, newPartners, unassigned, partnersNeedingRules}`. Requires `runCalcs`. |
 | POST | `/bulk-runs` | Create bulk run. Body: `{periodStart, periodEnd, merchants[], orders[]}`. Re-applies roster idempotently, runs engine. Requires `runCalcs`. |
 | GET | `/bulk-runs` | List bulk run summaries. |
@@ -331,6 +335,13 @@ REVSHARE_CLOUDFRONT_DIST_ID=EXXXXXX ./infra/deploy-frontend.sh
   real artwork when the brand identity is set.
 - **No automated tests on the routes or frontend** — engine has 31 tests
   but the HTTP layer is verified by manual smoke testing only.
+- **`Others` still sits inside the WH/HH comparison** (by design — 2026-08-06 only pulled
+  Electricity out, see §1b). `Others` is a `flat_per_partner_total` lump, so a `per_store`
+  partner configured with `Others` on `higher`/`hybrid-higher` will throw
+  `flat_per_partner_total is not allowed in per_store mode…` from `validatePerStoreTree`.
+  `bulk-runs.mjs` catches this per-partner and drops that partner from the run with a
+  warning rather than failing the whole run. No partner has this configuration today
+  (verified against all 206 TH partners on 2026-08-06).
 
 ## 12. Starting fresh in a future session
 
