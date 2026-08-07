@@ -871,3 +871,4 @@ table.table tr:last-child td { border-bottom: none; }
   color: var(--ink-soft); padding-left: 4px; border-left: 1px solid var(--border); }
 .ct-groups label { display: inline-flex; gap: 4px; align-items: center; cursor: pointer; white-space: nowrap; }
 .ct-computed { color: var(--ink-soft); }
+.ct-unit { color: var(--ink-faint); }

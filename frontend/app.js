@@ -666,7 +666,7 @@ const CONTRACT_GRID_COLUMNS = [
   { key: 'units.L40',             label: 'L40',           type: 'number', width: 46  , group: 'machines' },
   { key: 'startDate',             label: 'Start',         type: 'date',   width: 108 , group: 'contract' },
   { key: 'endDate',               label: 'End',           type: 'date',   width: 108 , group: 'contract' },
-  { key: 'terminationNoticeDays', label: 'Notice',        type: 'number', width: 68  , group: 'contract' },
+  { key: 'terminationNoticeDays', label: 'Notice',        type: 'number', width: 84  , group: 'contract', suffix: ' days' },
   { key: 'declineToRenew',        label: 'Decline',       type: 'bool',   width: 62  , group: 'contract' },
   { key: 'autoRenewal',           label: 'Auto-renewal',  type: 'select', width: 135 , group: 'contract' },
   { key: 'contractLink',          label: 'Contract',      type: 'url',    width: 80  , group: 'contract' },
@@ -805,7 +805,9 @@ function contractRowHtml(c) {
             ? `<a href="${escape(v)}" target="_blank" rel="noopener">open ↗</a>`
             : escape(String(v)));
     }
-    else disp = v == null || v === '' ? '' : escape(String(v));
+    // `suffix` is display-only — the editor still shows the bare number, so typing and
+    // saving are unaffected.
+    else disp = v == null || v === '' ? '' : escape(String(v)) + (col.suffix ? `<span class="ct-unit">${escape(col.suffix)}</span>` : '');
     const sticky = i === 0 ? ' ct-sticky' : '';
     const flag = col.key === 'endDate' ? ` ${cls}` : '';
     return `<td class="ct-cell${sticky}${flag}" data-id="${escape(c.contractId)}" data-key="${col.key}">${disp}</td>`;
