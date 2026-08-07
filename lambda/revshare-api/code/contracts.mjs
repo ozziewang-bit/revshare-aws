@@ -25,6 +25,18 @@ const num = v => {
 };
 const bool = v => v === true || String(v).trim().toLowerCase() === 'true';
 
+// The sheet writes auto-renewal as "Yes" or "No (Need to contact)". The app treats this as
+// a plain yes/no — the parenthetical is an instruction, not a third state — so collapse it
+// to 'Yes' / 'No' on the way in. Anything unrecognised is preserved verbatim rather than
+// guessed at, so a new vocabulary shows up as itself instead of being silently mapped.
+const autoRenewal = v => {
+  const s = str(v);
+  if (!s) return null;
+  if (/^y/i.test(s)) return 'Yes';
+  if (/^n/i.test(s)) return 'No';
+  return s;
+};
+
 // Excel's 1900 date system, with its deliberate leap-year bug: serial 60 is the
 // non-existent 1900-02-29, so serials above it are one day ahead of the true count.
 const EXCEL_EPOCH_UTC = Date.UTC(1899, 11, 30);
@@ -61,7 +73,7 @@ export function normalizeContractRow(cells) {
     endDate: toDate(at(11)),
     terminationNoticeDays: num(at(12)),
     declineToRenew: bool(at(13)),
-    autoRenewal: str(at(14)),
+    autoRenewal: autoRenewal(at(14)),
     contractLink: str(at(22)),
     // Preview only. Never written to a partner rule — see the plan's Global Constraints.
     sheetTerms: {

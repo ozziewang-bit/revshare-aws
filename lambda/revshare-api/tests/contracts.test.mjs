@@ -28,7 +28,7 @@ test('normalizeContractRow maps a full row', () => {
   assert.equal(c.endDate, '2026-08-20');
   assert.equal(c.terminationNoticeDays, 30);
   assert.equal(c.declineToRenew, false);
-  assert.equal(c.autoRenewal, 'No (Need to contact)');
+  assert.equal(c.autoRenewal, 'No');   // sheet's "No (Need to contact)" collapses to a plain No
   assert.equal(c.contractLink, 'https://drive.google.com/drive/folders/1dz');
 });
 
@@ -223,4 +223,13 @@ test('buildImportPlan reports unmatched names with no override', () => {
 test('buildImportPlan skips null rows', () => {
   const plan = buildImportPlan([null, mk('BITEC'), null], [], [], {});
   assert.equal(plan.creates.length, 1);
+});
+
+test('normalizeContractRow collapses auto-renewal to a plain Yes/No', () => {
+  assert.equal(normalizeContractRow(row({ 14: 'No (Need to contact)' })).autoRenewal, 'No');
+  assert.equal(normalizeContractRow(row({ 14: 'Yes' })).autoRenewal, 'Yes');
+  assert.equal(normalizeContractRow(row({ 14: '  yes  ' })).autoRenewal, 'Yes');
+  assert.equal(normalizeContractRow(row({ 14: null })).autoRenewal, null);
+  // An unrecognised value is preserved, not guessed at.
+  assert.equal(normalizeContractRow(row({ 14: 'Under review' })).autoRenewal, 'Under review');
 });

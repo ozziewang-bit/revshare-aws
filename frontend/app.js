@@ -698,7 +698,7 @@ const visibleContractColumns = () =>
 
 const MERCHANT_TYPES = ['F&B', 'Hospitality', 'Lifestyle', 'Shopping Malls', 'Nightlife',
                         'Exhibition Center', 'Convenience Store', 'other'];
-const AUTO_RENEWAL_OPTIONS = ['Yes', 'No (Need to contact)'];
+const AUTO_RENEWAL_OPTIONS = ['Yes', 'No'];
 
 // Units is derived, never typed: it is the sum of the per-model counts. Verified against
 // the source workbook — all 208 rows have a total equal to their model sum, so nothing is
@@ -713,7 +713,30 @@ const cellValue = (c, key) => key.includes('.')
 // Days until the contract ends; null when there is no end date.
 function daysToEnd(c) {
   if (!c.endDate) return null;
-  return Math.round((new Date(c.endDate) - new Date()) / 86400000);
+  const end = Date.parse(c.endDate + 'T00:00:00Z');
+  if (Number.isNaN(end)) return null;
+  const n = new Date();
+  const today = Date.UTC(n.getFullYear(), n.getMonth(), n.getDate());   // compare calendar days, not instants
+  return Math.round((end - today) / 86400000);
+}
+
+// Renewal risk, shown on the End date cell only.
+// An approaching end date matters only when the contract does NOT auto-renew — if it
+// renews by itself, nothing needs doing and a highlight would be noise. For a non-renewing
+// contract the actionable moment is when the notice window opens: you must give notice
+// `terminationNoticeDays` before the end, so once days-remaining falls to that, it is due.
+// With no notice period recorded we cannot say the window is open, so only flag overdue.
+function renewalFlag(c) {
+  if (!/^no/i.test(String(c.autoRenewal || ''))) return { cls: '', title: '' };
+  const d = daysToEnd(c);
+  if (d == null) return { cls: '', title: '' };
+  if (d < 0) return { cls: 'ct-expired', title: `Contract ended ${-d} day(s) ago and does not auto-renew` };
+  const notice = c.terminationNoticeDays;
+  if (notice == null || notice === '') return { cls: '', title: '' };
+  if (d <= Number(notice)) {
+    return { cls: 'ct-soon', title: `Notice window is open — ${d} day(s) left, ${notice} day(s) notice required` };
+  }
+  return { cls: '', title: '' };
 }
 
 // Canonical string form of a value for structural equality checks — key-order-insensitive
@@ -791,8 +814,7 @@ function termCellHtml(c, col) {
 }
 
 function contractRowHtml(c) {
-  const d = daysToEnd(c);
-  const cls = d == null ? '' : (d < 0 ? 'ct-expired' : (d <= 60 ? 'ct-soon' : ''));
+  const rf = renewalFlag(c);
   const cells = visibleContractColumns().map((col, i) => {
     const v = cellValue(c, col.key);
     let disp;
@@ -809,8 +831,9 @@ function contractRowHtml(c) {
     // saving are unaffected.
     else disp = v == null || v === '' ? '' : escape(String(v)) + (col.suffix ? `<span class="ct-unit">${escape(col.suffix)}</span>` : '');
     const sticky = i === 0 ? ' ct-sticky' : '';
-    const flag = col.key === 'endDate' ? ` ${cls}` : '';
-    return `<td class="ct-cell${sticky}${flag}" data-id="${escape(c.contractId)}" data-key="${col.key}">${disp}</td>`;
+    const flag = col.key === 'endDate' && rf.cls ? ` ${rf.cls}` : '';
+    const tip = col.key === 'endDate' && rf.title ? ` title="${escape(rf.title)}"` : '';
+    return `<td class="ct-cell${sticky}${flag}" data-id="${escape(c.contractId)}" data-key="${col.key}"${tip}>${disp}</td>`;
   }).join('');
   // Partner column: the link is what makes the share-term cells usable, so it is a
   // control rather than a badge. An archived partner keeps its partnerId but drops out
