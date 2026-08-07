@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildRosterRows } from '../code/routes/bulk-runs.mjs';
+import { buildRosterRows, payoutDecision } from '../code/routes/bulk-runs.mjs';
 import { evaluateRun } from '../code/engine.mjs';
 
 const roster = [
@@ -76,4 +76,48 @@ test('buildRosterRows still overlays orders by store name and reports unmatched'
   assert.equal(groups.c1[0].revenue, 150);
   assert.deepEqual(unmatched, ['Nowhere']);
   assert.equal(unmatchedOrderCount, 1);
+});
+
+// payoutDecision — the pure, testable form of "is this contract paid, and why not if not."
+// Ordering matters: missing contract -> warn; noPayout -> skip silently; a rule that pays
+// nothing -> skip with warning; an invalid aggregationMode -> skip with warning; else pay.
+
+test('payoutDecision: missing contract is skipped with a warning', () => {
+  const d = payoutDecision(null, 'c-missing');
+  assert.equal(d.pay, false);
+  assert.match(d.warning, /c-missing/);
+});
+
+test('payoutDecision: noPayout with no rule is skipped silently, no warning', () => {
+  const d = payoutDecision({ contractId: 'c1', merchantName: 'A', noPayout: true, rule: null, aggregationMode: 'per_store' }, 'c1');
+  assert.equal(d.pay, false);
+  assert.equal(d.warning, undefined);
+});
+
+test('payoutDecision: a rule that pays nothing is skipped with a warning naming the merchant', () => {
+  const d = payoutDecision({ contractId: 'c1', merchantName: 'A', noPayout: false, rule: { type: 'percent', rows: [{ percent: 0 }] }, aggregationMode: 'per_store' }, 'c1');
+  assert.equal(d.pay, false);
+  assert.match(d.warning, /A/);
+});
+
+test('payoutDecision: a paying rule with per_store aggregation is paid', () => {
+  const d = payoutDecision({ contractId: 'c1', merchantName: 'A', noPayout: false, rule: { type: 'percent', rows: [{ percent: 50 }] }, aggregationMode: 'per_store' }, 'c1');
+  assert.equal(d.pay, true);
+});
+
+test('payoutDecision: a paying rule with no aggregationMode is skipped with a warning naming the mode', () => {
+  const d = payoutDecision({ contractId: 'c1', merchantName: 'A', noPayout: false, rule: { type: 'percent', rows: [{ percent: 50 }] } }, 'c1');
+  assert.equal(d.pay, false);
+  assert.match(d.warning, /unset/);
+});
+
+test('payoutDecision: a paying rule with whole aggregation is paid', () => {
+  const d = payoutDecision({ contractId: 'c1', merchantName: 'A', noPayout: false, rule: { type: 'percent', rows: [{ percent: 50 }] }, aggregationMode: 'whole' }, 'c1');
+  assert.equal(d.pay, true);
+});
+
+test('payoutDecision: noPayout wins over a 0% rule — no warning', () => {
+  const d = payoutDecision({ contractId: 'c1', merchantName: 'A', noPayout: true, rule: { type: 'percent', rows: [{ percent: 0 }] }, aggregationMode: 'per_store' }, 'c1');
+  assert.equal(d.pay, false);
+  assert.equal(d.warning, undefined);
 });

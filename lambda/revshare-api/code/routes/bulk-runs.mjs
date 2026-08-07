@@ -59,7 +59,12 @@ export async function applyMerchantRoster(merchants) {
 
   await mapPool([...newLabels.values()], 20, async label => {
     const created = await putContract({ contractId: ulid(), merchantName: label, partnerId: null,
-      units: {}, notes: '', rule: null, aggregationMode: 'per_store', noPayout: false, currency: 'THB' });
+      units: {}, notes: '', rule: null, aggregationMode: 'per_store',
+      // A roster label with no merchant-view row is a brand operating in the field that the
+      // merchant sheet does not list. Record it so it is visible, but flagged not-paid: the
+      // user decided (2026-08-07) that brands absent from the sheet are not paid. Flip the
+      // flag in the Merchant view to start paying one.
+      noPayout: true, currency: 'THB' });
     contracts.push(created);
     newMerchants.push(label);
   });
@@ -118,6 +123,22 @@ export async function prepareBulkRunRoute(event) {
   return resp(200, { rosterCount: roster.length, merchantBrandCount, newMerchants, unassigned, merchantsNeedingTerms });
 }
 
+// Why a contract is or is not paid, as a pure decision — so the ordering of these rules is
+// testable without DynamoDB. Returns { pay: true } or { pay: false, warning?: string }.
+// Order matters and is load-bearing: missing contract -> warn; noPayout -> skip silently
+// (it is a deliberate, known state, not an error); a rule that pays nothing -> skip with a
+// warning; an invalid aggregationMode -> skip with a warning (evaluateRun would otherwise
+// silently fall back to the lower-paying 'whole' branch — see 7-Eleven); otherwise pay.
+export function payoutDecision(contract, contractId) {
+  if (!contract) return { pay: false, warning: `Merchant ${contractId} not found, skipped` };
+  if (contract.noPayout) return { pay: false };
+  if (!ruleHasValue(contract.rule)) return { pay: false, warning: `"${contract.merchantName}" has no terms that pay, skipped` };
+  if (contract.aggregationMode !== 'whole' && contract.aggregationMode !== 'per_store') {
+    return { pay: false, warning: `"${contract.merchantName}" has no valid aggregation mode (${contract.aggregationMode ?? 'unset'}), skipped — set it in the Merchant view` };
+  }
+  return { pay: true };
+}
+
 export async function createBulkRunRoute(event) {
   const body = JSON.parse(event.body || '{}');
   const { orders = [], merchants = [], periodStart, periodEnd } = body;
@@ -143,9 +164,8 @@ export async function createBulkRunRoute(event) {
 
   for (const [contractId, merchantRows] of Object.entries(groups)) {
     const contract = contractById[contractId];
-    if (!contract) { warnings.push(`Merchant ${contractId} not found, skipped`); continue; }
-    if (contract.noPayout) continue;
-    if (!ruleHasValue(contract.rule)) { warnings.push(`"${contract.merchantName}" has no terms that pay, skipped`); continue; }
+    const decision = payoutDecision(contract, contractId);
+    if (!decision.pay) { if (decision.warning) warnings.push(decision.warning); continue; }
 
     const engineRows = merchantRows.map(m => ({ storeId: m.merchantId, machineSerial: m.merchantId, model: m.model, rentals: m.rentals, revenue: m.revenue }));
     let result;
