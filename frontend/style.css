@@ -833,20 +833,58 @@ table.table tr:last-child td { border-bottom: none; }
 
 /* ============ CONTRACTS GRID ============ */
 .ct-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+.ct-toolbar .input, .ct-toolbar .btn, .ct-toolbar button { height: 32px; }
+.ct-toolbar .input { padding: 0 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); font-size: 13px; }
 .ct-scroll { overflow-x: auto; overflow-y: auto; max-height: calc(100vh - 260px);
   border: 1px solid var(--border); border-radius: 10px; }
-.ct-table { border-collapse: separate; border-spacing: 0; font-size: 13px; white-space: nowrap; }
-.ct-table th { position: sticky; top: 0; z-index: 2; background: var(--bg-soft, #f5f5f4);
-  text-align: left; font-weight: 600; padding: 9px 10px; border-bottom: 1px solid var(--border); }
-.ct-cell { padding: 7px 10px; border-bottom: 1px solid var(--border); }
-.ct-sticky { position: sticky; left: 0; z-index: 1; background: var(--surface, #fff); }
-.ct-table thead .ct-sticky { z-index: 3; background: var(--bg-soft, #f5f5f4); }
+.ct-table { border-collapse: separate; border-spacing: 0; font-size: 13px; white-space: nowrap;
+  font-variant-numeric: tabular-nums; }   /* digits share a width, so numbers line up */
+
+/* Header follows the app's existing table voice (see table.ts): small, uppercase, faint. */
+.ct-table th {
+  position: sticky; top: 0; z-index: 2;
+  background: var(--surface-muted);
+  color: var(--ink-faint);
+  text-align: left; font-weight: 600;
+  font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase;
+  padding: 10px; border-bottom: 1px solid var(--border-strong);
+}
+.ct-table th.ct-r { text-align: right; }
+.ct-table th.ct-c { text-align: center; }
+
+.ct-cell { padding: 7px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.ct-r { text-align: right; }
+.ct-c { text-align: center; }
+.ct-empty { color: var(--ink-faint); }
+
+/* Zebra + hover: at 25 columns the eye needs help staying on one row. Sticky cells carry
+   their own background, so they must be striped and hovered explicitly or the frozen
+   column detaches visually from the row it belongs to. */
+.ct-table tbody tr:nth-child(even) td { background: var(--surface-muted); }
+.ct-table tbody tr:hover td { background: var(--accent-soft); }
+.ct-table tbody tr:hover .ct-expired,
+.ct-table tbody tr:hover .ct-soon { background: var(--accent-soft); }
+
+.ct-sticky { position: sticky; left: 0; z-index: 1; background: var(--surface); }
+.ct-table .ct-sticky { position: sticky; }
+.ct-table tbody tr:nth-child(even) .ct-sticky { background: var(--surface-muted); }
+.ct-table tbody tr:hover .ct-sticky { background: var(--accent-soft); }
+.ct-table thead .ct-sticky { z-index: 3; background: var(--surface-muted); }
+/* Shadow rather than a border, so the frozen column reads as floating above what scrolls
+   under it instead of looking like just another column rule. */
+.ct-table .ct-sticky::after {
+  content: ''; position: absolute; top: 0; right: 0; bottom: 0; width: 6px;
+  transform: translateX(100%); pointer-events: none;
+  background: linear-gradient(to right, rgba(10,10,10,.06), transparent);
+}
+/* Group separators */
+.ct-gsep { border-left: 1px solid var(--border-strong); }
 .ct-expired { color: var(--loss); font-weight: 600; background: var(--loss-soft); }
 .ct-soon { color: var(--warn); font-weight: 600; background: var(--warn-soft); }
 .ct-input { width: 100%; min-width: 60px; font: inherit; padding: 3px 5px;
-  border: 1px solid var(--accent, #3b5bdb); border-radius: 5px; background: var(--surface, #fff); }
-.ct-multi { color: var(--accent, #3b5bdb); cursor: pointer; }
-.ct-pop { position: absolute; z-index: 30; background: var(--surface, #fff);
+  border: 1px solid var(--accent); border-radius: 5px; background: var(--surface); }
+.ct-multi { color: var(--accent); cursor: pointer; }
+.ct-pop { position: absolute; z-index: 30; background: var(--surface);
   border: 1px solid var(--border); border-radius: 9px; padding: 10px;
   box-shadow: 0 8px 24px rgba(0,0,0,.14); min-width: 230px; }
 .ct-pop-row { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }

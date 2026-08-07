@@ -706,6 +706,20 @@ const AUTO_RENEWAL_OPTIONS = ['Yes', 'No'];
 const UNIT_MODEL_KEYS = ['S5', 'S8', 'M10', 'L20', 'L40'];
 const unitsTotal = c => UNIT_MODEL_KEYS.reduce((a, m) => a + (Number((c.units || {})[m]) || 0), 0);
 
+// Presentation derived from the column's type, computed once and used by BOTH the header
+// and the body so the two can never drift out of alignment.
+const GROUP_ORDER = ['id', 'contact', 'machines', 'contract', 'terms'];
+function colClasses(col, i, prevGroup) {
+  const out = [];
+  if (col.type === 'bool') out.push('ct-c');
+  else if (['number', 'computed', 'term-num', 'term-model'].includes(col.type)) out.push('ct-r');
+  if (i === 0) out.push('ct-sticky');
+  // A hairline where one group of columns ends and the next begins — at 25 columns the eye
+  // needs somewhere to rest.
+  if (prevGroup && col.group && col.group !== prevGroup) out.push('ct-gsep');
+  return out.join(' ');
+}
+
 const cellValue = (c, key) => key.includes('.')
   ? (c[key.split('.')[0]] || {})[key.split('.')[1]]
   : c[key];
@@ -815,6 +829,7 @@ function termCellHtml(c, col) {
 
 function contractRowHtml(c) {
   const rf = renewalFlag(c);
+  let bg = null;
   const cells = visibleContractColumns().map((col, i) => {
     const v = cellValue(c, col.key);
     let disp;
@@ -835,10 +850,13 @@ function contractRowHtml(c) {
     if (i === 0 && rf.cls) {
       disp = `<span class="ct-alert ${rf.cls === 'ct-expired' ? 'ct-alert-over' : 'ct-alert-soon'}" title="${escape(rf.title)}">⚠</span>` + disp;
     }
-    const sticky = i === 0 ? ' ct-sticky' : '';
+    // An explicit dash for empty, so "nothing recorded" is distinguishable from a cell that
+    // simply failed to render — at this width a blank cell reads as a glitch.
+    if (disp === '') disp = '<span class="ct-empty">–</span>';
+    const cls = colClasses(col, i, bg); bg = col.group;
     const flag = col.key === 'endDate' && rf.cls ? ` ${rf.cls}` : '';
     const tip = col.key === 'endDate' && rf.title ? ` title="${escape(rf.title)}"` : '';
-    return `<td class="ct-cell${sticky}${flag}" data-id="${escape(c.contractId)}" data-key="${col.key}"${tip}>${disp}</td>`;
+    return `<td class="ct-cell ${cls}${flag}" data-id="${escape(c.contractId)}" data-key="${col.key}"${tip}>${disp}</td>`;
   }).join('');
   // Partner column: the link is what makes the share-term cells usable, so it is a
   // control rather than a badge. An archived partner keeps its partnerId but drops out
@@ -858,7 +876,7 @@ function contractRowHtml(c) {
   }
   const del = can('manageMerchants')
     ? `<button class="btn-ghost ct-del-btn" data-id="${escape(c.contractId)}" title="Delete this merchant row">×</button>` : '';
-  return `<tr data-id="${escape(c.contractId)}">${cells}<td class="ct-cell">${partnerCell}</td><td class="ct-cell">${del}</td></tr>`;
+  return `<tr data-id="${escape(c.contractId)}">${cells}<td class="ct-cell ct-gsep">${partnerCell}</td><td class="ct-cell ct-c">${del}</td></tr>`;
 }
 
 // ── Merchant view: add / delete / link ─────────────────────────────────────
@@ -978,9 +996,11 @@ async function renderContractsScreen() {
   CONTRACTS = contracts;
   PARTNERS_BY_ID = new Map(partners.map(p => [p.partnerId, p]));
   MACHINE_MODELS_CACHE = machineModels;
+  let hg = null;
   const head = visibleContractColumns()
-    .map((c, i) => `<th style="min-width:${c.width}px"${i === 0 ? ' class="ct-sticky"' : ''}>${c.label}</th>`)
-    .join('') + '<th style="min-width:125px">Partner</th><th style="min-width:38px"></th>';
+    .map((c, i) => { const cls = colClasses(c, i, hg); hg = c.group; 
+      return `<th style="min-width:${c.width}px" class="${cls}">${escape(c.label)}</th>`; })
+    .join('') + '<th class="ct-gsep" style="min-width:125px">Partner</th><th style="min-width:38px"></th>';
   el.innerHTML = `
     <h1>Merchant view</h1>
     <div class="ct-toolbar">
