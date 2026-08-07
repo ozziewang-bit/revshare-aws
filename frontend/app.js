@@ -644,8 +644,8 @@ async function renderDeviceTypesScreen() {
 
 // ── Contracts ──────────────────────────────────────────────────────────────
 let CONTRACTS = [];
-// partnerId → partner (incl. rule), loaded alongside contracts so term cells can
-// decompile/compile the SAME rule the Rule tab edits — never a second source of truth.
+// Unused by the Merchant view — terms now live on the contract row itself, not a linked
+// partner. Left declared (and unpopulated) here; a later cleanup removes it outright.
 let PARTNERS_BY_ID = new Map();
 // Managed device-types list ({code, displayName}), loaded once with the grid and
 // cached module-scope — the per-model popover must not re-fetch on every open.
@@ -783,34 +783,21 @@ function isRepresentable(r) {
 // Treat an empty sum as "no rule" everywhere the no-rule guards apply, for the same reason.
 const ruleIsAbsent = r => !r || !r.type || (r.type === 'sum' && !(r.children || []).length);
 
-// Term cells read the partner's stored rule — the contract row never stores share terms.
-// Returns the linked partner, or null when unlinked OR when the id doesn't resolve — e.g.
-// an archived partner: GET /partners excludes archived rows and DELETE /partners/:id
-// doesn't clear contract.partnerId, so a stale link must fail closed here rather than
-// throwing when a click handler dereferences `.rule` on `undefined`.
-function termPartner(c) {
-  return c.partnerId ? (PARTNERS_BY_ID.get(c.partnerId) || null) : null;
-}
-
+// The merchant-view row owns its terms. PARTNERS_BY_ID is no longer consulted.
 function termCellHtml(c, col) {
   const sub = col.key.split('.')[1];          // 'method' | 'summary'
-  const p = termPartner(c);
-  if (!p) {
-    return sub === 'method' ? '<span class="ct-empty">–</span>'
-      : '<span class="muted" title="Add a partner for this merchant to set revenue-share terms">—</span>';
-  }
-  if (p.noPayout) return '<span class="ct-none" title="Not paid — skipped in revenue-share runs">None</span>';
-  if (ruleIsAbsent(p.rule)) {
+  if (c.noPayout) return '<span class="ct-none" title="Not paid — skipped in revenue-share runs">None</span>';
+  if (ruleIsAbsent(c.rule)) {
     return sub === 'method' ? '<span class="ct-empty">–</span>' : '<span class="muted" title="No terms set yet">not set</span>';
   }
   // A rule the simplified form can't express (tiered_percent, min, nested shapes) has no
   // honest one-word mode and no one-line formula — say so rather than print a wrong label.
-  if (!isRepresentable(p.rule)) {
+  if (!isRepresentable(c.rule)) {
     return sub === 'method'
       ? '<span class="ct-locked" title="A rule shape the simplified form cannot label">custom</span>'
       : '<span class="ct-terms ct-locked" title="Click for the full breakdown">custom rule ›</span>';
   }
-  const f = decompileRule(p.rule);
+  const f = decompileRule(c.rule);
   if (sub === 'method') return escape(methodToName(f.method));
   // The same one-line formula the partner Rule tab shows, so the two screens describe a
   // rule identically rather than each inventing a wording.
@@ -850,25 +837,14 @@ function contractRowHtml(c) {
     const tip = col.key === 'endDate' && rf.title ? ` title="${escape(rf.title)}"` : '';
     return `<td class="ct-cell ${cls}${flag}" data-id="${escape(c.contractId)}" data-key="${col.key}"${tip}>${disp}</td>`;
   }).join('');
-  // Partner column: the link is what makes the share-term cells usable, so it is a
-  // control rather than a badge. An archived partner keeps its partnerId but drops out
-  // of /partners, so "linked but not found" is its own state — not "unlinked".
-  const p = c.partnerId ? PARTNERS_BY_ID.get(c.partnerId) : null;
-  let partnerCell;
-  if (!c.partnerId) {
-    partnerCell = can('manageMerchants')
-      ? `<button class="btn-ghost ct-pe-btn" data-id="${escape(c.contractId)}">Set terms…</button>`
-      : '<span class="badge badge-warn">no terms</span>';
-  } else if (!p) {
-    partnerCell = '<span class="badge badge-warn" title="Linked to a partner that has been archived">partner archived</span>';
-  } else {
-    partnerCell = can('manageMerchants')
-      ? `<button class="btn-ghost ct-pe-btn" data-id="${escape(c.contractId)}" title="Edit revenue-share terms, aggregation and payout status">Edit…</button>`
-      : escape(p.name);
-  }
+  // Edit-terms column: the row owns its terms directly now, so this is just a control,
+  // never a partner badge.
+  const editCell = can('manageMerchants')
+    ? `<button class="btn-ghost ct-pe-btn" data-id="${escape(c.contractId)}">${ruleIsAbsent(c.rule) && !c.noPayout ? 'Set terms…' : 'Edit…'}</button>`
+    : '';
   const del = can('manageMerchants')
     ? `<button class="btn-ghost ct-del-btn" data-id="${escape(c.contractId)}" title="Delete this merchant row">×</button>` : '';
-  return `<tr data-id="${escape(c.contractId)}">${cells}<td class="ct-cell ct-gsep">${partnerCell}</td><td class="ct-cell ct-c">${del}</td></tr>`;
+  return `<tr data-id="${escape(c.contractId)}">${cells}<td class="ct-cell ct-gsep">${editCell}</td><td class="ct-cell ct-c">${del}</td></tr>`;
 }
 
 // ── Merchant view: add / delete / link ─────────────────────────────────────
@@ -889,10 +865,9 @@ async function createContractRow() {
 async function deleteContractRow(contractId) {
   const c = CONTRACTS.find(x => x.contractId === contractId);
   if (!c) return;
-  const p = c.partnerId ? PARTNERS_BY_ID.get(c.partnerId) : null;
-  // Deleting a contract never touches the partner or its payout rule — say so, because
-  // the row shows share terms and it is reasonable to fear losing them.
-  const note = p ? `\n\nThe partner "${p.name}" and its payout rule are NOT affected.` : '';
+  // The row now owns its own revenue-share terms, so deleting it deletes those terms too —
+  // say so, since this used to be safe when terms lived on a separate partner record.
+  const note = (!ruleIsAbsent(c.rule) || c.noPayout) ? '\n\nThis also deletes its revenue-share terms.' : '';
   if (!confirm(`Delete "${c.merchantName}" from the merchant view?${note}\n\nThis cannot be undone.`)) return;
   try {
     await api('/contracts/' + encodeURIComponent(contractId), { method: 'DELETE' });
@@ -919,46 +894,43 @@ function ctModal(width) {
 function openTermsView(contractId) {
   const c = CONTRACTS.find(x => x.contractId === contractId);
   if (!c) return;
-  const p = termPartner(c);
-  if (!p) return;
   const { card, close } = ctModal(640);
   card.innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;">
       <div>
         <h3 style="margin:0 0 2px;">${escape(c.merchantName)}</h3>
-        <p class="muted" style="margin:0;font-size:12.5px;">Revenue-share terms · partner ${escape(p.name)}${p.noPayout ? ' · <strong>None (not paid)</strong>' : ''}</p>
+        <p class="muted" style="margin:0;font-size:12.5px;">Revenue-share terms</p>
       </div>
       <button type="button" id="ct-tv-close" class="btn">Close</button>
     </div>
     <div id="ct-tv-rule" style="margin-top:16px;"></div>
     <p class="muted" style="margin:14px 0 0;font-size:12px;">Read-only. Use <strong>Edit terms</strong> at the end of the row to change these.</p>`;
-  renderStructuredRuleEditor(card.querySelector('#ct-tv-rule'), p.rule, MACHINE_MODELS_CACHE, { readOnly: true });
+  renderStructuredRuleEditor(card.querySelector('#ct-tv-rule'), c.rule, MACHINE_MODELS_CACHE, { readOnly: true });
   card.querySelector('#ct-tv-close').addEventListener('click', close);
 }
 
-// Add/update the partner behind a merchant: which partner it is, whether it is paid at all,
-// and its full rule — edited with the same tree editor as the partner Rule tab rather than
-// the flattened cells this grid used to carry.
-async function openPartnerEditor(contractId) {
+// Add/update the revenue-share terms on a merchant row: aggregation mode, whether it is
+// paid at all, and its full rule — edited with the same tree editor as the partner Rule
+// tab rather than the flattened cells this grid used to carry. The row IS the payout
+// record now; there is no partner to create or link.
+async function openTermsEditor(contractId) {
   const c = CONTRACTS.find(x => x.contractId === contractId);
   if (!c) return;
-  const existing = c.partnerId ? PARTNERS_BY_ID.get(c.partnerId) : null;
   const { card, close } = ctModal(720);
   card.innerHTML = `
     <h3 style="margin:0 0 4px;">Revenue-share terms — ${escape(c.merchantName)}</h3>
     <p class="muted" style="margin:0 0 16px;font-size:12.5px;">
-      ${existing ? `Stored against partner <strong>${escape(existing.name)}</strong>.`
-                 : 'Saving creates the payout record for this merchant.'}
+      ${ruleIsAbsent(c.rule) && !c.noPayout ? 'Saving sets the payout terms for this merchant.' : 'Editing the payout terms for this merchant.'}
     </p>
     <div style="display:flex;gap:16px;align-items:flex-start;margin-bottom:14px;flex-wrap:wrap;">
       <label style="font-size:12.5px;color:var(--ink-soft);">Aggregation
         <select id="ct-pe-agg" class="input" style="min-width:230px;display:block;margin-top:4px;">
-          <option value="whole"${!existing || existing.aggregationMode !== 'per_store' ? ' selected' : ''}>Whole — one calculation across all stores</option>
-          <option value="per_store"${existing && existing.aggregationMode === 'per_store' ? ' selected' : ''}>Per store — calculate each store separately</option>
+          <option value="whole"${c.aggregationMode !== 'per_store' ? ' selected' : ''}>Whole — one calculation across all stores</option>
+          <option value="per_store"${c.aggregationMode === 'per_store' ? ' selected' : ''}>Per store — calculate each store separately</option>
         </select>
       </label>
       <label class="nopay-toggle" style="display:flex;gap:8px;align-items:center;font-size:13px;margin-top:22px;">
-        <input type="checkbox" id="ct-pe-nopay"${existing && existing.noPayout ? ' checked' : ''}> No revenue share — not paid
+        <input type="checkbox" id="ct-pe-nopay"${c.noPayout ? ' checked' : ''}> No revenue share — not paid
       </label>
     </div>
     <p class="muted" style="margin:-6px 0 14px;font-size:11.5px;">
@@ -971,7 +943,7 @@ async function openPartnerEditor(contractId) {
       <button type="button" id="ct-pe-save" class="btn btn-primary">Save</button>
     </div>`;
   const ruleBox = card.querySelector('#ct-pe-rule');
-  const editor = renderStructuredRuleEditor(ruleBox, existing ? existing.rule : null, MACHINE_MODELS_CACHE, { readOnly: false });
+  const editor = renderStructuredRuleEditor(ruleBox, c.rule, MACHINE_MODELS_CACHE, { readOnly: false });
   const nopay = card.querySelector('#ct-pe-nopay');
   const agg = card.querySelector('#ct-pe-agg');
   const dim = () => { ruleBox.style.opacity = nopay.checked ? '.45' : '1'; ruleBox.style.pointerEvents = nopay.checked ? 'none' : ''; };
@@ -983,23 +955,9 @@ async function openPartnerEditor(contractId) {
     try {
       let rule;
       try { rule = editor.getRule(); } catch (e) { alert('Invalid rule: ' + e.message); return; }
-      if (existing) {
-        const updated = await api('/partners/' + encodeURIComponent(existing.partnerId), { method: 'PUT',
-          body: JSON.stringify({ rule, noPayout: nopay.checked, aggregationMode: agg.value }) });
-        PARTNERS_BY_ID.set(existing.partnerId,
-          { ...existing, ...updated, rule, noPayout: nopay.checked, aggregationMode: agg.value });
-      } else {
-        // No payout record yet: create one named after the merchant. The run pipeline
-        // resolves an order report's merchant label to a partner BY NAME, so the name must
-        // match the merchant exactly — which is why it is taken from the row, not typed.
-        if (!can('editPartners')) { alert('This needs the "Edit partners & rules" permission.'); return; }
-        const created = await api('/partners', { method: 'POST', body: JSON.stringify({
-          name: c.merchantName, currency: CCY, aggregationMode: agg.value, rule, noPayout: nopay.checked }) });
-        PARTNERS_BY_ID.set(created.partnerId, created);
-        const savedContract = await api('/contracts/' + encodeURIComponent(contractId), { method: 'PUT',
-          body: JSON.stringify({ partnerId: created.partnerId }) });
-        Object.assign(c, savedContract);
-      }
+      const saved = await api('/contracts/' + encodeURIComponent(contractId), { method: 'PUT',
+        body: JSON.stringify({ rule, noPayout: nopay.checked, aggregationMode: agg.value }) });
+      Object.assign(c, saved);
       close(); paintContracts();
     } catch (err) {
       alert('Could not save: ' + err.message);
@@ -1036,11 +994,10 @@ async function renderContractsScreen() {
   const el = document.getElementById('main');
   el.classList.add('main-wide');   // also covers the boot path, which doesn't go via setActiveNav
   el.innerHTML = '<h1>Merchant view</h1><p class="muted">Loading…</p>';
-  const [contracts, partners, machineModels] = await Promise.all([
-    api('/contracts'), api('/partners'), api('/machine-models')
+  const [contracts, machineModels] = await Promise.all([
+    api('/contracts'), api('/machine-models')
   ]);
   CONTRACTS = contracts;
-  PARTNERS_BY_ID = new Map(partners.map(p => [p.partnerId, p]));
   MACHINE_MODELS_CACHE = machineModels;
   let hg = null;
   const head = visibleContractColumns()
@@ -1080,7 +1037,7 @@ async function renderContractsScreen() {
   el.querySelector('#ct-body').addEventListener('click', ev => {
     if (ev.target.closest('a')) return;          // let the contract link open normally
     const peBtn = ev.target.closest('.ct-pe-btn');
-    if (peBtn) { openPartnerEditor(peBtn.dataset.id); return; }
+    if (peBtn) { openTermsEditor(peBtn.dataset.id); return; }
     const terms = ev.target.closest('.ct-terms');
     if (terms) { openTermsView(terms.closest('tr').dataset.id); return; }
     const delBtn = ev.target.closest('.ct-del-btn');
@@ -1137,12 +1094,9 @@ function startCellEdit(td) {
   const col = CONTRACT_GRID_COLUMNS.find(c => c.key === key);
   if (col && col.type === 'computed') return;   // Units is derived from the model counts
   if (!col) return;
-  // Term cells write to the PARTNER (PUT /partners/:id → editPartners); every other
-  // column writes to the CONTRACT (PUT /contracts/:id → manageMerchants). Gating both
-  // kinds on manageMerchants let a manageMerchants-only user open a term editor that
-  // would always 403 on save.
-  // Terms are no longer edited in the grid at all — the Rev terms cell opens a read-only
-  // view and the partner dialog owns editing, using the same tree editor as the Rule tab.
+  // Terms are not edited inline in the grid: the Rev terms cell opens a read-only view,
+  // and the Edit terms dialog owns editing (same tree editor as the Rule tab), both
+  // writing PUT /contracts/:id like every other cell here.
   if (col.type && col.type.startsWith('term-')) return;
   if (!can('manageMerchants')) return;
   const c = CONTRACTS.find(x => x.contractId === id);
