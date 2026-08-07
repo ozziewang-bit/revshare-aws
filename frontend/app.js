@@ -670,11 +670,7 @@ const CONTRACT_GRID_COLUMNS = [
   { key: 'declineToRenew',        label: 'Decline',       type: 'bool',   width: 62  , group: 'contract' },
   { key: 'autoRenewal',           label: 'Auto-renewal',  type: 'select', width: 135 , group: 'contract' },
   { key: 'contractLink',          label: 'Contract',      type: 'url',    width: 80  , group: 'contract' },
-  { key: 'term.method',      label: 'Mode',         type: 'term-mode',  width: 130 , group: 'terms' },
-  { key: 'term.gpPercent',   label: 'Rev-share %',  type: 'term-num',   width: 85  , group: 'terms' },
-  { key: 'term.placement',   label: 'Fixed rental', type: 'term-model', width: 105 , group: 'terms' },
-  { key: 'term.electricity', label: 'Electricity',  type: 'term-num',   width: 85  , group: 'terms' },
-  { key: 'term.mg',          label: 'Min guarantee',type: 'term-model', width: 115 , group: 'terms' },
+  { key: 'term.summary',     label: 'Rev terms',    type: 'term-summary', width: 240, group: 'terms' },
 ];
 
 // 23 columns is ~2400px — more than a laptop can show at once even full-width. Rather than
@@ -771,7 +767,8 @@ const roundTripRule = r => compileRule(decompileRule(r));
 // anything else compileRule can't emit) must stay edit-in-the-Rule-tab-only — the grid's
 // round trip would otherwise silently collapse them to "percent ALL 0%". A partner with
 // no rule at all is always representable: creating a rule from the grid is legitimate,
-// and saveTerms's no-op guard (below) stops an accidental blur from fabricating one.
+// terms are only ever written through the partner dialog's tree editor, which cannot
+// fabricate one by accident.
 function isRepresentable(r) {
   if (!r || !r.type) return true;
   // An empty sum is "no rule" in all but name. createPartnerRoute defaults every new
@@ -785,17 +782,6 @@ function isRepresentable(r) {
 // Treat an empty sum as "no rule" everywhere the no-rule guards apply, for the same reason.
 const ruleIsAbsent = r => !r || !r.type || (r.type === 'sum' && !(r.children || []).length);
 
-// compileRule's universal fallback (`zero()`) when every term is empty — a bare 0% GP
-// leaf, whatever payout method it's tagged with. Compared with `_method` stripped: the
-// harmful case is this exact empty shape re-tagged with a NEW method (e.g. picking a
-// Mode on a rule-less partner with every term still 0), which the plain no-op guard in
-// saveTerms can't catch on its own since the rule object genuinely did change.
-function isEmptyCompiledRule(rule) {
-  if (!rule) return true;
-  const { _method, ...rest } = rule;
-  return canon(rest) === canon({ type: 'percent', _t: 'gp', rows: [{ model: 'ALL', percent: 0 }] });
-}
-
 // Term cells read the partner's stored rule — the contract row never stores share terms.
 // Returns the linked partner, or null when unlinked OR when the id doesn't resolve — e.g.
 // an archived partner: GET /partners excludes archived rows and DELETE /partners/:id
@@ -805,39 +791,19 @@ function termPartner(c) {
   return c.partnerId ? (PARTNERS_BY_ID.get(c.partnerId) || null) : null;
 }
 
-function termCellHtml(c, col) {
+function termCellHtml(c) {
   const p = termPartner(c);
-  if (!p) return '<span class="muted" title="Link this row to a partner to edit terms">—</span>';
-  const f = decompileRule(p.rule);
-  const hasRule = !ruleIsAbsent(p.rule);
-  const sub = col.key.split('.')[1];
-  let disp;
-  if (sub === 'method') {
-    // noPayout is the app's existing "this partner is not paid" flag — bulk runs skip such
-    // partners outright. It is the honest home for "None": the rule is left untouched, so
-    // switching back later restores the terms rather than rebuilding them.
-    if (p.noPayout) return '<span class="ct-none">None</span>';
-    disp = hasRule ? escape(methodToName(f.method)) : '';   // blank, not a confident guess, when there's no rule yet
-  }
-  else if (sub === 'gpPercent') disp = f.gpPercent ? escape(String(f.gpPercent)) : '';
-  else if (sub === 'electricity') disp = f.electricity ? escape(String(f.electricity)) : '';
-  else {
-    const rows = sub === 'mg' ? (f.mgRows || []) : (f.placementRows || []);
-    disp = !rows.length ? ''
-      : (rows.length === 1 && rows[0].model === 'ALL') ? escape(String(rows[0].amount))
-      : `<span class="ct-multi">per-machine (${rows.length}) ▾</span>`;
-  }
+  if (!p) return '<span class="muted" title="Add a partner for this merchant to set revenue-share terms">—</span>';
+  if (p.noPayout) return '<span class="ct-none" title="Not paid — skipped in revenue-share runs">None</span>';
+  if (ruleIsAbsent(p.rule)) return '<span class="muted" title="No terms set yet">not set</span>';
   if (!isRepresentable(p.rule)) {
-    return `<span class="ct-locked" title="This rule can't be shown in the simplified grid form — edit it in the partner's Rule tab.">${disp || '—'}</span>`;
+    return '<span class="ct-terms ct-locked" title="Shown in full when clicked">custom rule ›</span>';
   }
-  // Mode already reads "None"; mute the remaining term cells so the row is coherent. The
-  // values are still shown, and still editable, because they are kept and will apply again
-  // the moment Mode moves off None.
-  if (p.noPayout && disp) {
-    return `<span class="ct-inactive" title="Not paid — kept for when Mode moves off None">${disp}</span>`;
-  }
-  return disp;
+  // The same one-line formula the partner Rule tab shows, so the two screens describe a
+  // rule identically rather than each inventing a wording.
+  return `<span class="ct-terms" title="Click for the full breakdown">${escape(payoutFormula(decompileRule(p.rule)))}</span>`;
 }
+
 
 function contractRowHtml(c) {
   const rf = renewalFlag(c);
@@ -845,7 +811,7 @@ function contractRowHtml(c) {
   const cells = visibleContractColumns().map((col, i) => {
     const v = cellValue(c, col.key);
     let disp;
-    if (col.type && col.type.startsWith('term-')) disp = termCellHtml(c, col);
+    if (col.type && col.type.startsWith('term-')) disp = termCellHtml(c);
     else if (col.type === 'computed') disp = `<span class="ct-computed" title="Sum of the per-model counts — edit those instead">${unitsTotal(c)}</span>`;
     else if (col.type === 'bool') disp = v ? '✓' : '';
     else if (col.type === 'url') {
@@ -877,13 +843,13 @@ function contractRowHtml(c) {
   let partnerCell;
   if (!c.partnerId) {
     partnerCell = can('manageMerchants')
-      ? `<button class="btn-ghost ct-link-btn" data-id="${escape(c.contractId)}">Link partner…</button>`
-      : '<span class="badge badge-warn">unlinked</span>';
+      ? `<button class="btn-ghost ct-pe-btn" data-id="${escape(c.contractId)}">+ Add partner</button>`
+      : '<span class="badge badge-warn">no partner</span>';
   } else if (!p) {
     partnerCell = '<span class="badge badge-warn" title="Linked to a partner that has been archived">partner archived</span>';
   } else {
     partnerCell = can('manageMerchants')
-      ? `<button class="btn-ghost ct-link-btn" data-id="${escape(c.contractId)}" title="Change or remove this link">${escape(p.name)}</button>`
+      ? `<button class="btn-ghost ct-pe-btn" data-id="${escape(c.contractId)}" title="Update this partner and its revenue-share terms">${escape(p.name)}</button>`
       : escape(p.name);
   }
   const del = can('manageMerchants')
@@ -921,55 +887,114 @@ async function deleteContractRow(contractId) {
   } catch (err) { alert('Could not delete: ' + err.message); }
 }
 
-// Linking is what makes the share-term cells usable — without it a row has no rule to
-// write to. Sheet import is the only other way to set this, so it belongs in the grid.
-async function openLinkPartner(contractId) {
-  const c = CONTRACTS.find(x => x.contractId === contractId);
-  if (!c) return;
-  const partners = [...PARTNERS_BY_ID.values()].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-  const current = c.partnerId || '';
-  const opts = partners.map(p =>
-    `<option value="${escape(p.partnerId)}"${p.partnerId === current ? ' selected' : ''}>${escape(p.name)}</option>`).join('');
-  const el = document.getElementById('main');
+// Shared chrome for the two merchant-view dialogs.
+function ctModal(width) {
   const box = document.createElement('div');
   box.className = 'ct-modal';
-  box.innerHTML = `
-    <div class="ct-modal-card">
-      <h3 style="margin:0 0 12px;">Link "${escape(c.merchantName)}" to a partner</h3>
-      <select id="ct-link-sel" class="input" style="width:100%;">
-        <option value="">— not linked —</option>${opts}
-      </select>
-      <p class="muted" style="font-size:12px;margin:10px 0 0;">The partner owns the payout rule. Linking lets this row's share-term cells edit it.</p>
-      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;">
-        <button type="button" id="ct-link-cancel" class="btn">Cancel</button>
-        <button type="button" id="ct-link-new" class="btn">Create partner "${escape(c.merchantName)}"</button>
-        <button type="button" id="ct-link-save" class="btn btn-primary">Save</button>
-      </div>
-    </div>`;
-  el.appendChild(box);
+  box.innerHTML = `<div class="ct-modal-card" style="width:${width}px;max-width:94vw;max-height:88vh;overflow:auto;"></div>`;
+  document.getElementById('main').appendChild(box);
+  const card = box.querySelector('.ct-modal-card');
   const close = () => box.remove();
   box.addEventListener('click', ev => { if (ev.target === box) close(); });
-  box.querySelector('#ct-link-cancel').addEventListener('click', close);
+  return { box, card, close };
+}
 
-  const setLink = async partnerId => {
+// Read-only terms detail. Reuses the partner Rule tab's own editor in readOnly mode, so the
+// breakdown a user sees here is literally the same component, not a second rendering that
+// could describe the rule differently.
+function openTermsView(contractId) {
+  const c = CONTRACTS.find(x => x.contractId === contractId);
+  if (!c) return;
+  const p = termPartner(c);
+  if (!p) return;
+  const { card, close } = ctModal(640);
+  card.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;">
+      <div>
+        <h3 style="margin:0 0 2px;">${escape(c.merchantName)}</h3>
+        <p class="muted" style="margin:0;font-size:12.5px;">Revenue-share terms · partner ${escape(p.name)}${p.noPayout ? ' · <strong>None (not paid)</strong>' : ''}</p>
+      </div>
+      <button type="button" id="ct-tv-close" class="btn">Close</button>
+    </div>
+    <div id="ct-tv-rule" style="margin-top:16px;"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;">
+      ${can('editPartners') ? '<button type="button" id="ct-tv-edit" class="btn btn-primary">Edit terms</button>' : ''}
+    </div>`;
+  renderStructuredRuleEditor(card.querySelector('#ct-tv-rule'), p.rule, MACHINE_MODELS_CACHE, { readOnly: true });
+  card.querySelector('#ct-tv-close').addEventListener('click', close);
+  card.querySelector('#ct-tv-edit')?.addEventListener('click', () => { close(); openPartnerEditor(contractId); });
+}
+
+// Add/update the partner behind a merchant: which partner it is, whether it is paid at all,
+// and its full rule — edited with the same tree editor as the partner Rule tab rather than
+// the flattened cells this grid used to carry.
+async function openPartnerEditor(contractId) {
+  const c = CONTRACTS.find(x => x.contractId === contractId);
+  if (!c) return;
+  const existing = c.partnerId ? PARTNERS_BY_ID.get(c.partnerId) : null;
+  const partners = [...PARTNERS_BY_ID.values()].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  const { card, close } = ctModal(720);
+  card.innerHTML = `
+    <h3 style="margin:0 0 4px;">${existing ? 'Update' : 'Add'} partner — ${escape(c.merchantName)}</h3>
+    <p class="muted" style="margin:0 0 16px;font-size:12.5px;">The partner owns the revenue-share terms. One partner can cover several merchants.</p>
+    <label style="display:block;margin-bottom:12px;font-size:12.5px;color:var(--ink-soft);">Partner
+      <select id="ct-pe-partner" class="input" style="width:100%;margin-top:4px;">
+        <option value="">— none —</option>
+        <option value="__new__">+ Create a new partner called "${escape(c.merchantName)}"</option>
+        ${partners.map(p => `<option value="${escape(p.partnerId)}"${existing && p.partnerId === existing.partnerId ? ' selected' : ''}>${escape(p.name)}</option>`).join('')}
+      </select>
+    </label>
+    <label class="nopay-toggle" style="display:flex;gap:8px;align-items:center;margin-bottom:14px;font-size:13px;">
+      <input type="checkbox" id="ct-pe-nopay"${existing && existing.noPayout ? ' checked' : ''}> No revenue share — not paid
+    </label>
+    <div id="ct-pe-rule"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:18px;">
+      <button type="button" id="ct-pe-cancel" class="btn">Cancel</button>
+      <button type="button" id="ct-pe-save" class="btn btn-primary">Save</button>
+    </div>`;
+  const ruleBox = card.querySelector('#ct-pe-rule');
+  let editor = renderStructuredRuleEditor(ruleBox, existing ? existing.rule : null, MACHINE_MODELS_CACHE, { readOnly: false });
+
+  const sel = card.querySelector('#ct-pe-partner');
+  const nopay = card.querySelector('#ct-pe-nopay');
+  const dim = () => { ruleBox.style.opacity = nopay.checked ? '.45' : '1'; ruleBox.style.pointerEvents = nopay.checked ? 'none' : ''; };
+  nopay.addEventListener('change', dim); dim();
+  // Switching to a different existing partner must reload that partner's rule — otherwise
+  // Save would write the previously shown partner's terms onto the newly chosen one.
+  sel.addEventListener('change', () => {
+    const p = PARTNERS_BY_ID.get(sel.value);
+    nopay.checked = !!(p && p.noPayout);
+    editor = renderStructuredRuleEditor(ruleBox, p ? p.rule : null, MACHINE_MODELS_CACHE, { readOnly: false });
+    dim();
+  });
+  card.querySelector('#ct-pe-cancel').addEventListener('click', close);
+
+  card.querySelector('#ct-pe-save').addEventListener('click', async ev => {
+    const btn = ev.target; btn.disabled = true; btn.textContent = 'Saving…';
     try {
-      const updated = await api('/contracts/' + encodeURIComponent(contractId),
-        { method: 'PUT', body: JSON.stringify({ partnerId: partnerId || null }) });
-      Object.assign(c, updated);
+      let rule;
+      try { rule = editor.getRule(); } catch (e) { alert('Invalid rule: ' + e.message); return; }
+      let partnerId = sel.value;
+      if (partnerId === '__new__') {
+        if (!can('editPartners')) { alert('Creating a partner needs the "Edit partners & rules" permission.'); return; }
+        const created = await api('/partners', { method: 'POST', body: JSON.stringify({
+          name: c.merchantName, currency: CCY, aggregationMode: 'whole', rule, noPayout: nopay.checked }) });
+        PARTNERS_BY_ID.set(created.partnerId, created);
+        partnerId = created.partnerId;
+      } else if (partnerId) {
+        const updated = await api('/partners/' + encodeURIComponent(partnerId), { method: 'PUT',
+          body: JSON.stringify({ rule, noPayout: nopay.checked }) });
+        PARTNERS_BY_ID.set(partnerId, { ...PARTNERS_BY_ID.get(partnerId), ...updated, rule, noPayout: nopay.checked });
+      }
+      if ((c.partnerId || '') !== (partnerId || '')) {
+        const savedContract = await api('/contracts/' + encodeURIComponent(contractId), { method: 'PUT',
+          body: JSON.stringify({ partnerId: partnerId || null }) });
+        Object.assign(c, savedContract);
+      }
       close(); paintContracts();
-    } catch (err) { alert('Could not save: ' + err.message); }
-  };
-  box.querySelector('#ct-link-save').addEventListener('click', () => setLink(box.querySelector('#ct-link-sel').value));
-  box.querySelector('#ct-link-new').addEventListener('click', async () => {
-    if (!can('editPartners')) { alert('Creating a partner needs the "Edit partners & rules" permission.'); return; }
-    try {
-      // createPartnerRoute requires all three of name/currency/aggregationMode — omitting
-      // aggregationMode returns 400 missing_fields. 'whole' matches the new-partner form's default.
-      const p = await api('/partners', { method: 'POST',
-        body: JSON.stringify({ name: c.merchantName, currency: CCY, aggregationMode: 'whole' }) });
-      PARTNERS_BY_ID.set(p.partnerId, p);
-      await setLink(p.partnerId);
-    } catch (err) { alert('Could not create partner: ' + err.message); }
+    } catch (err) {
+      alert('Could not save: ' + err.message);
+    } finally { btn.disabled = false; btn.textContent = 'Save'; }
   });
 }
 
@@ -1045,8 +1070,10 @@ async function renderContractsScreen() {
   paintContracts();
   el.querySelector('#ct-body').addEventListener('click', ev => {
     if (ev.target.closest('a')) return;          // let the contract link open normally
-    const linkBtn = ev.target.closest('.ct-link-btn');
-    if (linkBtn) { openLinkPartner(linkBtn.dataset.id); return; }
+    const peBtn = ev.target.closest('.ct-pe-btn');
+    if (peBtn) { openPartnerEditor(peBtn.dataset.id); return; }
+    const terms = ev.target.closest('.ct-terms');
+    if (terms) { openTermsView(terms.closest('tr').dataset.id); return; }
     const delBtn = ev.target.closest('.ct-del-btn');
     if (delBtn) { deleteContractRow(delBtn.dataset.id); return; }
     const td = ev.target.closest('td.ct-cell');
@@ -1105,71 +1132,19 @@ function startCellEdit(td) {
   // column writes to the CONTRACT (PUT /contracts/:id → manageMerchants). Gating both
   // kinds on manageMerchants let a manageMerchants-only user open a term editor that
   // would always 403 on save.
-  const isTerm = col.type && col.type.startsWith('term-');
-  if (!can(isTerm ? 'editPartners' : 'manageMerchants')) return;
+  // Terms are no longer edited in the grid at all — the Rev terms cell opens a read-only
+  // view and the partner dialog owns editing, using the same tree editor as the Rule tab.
+  if (col.type && col.type.startsWith('term-')) return;
+  if (!can('manageMerchants')) return;
   const c = CONTRACTS.find(x => x.contractId === id);
   const cur = cellValue(c, key);
-
-  if (isTerm) {
-    const p = termPartner(c);
-    if (!p) { alert('Link this row to a partner (and confirm the partner is not archived) before editing share terms.'); return; }
-    if (!isRepresentable(p.rule)) return;   // read-only: shape doesn't fit the grid form — edit in the Rule tab
-    const sub = col.key.split('.')[1];
-    const f = decompileRule(p.rule);
-    if (col.type === 'term-model') return openModelPopover(td, c.partnerId, sub, f);
-    if (col.type === 'term-mode') {
-      const sel = document.createElement('select');
-      sel.className = 'ct-input';
-      const isNone = !!p.noPayout;
-      sel.innerHTML = `<option value="__none__"${isNone ? ' selected' : ''}>None — no revenue share</option>`
-        + PAYOUT_METHOD_META.map(m =>
-        `<option value="${m.val}"${!isNone && m.val === f.method ? ' selected' : ''}>${m.title}</option>`).join('')
-        + '<option value="" disabled>Sliding Scale (not supported yet)</option>';
-      td.innerHTML = ''; td.appendChild(sel); sel.focus();
-      sel.addEventListener('change', () => {
-        const nextMethod = sel.value;
-        if (nextMethod === '__none__') { setNoPayout(c.partnerId, true); return; }
-        // Coming back from None: clear the flag first, then apply the chosen method.
-        if (isNone) { setNoPayout(c.partnerId, false, () => saveTerms(c.partnerId, { method: nextMethod })); return; }
-        const mgRows = f.mgRows || [];
-        // WH/HH are the only methods that use MG; switching to Default/Hybrid drops it
-        // by construction (compileRule never emits the MG leaf for them) — irreversible
-        // from the grid, so confirm with the exact rows about to be lost.
-        if ((nextMethod === 'default' || nextMethod === 'hybrid') && mgRows.length > 0) {
-          const models = mgRows.map(r => r.model).join(', ');
-          const n = mgRows.length;
-          const ok = confirm(`Switching to ${methodToName(nextMethod)} removes this partner's ${n} minimum-guarantee row${n === 1 ? '' : 's'} (${models}). This cannot be undone. Continue?`);
-          if (!ok) { sel.value = f.method; return; }
-        }
-        saveTerms(c.partnerId, { method: nextMethod });
-      });
-      sel.addEventListener('blur', () => paintContracts());
-      return;
-    }
-    const inp = document.createElement('input');
-    inp.type = 'number'; inp.className = 'ct-input';
-    inp.value = sub === 'gpPercent' ? (f.gpPercent || '') : (f.electricity || '');
-    td.innerHTML = ''; td.appendChild(inp); inp.focus();
-    let saved = false;
-    inp.addEventListener('blur', () => {
-      if (saved) return; saved = true;
-      // An empty/unparseable input (e.g. a paste like "50%" that <input type=number>
-      // rejects down to '') is not "the user entered zero" — treat it as no edit rather
-      // than silently zeroing (and thereby dropping) this term. See saveTerms below for
-      // the matching guard on partners who already had a rule.
-      if (inp.value.trim() === '') { paintContracts(); return; }
-      saveTerms(c.partnerId, { [sub]: Number(inp.value) });
-    });
-    inp.addEventListener('keydown', e => { if (e.key === 'Enter') inp.blur(); });
-    return;
-  }
 
   let field;
   if (col.type === 'select') {
     const opts = key === 'merchantType' ? MERCHANT_TYPES : AUTO_RENEWAL_OPTIONS;
     // A stored value that isn't in the (necessarily incomplete — hand-maintained sheet
     // data has more variants than any hardcoded list) options must still show as itself
-    // and stay selected, exactly like openModelPopover does for an unknown model code.
+    // and stay selected.
     // Without this, opening the cell on such a value selects nothing, and the blur-commit
     // below would silently overwrite real data with null. Spec §3 also requires the Type
     // dropdown to accept a typed value not in the list, which this doubles as supporting.
@@ -1235,178 +1210,6 @@ async function saveCell(contractId, key, value) {
     paintContracts();
     alert('Could not save: ' + err.message);
   }
-}
-
-// Decompile the partner's current rule, apply one change, recompile with the SAME
-// compiler the Rule tab uses, and PUT. Never builds a rule tree by hand.
-// On failure PARTNERS_BY_ID is left untouched (the pre-edit partner) and the grid
-// repaints from that known-good state — mirrors saveCell's rollback-on-failure.
-// "None" in the Mode column means this partner is not paid a revenue share. That is
-// `noPayout` — the flag bulk-runs already honours (it skips such partners before the
-// no-rule check) and the partner list already badges. Setting it deliberately does NOT
-// touch the stored rule, so switching back later restores the terms intact.
-async function setNoPayout(partnerId, value, then) {
-  const p = PARTNERS_BY_ID.get(partnerId);
-  if (!p || !!p.noPayout === !!value) { paintContracts(); return; }
-  if (value && !ruleIsAbsent(p.rule)) {
-    if (!confirm(`Set "${p.name}" to None?\n\nIt will be skipped in revenue-share runs and paid nothing.\n\nIts existing terms are kept, so switching back to a payout method restores them.`)) {
-      paintContracts(); return;
-    }
-  }
-  try {
-    const updated = await api('/partners/' + encodeURIComponent(partnerId),
-      { method: 'PUT', body: JSON.stringify({ noPayout: !!value }) });
-    PARTNERS_BY_ID.set(partnerId, { ...p, ...updated, noPayout: !!value });
-    if (then) await then(); else paintContracts();
-  } catch (err) {
-    alert('Could not save: ' + err.message);
-    paintContracts();
-  }
-}
-
-async function saveTerms(partnerId, patch) {
-  const p = PARTNERS_BY_ID.get(partnerId);
-  if (!p) return;
-  let form = { ...decompileRule(p.rule), ...patch };
-  let rule = compileRule(form);
-
-  // compileRule only uses MG under higher/hybrid-higher — under default/hybrid it is
-  // silently excluded from every compiled result (mgLeaf never enters `allTerms`). A
-  // patch that just added/changed real MG rows while the effective method is
-  // default/hybrid — true for a null-rule partner (decompileRule(null) defaults to
-  // 'hybrid') AND for any existing partner already on default/hybrid — would otherwise
-  // "save successfully" and throw the MG data away with no confirmation. This is the
-  // mirror image of the Mode select's own confirm (which warns before DROPPING MG on a
-  // method change); this one warns before dropping MG on an MG change. Must run, and
-  // possibly switch the method, BEFORE the emptiness check below, so that check sees the
-  // final (possibly hybrid-higher) rule rather than the pre-switch one — otherwise the
-  // two guards fight and a legitimate MG-only save for a null-rule partner gets silently
-  // swallowed by the emptiness guard before this rescue ever gets a chance to run.
-  const patchMgRows = Array.isArray(patch.mgRows)
-    ? patch.mgRows.filter(r => r.model && Number(r.amount) > 0) : [];
-  if (patchMgRows.length > 0 && (form.method === 'default' || form.method === 'hybrid')) {
-    const models = patchMgRows.map(r => r.model).join(', ');
-    const n = patchMgRows.length;
-    const ok = confirm(`Minimum guarantee only applies to the "Whichever is higher" and "Hybrid-higher" payout methods. Switch this partner to Hybrid-higher and save the ${n} MG row${n === 1 ? '' : 's'} (${models})?`);
-    if (!ok) { paintContracts(); return; }   // decline — abort without saving anything
-    form = { ...form, method: 'hybrid-higher' };
-    rule = compileRule(form);
-  }
-
-  const hadNoRule = ruleIsAbsent(p.rule);
-  // Never swallow a patch that carried real data. A method-only patch is not "data" (see
-  // the fabrication guard immediately below) and stays silently skipped — but a value the
-  // user actually entered must not vanish with no feedback just because, given the
-  // current method, it compiled to nothing. The MG rescue above already handles the only
-  // way that happens today; this alert is the safety net for the rest.
-  const patchHasData = Object.entries(patch).some(([k, v]) =>
-    Array.isArray(v) ? v.some(r => r.model && Number(r.amount) > 0)
-                     : (k !== 'method' && Number(v) > 0));
-  if (hadNoRule && isEmptyCompiledRule(rule)) {
-    if (!patchHasData) { paintContracts(); return; }
-    alert("Nothing was saved: these values compile to an empty rule under the current payout method. Pick a method that uses this term, or enter a term the current method does use.");
-    paintContracts();
-    return;
-  }
-  // A partner that already had a real rule must never be silently collapsed to a bare
-  // 0% GP leaf by emptying every term — compileRule's zero() fallback has a `.type`, so
-  // without this it would sail past the bulk-run readiness gate and get paid 0 with no
-  // warning. Confirm before writing an empty rule over a non-empty one. Mutually
-  // exclusive with the hadNoRule branch above, so this never double-prompts.
-  if (!hadNoRule && isEmptyCompiledRule(rule) && !isEmptyCompiledRule(p.rule)) {
-    const name = (p && p.name) || CONTRACTS.find(c => c.partnerId === partnerId)?.merchantName || 'this partner';
-    if (!confirm(`This removes every share term for ${name}. The rule becomes 0% and the partner will be paid 0 in future runs. Continue?`)) {
-      paintContracts();
-      return;
-    }
-  }
-  // Never PUT (or touch the cache) when nothing actually changed. For an existing
-  // representable rule "nothing changed" means the recompiled rule matches p.rule
-  // exactly. For a partner with no rule yet, the equivalent baseline is what an
-  // unedited form already round-trips to (roundTripRule) — compileRule never returns
-  // null, so comparing straight against a null/empty p.rule would never match and a
-  // plain accidental blur (no value typed) would still fabricate a real 0% rule.
-  const baseline = hadNoRule ? roundTripRule(p.rule) : p.rule;
-  if (canon(rule) === canon(baseline)) { paintContracts(); return; }
-  try {
-    const updated = await api('/partners/' + encodeURIComponent(partnerId),
-      { method: 'PUT', body: JSON.stringify({ rule }) });
-    PARTNERS_BY_ID.set(partnerId, { ...p, ...updated, rule });
-  } catch (err) {
-    alert('Could not save: ' + err.message);
-  }
-  paintContracts();
-}
-
-// MG and Placement are per machine model. A flat cell would collapse
-// 7-Eleven's S8=200 / S5=150 into one number, so those cells open this instead.
-// Model options come from the managed Device Types list (GET /machine-models,
-// cached module-scope as MACHINE_MODELS_CACHE) — the same source the Rule tab's
-// per-model dropdowns use — never the parser-only RS_MODELS constant.
-function openModelPopover(td, partnerId, sub, form) {
-  const rowsKey = sub === 'mg' ? 'mgRows' : 'placementRows';
-  const rows = (form[rowsKey] || []).map(r => ({ ...r }));
-  const pop = document.createElement('div');
-  pop.className = 'ct-pop';
-  const draw = () => {
-    pop.innerHTML = rows.map((r, i) => {
-      // A stored code that isn't in the managed Device Types list must not silently
-      // fall back to the <select>'s first option ("All device types") — a <select> with
-      // no `selected` option defaults there, which would turn one specific model's MG/
-      // placement into an ALL-models amount on save. Not reachable with today's data
-      // (every stored code is in the cache) but kept explicit so it can't happen quietly.
-      const known = r.model === 'ALL' || MACHINE_MODELS_CACHE.some(m => m.code === r.model);
-      return `
-      <div class="ct-pop-row">
-        <select data-i="${i}" class="ct-pop-model">
-          <option value="ALL"${r.model === 'ALL' ? ' selected' : ''}>All device types</option>
-          ${MACHINE_MODELS_CACHE.map(m => `<option value="${escape(m.code)}"${m.code === r.model ? ' selected' : ''}>${escape(m.displayName)}</option>`).join('')}
-          ${known ? '' : `<option value="${escape(r.model)}" selected>${escape(r.model)} (not in Device Types)</option>`}
-        </select>
-        <input data-i="${i}" class="ct-pop-amt" type="number" value="${escape(String(r.amount ?? ''))}">
-        <button data-del="${i}" class="btn-icon" title="Remove">×</button>
-      </div>`;
-    }).join('')
-      + `<div class="ct-pop-actions">
-           <button id="ct-pop-add" class="btn btn-sm">+ model</button>
-           <button id="ct-pop-save" class="btn btn-sm btn-primary">Save</button>
-         </div>`;
-  };
-  draw();
-  // .ct-pop is position:absolute; anchor it to this cell (td.ct-cell has no
-  // positioning of its own) rather than the page's initial containing block.
-  td.style.position = 'relative';
-  td.innerHTML = ''; td.appendChild(pop);
-  pop.addEventListener('click', ev => {
-    // Without this, a click on the popover's own padding (not on a select/input/button)
-    // bubbles to #ct-body's click delegate, which re-finds this SAME td and calls
-    // startCellEdit again. The reentry guard there (`td.querySelector('input, select')`)
-    // only saves it when the popover already has rows — with zero MG/placement rows the
-    // popover has no <select>/<input> at all, so a stray padding click would silently
-    // redraw the popover from scratch and drop any not-yet-saved "+ model" row.
-    ev.stopPropagation();
-    const del = ev.target.dataset.del;
-    if (del != null) { rows.splice(Number(del), 1); draw(); }
-    if (ev.target.id === 'ct-pop-add') { rows.push({ model: 'ALL', amount: 0 }); draw(); }
-    if (ev.target.id === 'ct-pop-save') {
-      pop.querySelectorAll('.ct-pop-model').forEach(s => { rows[Number(s.dataset.i)].model = s.value; });
-      // Same empty-input protection as the plain term-num cells: a blank/unparseable
-      // amount (e.g. a rejected paste) must not silently coerce to 0 and evict the row
-      // via the amount>0 filter below — leave that row's amount as it was.
-      pop.querySelectorAll('.ct-pop-amt').forEach(inp => {
-        if (inp.value.trim() === '') return;
-        rows[Number(inp.dataset.i)].amount = Number(inp.value);
-      });
-      // Filter FIRST, dedupe SECOND. Deduping before the filter let a blank duplicate
-      // (e.g. the {ALL,0} row `+ model` pushes) evict a real row from the Map and then
-      // get discarded itself by the filter, deleting the live term entirely. Filtering
-      // first means only real (model + amount>0) rows compete for a model slot; a
-      // genuine duplicate among survivors still resolves last-wins.
-      const kept = rows.filter(r => r.model && Number(r.amount) > 0);
-      const deduped = [...new Map(kept.map(r => [r.model, r])).values()];
-      saveTerms(partnerId, { [rowsKey]: deduped });
-    }
-  });
 }
 
 async function parseKaExcel(file) {

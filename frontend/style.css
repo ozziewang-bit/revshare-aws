@@ -915,3 +915,5 @@ table.table tr:last-child td { border-bottom: none; }
 .ct-alert-soon { color: var(--warn); }
 .ct-none { color: var(--ink-soft); font-weight: 600; }
 .ct-inactive { color: var(--ink-faint); text-decoration: line-through; text-decoration-thickness: 1px; }
+.ct-terms { color: var(--accent); cursor: pointer; }
+.ct-terms:hover { text-decoration: underline; }
