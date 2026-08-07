@@ -456,6 +456,9 @@ function renderNav() {
 
 function setActiveNav(id) {
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.id === id));
+  // The merchant grid is ~2400px of columns; the app's 1100px content column hides most
+  // of them behind a scrollbar. Let this one screen use the whole window.
+  document.getElementById('main')?.classList.toggle('main-wide', id === 'nav-contracts');
 }
 
 
@@ -649,30 +652,49 @@ let PARTNERS_BY_ID = new Map();
 let MACHINE_MODELS_CACHE = [];
 
 const CONTRACT_GRID_COLUMNS = [
-  { key: 'merchantName',          label: 'Merchant',      type: 'text',   width: 190 },
-  { key: 'merchantType',          label: 'Type',          type: 'select', width: 150 },
-  { key: 'counterParty',          label: 'Counter party', type: 'text',   width: 220 },
-  { key: 'contactName',           label: 'Contact',       type: 'text',   width: 150 },
-  { key: 'contactPhone',          label: 'Phone',         type: 'text',   width: 130 },
-  { key: 'contactEmail',          label: 'Email',         type: 'text',   width: 190 },
-  { key: 'installedUnits',        label: 'Units',         type: 'number', width: 70  },
-  { key: 'units.S5',              label: 'S5',            type: 'number', width: 60  },
-  { key: 'units.S8',              label: 'S8',            type: 'number', width: 60  },
-  { key: 'units.M10',             label: 'M10',           type: 'number', width: 60  },
-  { key: 'units.L20',             label: 'L20',           type: 'number', width: 60  },
-  { key: 'units.L40',             label: 'L40',           type: 'number', width: 60  },
-  { key: 'startDate',             label: 'Start',         type: 'date',   width: 120 },
-  { key: 'endDate',               label: 'End',           type: 'date',   width: 120 },
-  { key: 'terminationNoticeDays', label: 'Notice (d)',    type: 'number', width: 90  },
-  { key: 'declineToRenew',        label: 'Decline',       type: 'bool',   width: 80  },
-  { key: 'autoRenewal',           label: 'Auto-renewal',  type: 'select', width: 170 },
-  { key: 'contractLink',          label: 'Contract',      type: 'url',    width: 110 },
-  { key: 'term.method',      label: 'Mode',         type: 'term-mode',  width: 160 },
-  { key: 'term.gpPercent',   label: 'Rev-share %',  type: 'term-num',   width: 100 },
-  { key: 'term.placement',   label: 'Fixed rental', type: 'term-model', width: 130 },
-  { key: 'term.electricity', label: 'Electricity',  type: 'term-num',   width: 100 },
-  { key: 'term.mg',          label: 'Min guarantee',type: 'term-model', width: 140 },
+  { key: 'merchantName',          label: 'Merchant',      type: 'text',   width: 165 , group: 'id' },
+  { key: 'merchantType',          label: 'Type',          type: 'select', width: 120 , group: 'id' },
+  { key: 'counterParty',          label: 'Counter party', type: 'text',   width: 175 , group: 'id' },
+  { key: 'contactName',           label: 'Contact',       type: 'text',   width: 125 , group: 'contact' },
+  { key: 'contactPhone',          label: 'Phone',         type: 'text',   width: 110 , group: 'contact' },
+  { key: 'contactEmail',          label: 'Email',         type: 'text',   width: 160 , group: 'contact' },
+  { key: 'installedUnits',        label: 'Units',         type: 'number', width: 55  , group: 'machines' },
+  { key: 'units.S5',              label: 'S5',            type: 'number', width: 46  , group: 'machines' },
+  { key: 'units.S8',              label: 'S8',            type: 'number', width: 46  , group: 'machines' },
+  { key: 'units.M10',             label: 'M10',           type: 'number', width: 50  , group: 'machines' },
+  { key: 'units.L20',             label: 'L20',           type: 'number', width: 46  , group: 'machines' },
+  { key: 'units.L40',             label: 'L40',           type: 'number', width: 46  , group: 'machines' },
+  { key: 'startDate',             label: 'Start',         type: 'date',   width: 108 , group: 'contract' },
+  { key: 'endDate',               label: 'End',           type: 'date',   width: 108 , group: 'contract' },
+  { key: 'terminationNoticeDays', label: 'Notice',        type: 'number', width: 68  , group: 'contract' },
+  { key: 'declineToRenew',        label: 'Decline',       type: 'bool',   width: 62  , group: 'contract' },
+  { key: 'autoRenewal',           label: 'Auto-renewal',  type: 'select', width: 135 , group: 'contract' },
+  { key: 'contractLink',          label: 'Contract',      type: 'url',    width: 80  , group: 'contract' },
+  { key: 'term.method',      label: 'Mode',         type: 'term-mode',  width: 130 , group: 'terms' },
+  { key: 'term.gpPercent',   label: 'Rev-share %',  type: 'term-num',   width: 85  , group: 'terms' },
+  { key: 'term.placement',   label: 'Fixed rental', type: 'term-model', width: 105 , group: 'terms' },
+  { key: 'term.electricity', label: 'Electricity',  type: 'term-num',   width: 85  , group: 'terms' },
+  { key: 'term.mg',          label: 'Min guarantee',type: 'term-model', width: 115 , group: 'terms' },
 ];
+
+// 23 columns is ~2400px — more than a laptop can show at once even full-width. Rather than
+// hiding data behind a horizontal scrollbar, let the user switch whole groups off. `id` has
+// no toggle: the merchant is what identifies the row.
+const CONTRACT_GROUPS = [
+  { key: 'contact',  label: 'Contact'  },
+  { key: 'machines', label: 'Machines' },
+  { key: 'contract', label: 'Contract' },
+  { key: 'terms',    label: 'Share terms' },
+];
+let CONTRACT_GROUPS_ON = (() => {
+  try {
+    const saved = JSON.parse(localStorage.getItem('rs_ct_groups') || 'null');
+    if (saved && typeof saved === 'object') return saved;
+  } catch { /* corrupt or unavailable storage — fall through to all-on */ }
+  return Object.fromEntries(CONTRACT_GROUPS.map(g => [g.key, true]));
+})();
+const visibleContractColumns = () =>
+  CONTRACT_GRID_COLUMNS.filter(c => !c.group || c.group === 'id' || CONTRACT_GROUPS_ON[c.group]);
 
 const MERCHANT_TYPES = ['F&B', 'Hospitality', 'Lifestyle', 'Shopping Malls', 'Nightlife',
                         'Exhibition Center', 'Convenience Store', 'other'];
@@ -765,7 +787,7 @@ function termCellHtml(c, col) {
 function contractRowHtml(c) {
   const d = daysToEnd(c);
   const cls = d == null ? '' : (d < 0 ? 'ct-expired' : (d <= 60 ? 'ct-soon' : ''));
-  const cells = CONTRACT_GRID_COLUMNS.map((col, i) => {
+  const cells = visibleContractColumns().map((col, i) => {
     const v = cellValue(c, col.key);
     let disp;
     if (col.type && col.type.startsWith('term-')) disp = termCellHtml(c, col);
@@ -911,6 +933,7 @@ async function parseAllMerchantSheet(file) {
 
 async function renderContractsScreen() {
   const el = document.getElementById('main');
+  el.classList.add('main-wide');   // also covers the boot path, which doesn't go via setActiveNav
   el.innerHTML = '<h1>Merchant view</h1><p class="muted">Loading…</p>';
   const [contracts, partners, machineModels] = await Promise.all([
     api('/contracts'), api('/partners'), api('/machine-models')
@@ -918,9 +941,9 @@ async function renderContractsScreen() {
   CONTRACTS = contracts;
   PARTNERS_BY_ID = new Map(partners.map(p => [p.partnerId, p]));
   MACHINE_MODELS_CACHE = machineModels;
-  const head = CONTRACT_GRID_COLUMNS
+  const head = visibleContractColumns()
     .map((c, i) => `<th style="min-width:${c.width}px"${i === 0 ? ' class="ct-sticky"' : ''}>${c.label}</th>`)
-    .join('') + '<th style="min-width:150px">Partner</th><th style="min-width:44px"></th>';
+    .join('') + '<th style="min-width:125px">Partner</th><th style="min-width:38px"></th>';
   el.innerHTML = `
     <h1>Merchant view</h1>
     <div class="ct-toolbar">
@@ -935,12 +958,21 @@ async function renderContractsScreen() {
       </select>
       ${can('manageMerchants') ? '<button type="button" id="ct-new" class="btn btn-primary">+ New merchant</button>' : ''}
       ${can('manageMerchants') ? '<button type="button" id="ct-file-choose" class="btn">Upload sheet</button><input type="file" id="ct-file" accept=".xlsx" style="display:none">' : ''}
+      <span class="ct-groups">${CONTRACT_GROUPS.map(g => `<label><input type="checkbox" data-group="${g.key}"${CONTRACT_GROUPS_ON[g.key] ? ' checked' : ''}> ${g.label}</label>`).join('')}</span>
       <span class="muted" id="ct-count"></span>
     </div>
     <div class="ct-scroll"><table class="ct-table"><thead><tr>${head}</tr></thead>
       <tbody id="ct-body"></tbody></table></div>`;
   ['ct-search', 'ct-type', 'ct-sort'].forEach(id =>
     el.querySelector('#' + id).addEventListener('input', paintContracts));
+  // Toggling a group changes the header too, so re-render the whole screen rather than
+  // just repainting rows — otherwise the <th>s and <td>s fall out of alignment.
+  el.querySelectorAll('.ct-groups input[data-group]').forEach(cb =>
+    cb.addEventListener('change', () => {
+      CONTRACT_GROUPS_ON = { ...CONTRACT_GROUPS_ON, [cb.dataset.group]: cb.checked };
+      try { localStorage.setItem('rs_ct_groups', JSON.stringify(CONTRACT_GROUPS_ON)); } catch { /* private mode */ }
+      renderContractsScreen();
+    }));
   paintContracts();
   el.querySelector('#ct-body').addEventListener('click', ev => {
     if (ev.target.closest('a')) return;          // let the contract link open normally

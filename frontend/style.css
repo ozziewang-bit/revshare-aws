@@ -861,3 +861,12 @@ table.table tr:last-child td { border-bottom: none; }
   border-radius: var(--radius-lg); padding: 22px; min-width: 380px; max-width: 92vw;
   box-shadow: var(--shadow-md); }
 .ct-del-btn { color: var(--loss); font-size: 15px; line-height: 1; padding: 2px 7px; }
+
+/* Merchant view needs the whole window — 23 columns do not fit the 1100px content column */
+#main.main-wide { max-width: none; padding-left: 20px; padding-right: 20px; }
+#main.main-wide .ct-table { font-size: 12.5px; }
+#main.main-wide .ct-cell { padding: 6px 8px; }
+#main.main-wide .ct-table th { padding: 8px 8px; }
+.ct-groups { display: inline-flex; gap: 12px; align-items: center; font-size: 12.5px;
+  color: var(--ink-soft); padding-left: 4px; border-left: 1px solid var(--border); }
+.ct-groups label { display: inline-flex; gap: 4px; align-items: center; cursor: pointer; white-space: nowrap; }
