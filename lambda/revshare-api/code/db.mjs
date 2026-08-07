@@ -170,7 +170,7 @@ export async function putBulkRun(bulkRun) {
     uploadedAt: bulkRun.uploadedAt,
     orderCount: bulkRun.orderCount ?? 0,
     merchantCount: bulkRun.merchantCount ?? 0,
-    partnerCount: bulkRun.partnerCount ?? 0,
+    merchantBrandCount: bulkRun.merchantBrandCount ?? 0,
     unmatchedCount: bulkRun.unmatchedCount ?? 0,
     unmatchedOrderCount: bulkRun.unmatchedOrderCount ?? 0,
     unmatchedRevenue: bulkRun.unmatchedRevenue ?? 0,
