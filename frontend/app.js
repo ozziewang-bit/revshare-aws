@@ -812,7 +812,13 @@ function termCellHtml(c, col) {
   const hasRule = !ruleIsAbsent(p.rule);
   const sub = col.key.split('.')[1];
   let disp;
-  if (sub === 'method') disp = hasRule ? escape(methodToName(f.method)) : '';   // blank, not a confident guess, when there's no rule yet
+  if (sub === 'method') {
+    // noPayout is the app's existing "this partner is not paid" flag — bulk runs skip such
+    // partners outright. It is the honest home for "None": the rule is left untouched, so
+    // switching back later restores the terms rather than rebuilding them.
+    if (p.noPayout) return '<span class="ct-none">None</span>';
+    disp = hasRule ? escape(methodToName(f.method)) : '';   // blank, not a confident guess, when there's no rule yet
+  }
   else if (sub === 'gpPercent') disp = f.gpPercent ? escape(String(f.gpPercent)) : '';
   else if (sub === 'electricity') disp = f.electricity ? escape(String(f.electricity)) : '';
   else {
@@ -823,6 +829,12 @@ function termCellHtml(c, col) {
   }
   if (!isRepresentable(p.rule)) {
     return `<span class="ct-locked" title="This rule can't be shown in the simplified grid form — edit it in the partner's Rule tab.">${disp || '—'}</span>`;
+  }
+  // Mode already reads "None"; mute the remaining term cells so the row is coherent. The
+  // values are still shown, and still editable, because they are kept and will apply again
+  // the moment Mode moves off None.
+  if (p.noPayout && disp) {
+    return `<span class="ct-inactive" title="Not paid — kept for when Mode moves off None">${disp}</span>`;
   }
   return disp;
 }
@@ -1108,12 +1120,17 @@ function startCellEdit(td) {
     if (col.type === 'term-mode') {
       const sel = document.createElement('select');
       sel.className = 'ct-input';
-      sel.innerHTML = PAYOUT_METHOD_META.map(m =>
-        `<option value="${m.val}"${m.val === f.method ? ' selected' : ''}>${m.title}</option>`).join('')
+      const isNone = !!p.noPayout;
+      sel.innerHTML = `<option value="__none__"${isNone ? ' selected' : ''}>None — no revenue share</option>`
+        + PAYOUT_METHOD_META.map(m =>
+        `<option value="${m.val}"${!isNone && m.val === f.method ? ' selected' : ''}>${m.title}</option>`).join('')
         + '<option value="" disabled>Sliding Scale (not supported yet)</option>';
       td.innerHTML = ''; td.appendChild(sel); sel.focus();
       sel.addEventListener('change', () => {
         const nextMethod = sel.value;
+        if (nextMethod === '__none__') { setNoPayout(c.partnerId, true); return; }
+        // Coming back from None: clear the flag first, then apply the chosen method.
+        if (isNone) { setNoPayout(c.partnerId, false, () => saveTerms(c.partnerId, { method: nextMethod })); return; }
         const mgRows = f.mgRows || [];
         // WH/HH are the only methods that use MG; switching to Default/Hybrid drops it
         // by construction (compileRule never emits the MG leaf for them) — irreversible
@@ -1224,6 +1241,29 @@ async function saveCell(contractId, key, value) {
 // compiler the Rule tab uses, and PUT. Never builds a rule tree by hand.
 // On failure PARTNERS_BY_ID is left untouched (the pre-edit partner) and the grid
 // repaints from that known-good state — mirrors saveCell's rollback-on-failure.
+// "None" in the Mode column means this partner is not paid a revenue share. That is
+// `noPayout` — the flag bulk-runs already honours (it skips such partners before the
+// no-rule check) and the partner list already badges. Setting it deliberately does NOT
+// touch the stored rule, so switching back later restores the terms intact.
+async function setNoPayout(partnerId, value, then) {
+  const p = PARTNERS_BY_ID.get(partnerId);
+  if (!p || !!p.noPayout === !!value) { paintContracts(); return; }
+  if (value && !ruleIsAbsent(p.rule)) {
+    if (!confirm(`Set "${p.name}" to None?\n\nIt will be skipped in revenue-share runs and paid nothing.\n\nIts existing terms are kept, so switching back to a payout method restores them.`)) {
+      paintContracts(); return;
+    }
+  }
+  try {
+    const updated = await api('/partners/' + encodeURIComponent(partnerId),
+      { method: 'PUT', body: JSON.stringify({ noPayout: !!value }) });
+    PARTNERS_BY_ID.set(partnerId, { ...p, ...updated, noPayout: !!value });
+    if (then) await then(); else paintContracts();
+  } catch (err) {
+    alert('Could not save: ' + err.message);
+    paintContracts();
+  }
+}
+
 async function saveTerms(partnerId, patch) {
   const p = PARTNERS_BY_ID.get(partnerId);
   if (!p) return;
