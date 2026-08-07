@@ -988,49 +988,25 @@ async function renderContractsScreen() {
   el.querySelector('#ct-file')?.addEventListener('change', async ev => {
     const file = ev.target.files[0]; if (!file) return;
     ev.target.value = '';
+    // Import straight in — no match-review step. Rows whose merchant name happens to match
+    // a partner still get linked automatically (free, and reversible from the Partner
+    // column); the rest simply arrive unlinked. Linking is a grid control now, so making it
+    // a gate in front of the import only stood between the user and their data.
+    const btn = el.querySelector('#ct-file-choose');
+    const label = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = 'Importing…'; }
     try {
-      const { rows, skipped } = await parseAllMerchantSheet(file);
-      await renderImportReview(rows, skipped);
-    } catch (err) { alert('Could not read that file: ' + err.message); }
-  });
-}
-
-// Nothing is written until the user confirms. Unmatched names get a partner dropdown;
-// the chosen links are posted alongside the rows.
-async function renderImportReview(rows, skipped) {
-  const partners = await api('/partners');
-  const byName = new Map(partners.map(p => [p.name.toLowerCase().trim(), p]));
-  const names = rows.map(r => String(r[1]).trim());
-  const unmatched = names.filter(n => !byName.has(n.toLowerCase().trim()));
-  const el = document.getElementById('main');
-  const opts = partners.map(p => `<option value="${escape(p.partnerId)}">${escape(p.name)}</option>`).join('');
-  el.innerHTML = `
-    <h1>Import merchant view</h1>
-    <p><strong>${rows.length}</strong> merchant rows read${skipped > 0 && skipped < 50 ? `, ${skipped} blank rows skipped` : ''}.
-       <strong>${names.length - unmatched.length}</strong> matched an existing partner automatically.</p>
-    <p class="muted">Share terms in this sheet are ignored — importing never changes a partner's rule.</p>
-    ${unmatched.length ? `<h2>${unmatched.length} unmatched — link or leave unlinked</h2>
-      <table class="table"><tbody>${unmatched.map(n => `
-        <tr><td>${escape(n)}</td><td>
-          <select class="input ct-link" data-name="${escape(n.toLowerCase().trim())}">
-            <option value="">— keep unlinked —</option>${opts}
-          </select></td></tr>`).join('')}</tbody></table>` : ''}
-    <div style="margin-top:18px;display:flex;gap:10px;">
-      <button id="ct-import-go" class="btn btn-primary">Import ${rows.length} rows</button>
-      <button id="ct-import-cancel" class="btn">Cancel</button>
-    </div>`;
-  el.querySelector('#ct-import-cancel').addEventListener('click', renderContractsScreen);
-  el.querySelector('#ct-import-go').addEventListener('click', async ev => {
-    ev.target.disabled = true; ev.target.textContent = 'Importing…';
-    const links = {};
-    el.querySelectorAll('.ct-link').forEach(s => { if (s.value) links[s.dataset.name] = s.value; });
-    try {
-      const r = await api('/contracts/import', { method: 'POST', body: JSON.stringify({ rows, links }) });
-      alert(`Imported. ${r.created} created, ${r.updated} updated, ${r.linked} linked to partners.`);
-      renderContractsScreen();
+      const { rows } = await parseAllMerchantSheet(file);
+      const r = await api('/contracts/import', { method: 'POST', body: JSON.stringify({ rows, links: {} }) });
+      await renderContractsScreen();
+      alert(`Imported ${rows.length} rows from the sheet.\n\n`
+          + `${r.created} added, ${r.updated} updated.\n`
+          + `${r.linked} linked to an existing partner by name; ${CONTRACTS.length - r.linked} not linked.\n\n`
+          + `Use the Partner column to link any row later.`);
     } catch (err) {
-      alert('Import failed: ' + err.message);
-      ev.target.disabled = false; ev.target.textContent = `Import ${rows.length} rows`;
+      alert('Could not import that file: ' + err.message);
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = label; }
     }
   });
 }
