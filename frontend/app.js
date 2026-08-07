@@ -658,7 +658,7 @@ const CONTRACT_GRID_COLUMNS = [
   { key: 'contactName',           label: 'Contact',       type: 'text',   width: 125 , group: 'contact' },
   { key: 'contactPhone',          label: 'Phone',         type: 'text',   width: 110 , group: 'contact' },
   { key: 'contactEmail',          label: 'Email',         type: 'text',   width: 160 , group: 'contact' },
-  { key: 'installedUnits',        label: 'Units',         type: 'number', width: 55  , group: 'machines' },
+  { key: 'installedUnits',        label: 'Units',         type: 'computed', width: 55 , group: 'machines' },
   { key: 'units.S5',              label: 'S5',            type: 'number', width: 46  , group: 'machines' },
   { key: 'units.S8',              label: 'S8',            type: 'number', width: 46  , group: 'machines' },
   { key: 'units.M10',             label: 'M10',           type: 'number', width: 50  , group: 'machines' },
@@ -699,6 +699,12 @@ const visibleContractColumns = () =>
 const MERCHANT_TYPES = ['F&B', 'Hospitality', 'Lifestyle', 'Shopping Malls', 'Nightlife',
                         'Exhibition Center', 'Convenience Store', 'other'];
 const AUTO_RENEWAL_OPTIONS = ['Yes', 'No (Need to contact)'];
+
+// Units is derived, never typed: it is the sum of the per-model counts. Verified against
+// the source workbook — all 208 rows have a total equal to their model sum, so nothing is
+// lost by computing it, and it can no longer drift from the models beneath it.
+const UNIT_MODEL_KEYS = ['S5', 'S8', 'M10', 'L20', 'L40'];
+const unitsTotal = c => UNIT_MODEL_KEYS.reduce((a, m) => a + (Number((c.units || {})[m]) || 0), 0);
 
 const cellValue = (c, key) => key.includes('.')
   ? (c[key.split('.')[0]] || {})[key.split('.')[1]]
@@ -791,6 +797,7 @@ function contractRowHtml(c) {
     const v = cellValue(c, col.key);
     let disp;
     if (col.type && col.type.startsWith('term-')) disp = termCellHtml(c, col);
+    else if (col.type === 'computed') disp = `<span class="ct-computed" title="Sum of the per-model counts — edit those instead">${unitsTotal(c)}</span>`;
     else if (col.type === 'bool') disp = v ? '✓' : '';
     else if (col.type === 'url') {
       disp = !v ? ''
@@ -1030,6 +1037,7 @@ function startCellEdit(td) {
   if (td.querySelector('input, select')) return;
   const id = td.dataset.id, key = td.dataset.key;
   const col = CONTRACT_GRID_COLUMNS.find(c => c.key === key);
+  if (col && col.type === 'computed') return;   // Units is derived from the model counts
   if (!col) return;
   // Term cells write to the PARTNER (PUT /partners/:id → editPartners); every other
   // column writes to the CONTRACT (PUT /contracts/:id → manageMerchants). Gating both
@@ -1138,6 +1146,7 @@ async function saveCell(contractId, key, value) {
   if (!c) return;
   const dotted = key.includes('.');
   const beforeUnits = dotted ? { ...(c.units || {}) } : null;
+  const beforeInstalled = dotted ? c.installedUnits : undefined;
   const beforeValue = dotted ? undefined : c[key];
   if (dotted) {
     const [obj, sub] = key.split('.');
@@ -1148,10 +1157,14 @@ async function saveCell(contractId, key, value) {
   }
   paintContracts();
   try {
-    const body = dotted ? { units: c.units } : { [key]: value };
+    // Units is displayed as a computed sum, but the stored field is what any future
+    // consumer (export, report, another screen) would read — keep it in step rather than
+    // letting it rot at whatever the sheet last said.
+    if (dotted) c.installedUnits = unitsTotal(c);
+    const body = dotted ? { units: c.units, installedUnits: c.installedUnits } : { [key]: value };
     await api('/contracts/' + encodeURIComponent(contractId), { method: 'PUT', body: JSON.stringify(body) });
   } catch (err) {
-    if (dotted) c.units = beforeUnits; else c[key] = beforeValue;
+    if (dotted) { c.units = beforeUnits; c.installedUnits = beforeInstalled; } else c[key] = beforeValue;
     paintContracts();
     alert('Could not save: ' + err.message);
   }
