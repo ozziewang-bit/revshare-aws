@@ -853,3 +853,11 @@ table.table tr:last-child td { border-bottom: none; }
 .ct-pop-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
 /* Non-representable rule (e.g. tiered_percent/min) — term cell is read-only, edit in the Rule tab. */
 .ct-locked { color: var(--ink-soft); cursor: not-allowed; }
+
+/* Merchant view: link/delete modal */
+.ct-modal { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center;
+  justify-content: center; background: rgba(10,10,10,.32); }
+.ct-modal-card { background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-lg); padding: 22px; min-width: 380px; max-width: 92vw;
+  box-shadow: var(--shadow-md); }
+.ct-del-btn { color: var(--loss); font-size: 15px; line-height: 1; padding: 2px 7px; }

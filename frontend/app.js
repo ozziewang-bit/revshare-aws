@@ -343,7 +343,7 @@ function initApp() {
   const rs = document.getElementById('region-switch');
   if (rs) { rs.value = REGION; rs.onchange = e => switchRegion(e.target.value); }
   renderNav();
-  renderPartnersList();
+  renderContractsScreen();   // Merchant view is the first tab, so it is also the landing screen
 }
 
 function switchRegion(rk) {
@@ -440,11 +440,11 @@ async function renderPartnersList() {
 function renderNav() {
   const nav = document.getElementById('topnav');
   nav.innerHTML = `
-    <button id="nav-partners" class="nav-btn active">Partners</button>
+    <button id="nav-contracts" class="nav-btn active">Merchant view</button>
+    <button id="nav-partners" class="nav-btn">Partners</button>
     ${can('runCalcs') ? '<button id="nav-bulk-runs" class="nav-btn">Run share</button>' : ''}
     <button id="nav-revshare-path" class="nav-btn">Analytics</button>
     <button id="nav-device-types" class="nav-btn">Device Types</button>
-    <button id="nav-contracts" class="nav-btn">Contracts</button>
     ${can('admin') ? '<button id="nav-users" class="nav-btn">Users</button>' : ''}`;
   nav.querySelector('#nav-partners').addEventListener('click', () => { setActiveNav('nav-partners'); renderPartnersList(); });
   nav.querySelector('#nav-bulk-runs')?.addEventListener('click', () => { setActiveNav('nav-bulk-runs'); renderBulkRunsList(); });
@@ -652,6 +652,9 @@ const CONTRACT_GRID_COLUMNS = [
   { key: 'merchantName',          label: 'Merchant',      type: 'text',   width: 190 },
   { key: 'merchantType',          label: 'Type',          type: 'select', width: 150 },
   { key: 'counterParty',          label: 'Counter party', type: 'text',   width: 220 },
+  { key: 'contactName',           label: 'Contact',       type: 'text',   width: 150 },
+  { key: 'contactPhone',          label: 'Phone',         type: 'text',   width: 130 },
+  { key: 'contactEmail',          label: 'Email',         type: 'text',   width: 190 },
   { key: 'installedUnits',        label: 'Units',         type: 'number', width: 70  },
   { key: 'units.S5',              label: 'S5',            type: 'number', width: 60  },
   { key: 'units.S8',              label: 'S8',            type: 'number', width: 60  },
@@ -706,8 +709,16 @@ const roundTripRule = r => compileRule(decompileRule(r));
 // and saveTerms's no-op guard (below) stops an accidental blur from fabricating one.
 function isRepresentable(r) {
   if (!r || !r.type) return true;
+  // An empty sum is "no rule" in all but name. createPartnerRoute defaults every new
+  // partner to {type:'sum',children:[]}, so without this a partner created from the
+  // Link-partner dialog would land in the grid with its term cells already locked —
+  // defeating the flow that created it.
+  if (r.type === 'sum' && !(r.children || []).length) return true;
   return canon(roundTripRule(r)) === canon(r);
 }
+
+// Treat an empty sum as "no rule" everywhere the no-rule guards apply, for the same reason.
+const ruleIsAbsent = r => !r || !r.type || (r.type === 'sum' && !(r.children || []).length);
 
 // compileRule's universal fallback (`zero()`) when every term is empty — a bare 0% GP
 // leaf, whatever payout method it's tagged with. Compared with `_method` stripped: the
@@ -733,7 +744,7 @@ function termCellHtml(c, col) {
   const p = termPartner(c);
   if (!p) return '<span class="muted" title="Link this row to a partner to edit terms">—</span>';
   const f = decompileRule(p.rule);
-  const hasRule = !!(p.rule && p.rule.type);
+  const hasRule = !ruleIsAbsent(p.rule);
   const sub = col.key.split('.')[1];
   let disp;
   if (sub === 'method') disp = hasRule ? escape(methodToName(f.method)) : '';   // blank, not a confident guess, when there's no rule yet
@@ -770,8 +781,107 @@ function contractRowHtml(c) {
     const flag = col.key === 'endDate' ? ` ${cls}` : '';
     return `<td class="ct-cell${sticky}${flag}" data-id="${escape(c.contractId)}" data-key="${col.key}">${disp}</td>`;
   }).join('');
-  const link = c.partnerId ? '' : '<span class="badge badge-warn">unlinked</span>';
-  return `<tr data-id="${escape(c.contractId)}">${cells}<td class="ct-cell">${link}</td></tr>`;
+  // Partner column: the link is what makes the share-term cells usable, so it is a
+  // control rather than a badge. An archived partner keeps its partnerId but drops out
+  // of /partners, so "linked but not found" is its own state — not "unlinked".
+  const p = c.partnerId ? PARTNERS_BY_ID.get(c.partnerId) : null;
+  let partnerCell;
+  if (!c.partnerId) {
+    partnerCell = can('manageMerchants')
+      ? `<button class="btn-ghost ct-link-btn" data-id="${escape(c.contractId)}">Link partner…</button>`
+      : '<span class="badge badge-warn">unlinked</span>';
+  } else if (!p) {
+    partnerCell = '<span class="badge badge-warn" title="Linked to a partner that has been archived">partner archived</span>';
+  } else {
+    partnerCell = can('manageMerchants')
+      ? `<button class="btn-ghost ct-link-btn" data-id="${escape(c.contractId)}" title="Change or remove this link">${escape(p.name)}</button>`
+      : escape(p.name);
+  }
+  const del = can('manageMerchants')
+    ? `<button class="btn-ghost ct-del-btn" data-id="${escape(c.contractId)}" title="Delete this merchant row">×</button>` : '';
+  return `<tr data-id="${escape(c.contractId)}">${cells}<td class="ct-cell">${partnerCell}</td><td class="ct-cell">${del}</td></tr>`;
+}
+
+// ── Merchant view: add / delete / link ─────────────────────────────────────
+
+async function createContractRow() {
+  const name = (prompt('Merchant name') || '').trim();
+  if (!name) return;
+  const clash = CONTRACTS.find(c => (c.merchantName || '').toLowerCase().trim() === name.toLowerCase());
+  if (clash && !confirm(`"${clash.merchantName}" is already in the list. Add a second row with the same name?\n\nA sheet re-import matches on merchant name, so two rows sharing one name will be merged into one on the next import.`)) return;
+  try {
+    const created = await api('/contracts', { method: 'POST', body: JSON.stringify({ merchantName: name }) });
+    CONTRACTS.push(created);
+    document.getElementById('ct-search').value = name;   // filter to it so it isn't lost in 208 rows
+    paintContracts();
+  } catch (err) { alert('Could not create: ' + err.message); }
+}
+
+async function deleteContractRow(contractId) {
+  const c = CONTRACTS.find(x => x.contractId === contractId);
+  if (!c) return;
+  const p = c.partnerId ? PARTNERS_BY_ID.get(c.partnerId) : null;
+  // Deleting a contract never touches the partner or its payout rule — say so, because
+  // the row shows share terms and it is reasonable to fear losing them.
+  const note = p ? `\n\nThe partner "${p.name}" and its payout rule are NOT affected.` : '';
+  if (!confirm(`Delete "${c.merchantName}" from the merchant view?${note}\n\nThis cannot be undone.`)) return;
+  try {
+    await api('/contracts/' + encodeURIComponent(contractId), { method: 'DELETE' });
+    CONTRACTS = CONTRACTS.filter(x => x.contractId !== contractId);
+    paintContracts();
+  } catch (err) { alert('Could not delete: ' + err.message); }
+}
+
+// Linking is what makes the share-term cells usable — without it a row has no rule to
+// write to. Sheet import is the only other way to set this, so it belongs in the grid.
+async function openLinkPartner(contractId) {
+  const c = CONTRACTS.find(x => x.contractId === contractId);
+  if (!c) return;
+  const partners = [...PARTNERS_BY_ID.values()].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  const current = c.partnerId || '';
+  const opts = partners.map(p =>
+    `<option value="${escape(p.partnerId)}"${p.partnerId === current ? ' selected' : ''}>${escape(p.name)}</option>`).join('');
+  const el = document.getElementById('main');
+  const box = document.createElement('div');
+  box.className = 'ct-modal';
+  box.innerHTML = `
+    <div class="ct-modal-card">
+      <h3 style="margin:0 0 12px;">Link "${escape(c.merchantName)}" to a partner</h3>
+      <select id="ct-link-sel" class="input" style="width:100%;">
+        <option value="">— not linked —</option>${opts}
+      </select>
+      <p class="muted" style="font-size:12px;margin:10px 0 0;">The partner owns the payout rule. Linking lets this row's share-term cells edit it.</p>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;">
+        <button type="button" id="ct-link-cancel" class="btn">Cancel</button>
+        <button type="button" id="ct-link-new" class="btn">Create partner "${escape(c.merchantName)}"</button>
+        <button type="button" id="ct-link-save" class="btn btn-primary">Save</button>
+      </div>
+    </div>`;
+  el.appendChild(box);
+  const close = () => box.remove();
+  box.addEventListener('click', ev => { if (ev.target === box) close(); });
+  box.querySelector('#ct-link-cancel').addEventListener('click', close);
+
+  const setLink = async partnerId => {
+    try {
+      const updated = await api('/contracts/' + encodeURIComponent(contractId),
+        { method: 'PUT', body: JSON.stringify({ partnerId: partnerId || null }) });
+      Object.assign(c, updated);
+      close(); paintContracts();
+    } catch (err) { alert('Could not save: ' + err.message); }
+  };
+  box.querySelector('#ct-link-save').addEventListener('click', () => setLink(box.querySelector('#ct-link-sel').value));
+  box.querySelector('#ct-link-new').addEventListener('click', async () => {
+    if (!can('editPartners')) { alert('Creating a partner needs the "Edit partners & rules" permission.'); return; }
+    try {
+      // createPartnerRoute requires all three of name/currency/aggregationMode — omitting
+      // aggregationMode returns 400 missing_fields. 'whole' matches the new-partner form's default.
+      const p = await api('/partners', { method: 'POST',
+        body: JSON.stringify({ name: c.merchantName, currency: CCY, aggregationMode: 'whole' }) });
+      PARTNERS_BY_ID.set(p.partnerId, p);
+      await setLink(p.partnerId);
+    } catch (err) { alert('Could not create partner: ' + err.message); }
+  });
 }
 
 // `All_Merchant` has a two-row header (row 1 groups, row 2 sub-headers); data starts
@@ -801,7 +911,7 @@ async function parseAllMerchantSheet(file) {
 
 async function renderContractsScreen() {
   const el = document.getElementById('main');
-  el.innerHTML = '<h1>Contracts</h1><p class="muted">Loading…</p>';
+  el.innerHTML = '<h1>Merchant view</h1><p class="muted">Loading…</p>';
   const [contracts, partners, machineModels] = await Promise.all([
     api('/contracts'), api('/partners'), api('/machine-models')
   ]);
@@ -810,9 +920,9 @@ async function renderContractsScreen() {
   MACHINE_MODELS_CACHE = machineModels;
   const head = CONTRACT_GRID_COLUMNS
     .map((c, i) => `<th style="min-width:${c.width}px"${i === 0 ? ' class="ct-sticky"' : ''}>${c.label}</th>`)
-    .join('') + '<th>Link</th>';
+    .join('') + '<th style="min-width:150px">Partner</th><th style="min-width:44px"></th>';
   el.innerHTML = `
-    <h1>Contracts</h1>
+    <h1>Merchant view</h1>
     <div class="ct-toolbar">
       <input id="ct-search" class="input" placeholder="Search merchant…" style="max-width:240px">
       <select id="ct-type" class="input" style="max-width:200px">
@@ -823,6 +933,7 @@ async function renderContractsScreen() {
         <option value="name">Sort: merchant</option>
         <option value="end">Sort: contract end</option>
       </select>
+      ${can('manageMerchants') ? '<button type="button" id="ct-new" class="btn btn-primary">+ New merchant</button>' : ''}
       ${can('manageMerchants') ? '<button type="button" id="ct-file-choose" class="btn">Upload sheet</button><input type="file" id="ct-file" accept=".xlsx" style="display:none">' : ''}
       <span class="muted" id="ct-count"></span>
     </div>
@@ -833,9 +944,14 @@ async function renderContractsScreen() {
   paintContracts();
   el.querySelector('#ct-body').addEventListener('click', ev => {
     if (ev.target.closest('a')) return;          // let the contract link open normally
+    const linkBtn = ev.target.closest('.ct-link-btn');
+    if (linkBtn) { openLinkPartner(linkBtn.dataset.id); return; }
+    const delBtn = ev.target.closest('.ct-del-btn');
+    if (delBtn) { deleteContractRow(delBtn.dataset.id); return; }
     const td = ev.target.closest('td.ct-cell');
     if (td && td.dataset.key) startCellEdit(td);
   });
+  el.querySelector('#ct-new')?.addEventListener('click', createContractRow);
   el.querySelector('#ct-file-choose')?.addEventListener('click', () => el.querySelector('#ct-file').click());
   el.querySelector('#ct-file')?.addEventListener('change', async ev => {
     const file = ev.target.files[0]; if (!file) return;
@@ -857,7 +973,7 @@ async function renderImportReview(rows, skipped) {
   const el = document.getElementById('main');
   const opts = partners.map(p => `<option value="${escape(p.partnerId)}">${escape(p.name)}</option>`).join('');
   el.innerHTML = `
-    <h1>Import contracts</h1>
+    <h1>Import merchant view</h1>
     <p><strong>${rows.length}</strong> merchant rows read${skipped > 0 && skipped < 50 ? `, ${skipped} blank rows skipped` : ''}.
        <strong>${names.length - unmatched.length}</strong> matched an existing partner automatically.</p>
     <p class="muted">Share terms in this sheet are ignored — importing never changes a partner's rule.</p>
@@ -1066,7 +1182,7 @@ async function saveTerms(partnerId, patch) {
     rule = compileRule(form);
   }
 
-  const hadNoRule = !(p.rule && p.rule.type);
+  const hadNoRule = ruleIsAbsent(p.rule);
   // Never swallow a patch that carried real data. A method-only patch is not "data" (see
   // the fabrication guard immediately below) and stays silently skipped — but a value the
   // user actually entered must not vanish with no feedback just because, given the
