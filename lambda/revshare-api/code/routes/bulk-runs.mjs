@@ -1,5 +1,6 @@
-import { listMerchants, listPartners, getPartner, putPartner, putMerchant, putBulkRun, listBulkRuns, getBulkRun, deleteBulkRun, listMachineModels, ulid } from '../db.mjs';
+import { listMerchants, putMerchant, putBulkRun, listBulkRuns, getBulkRun, deleteBulkRun, listMachineModels, ulid, listContracts, getContract, putContract } from '../db.mjs';
 import { evaluateRun } from '../engine.mjs';
+import { ruleHasValue, contractNeedsTerms, indexContractsByName, resolveLabel } from '../payout.mjs';
 
 // Run fn over items with at most `limit` in flight. Keeps a full-roster (~1600 writes)
 // well under the 29s API Gateway timeout that a sequential loop would blow past.
@@ -15,12 +16,14 @@ async function mapPool(items, limit, fn) {
 // Roster-authoritative grouping: one row per roster machine (0/0), orders overlaid by
 // merchant name; orders with no roster merchant are unmatched (not paid).
 export function buildRosterRows(roster, orders) {
-  const groups = {};                 // partnerId -> [ {merchantId, merchantName, model, rentals, revenue} ]
-  const byName = {};                 // nameLower -> row (for overlay)
+  const groups = {};                 // contractId -> [ {merchantId, merchantName, model, rentals, revenue} ]
+  const byName = {};                 // nameLower -> row (for order overlay)
   for (const m of roster) {
-    if (!m.partnerId) continue;      // unassigned (no Merchant label) — surfaced separately, not paid
+    // No contract means no merchant-view row for this brand: not paid, by decision, and
+    // surfaced in the run's unmatched list rather than deleted.
+    if (!m.contractId) continue;
     const row = { merchantId: m.merchantId, merchantName: m.name, model: m.model || 'S8', rentals: 0, revenue: 0 };
-    (groups[m.partnerId] = groups[m.partnerId] || []).push(row);
+    (groups[m.contractId] = groups[m.contractId] || []).push(row);
     byName[(m.nameLower || m.name || '').toLowerCase().trim()] = row;
   }
   const unmatchedSet = new Set();
@@ -33,53 +36,53 @@ export function buildRosterRows(roster, orders) {
   return { groups, unmatched: [...unmatchedSet], unmatchedOrderCount, unmatchedRevenue };
 }
 
-// Apply an uploaded merchant roster: create missing partners (by Merchant label = partner
-// name, empty rule), upsert each merchant (partner + machine model), report readiness.
+// A roster row's `Merchant label` is the brand. Resolve it to a Merchant-view row; create
+// one if the brand is new, so a roster upload still onboards merchants. Labels that match
+// nothing are impossible here (we create them) — the unmatched case is the reverse: a
+// store-registry row whose brand has no contract, handled in buildRosterRows.
 export async function applyMerchantRoster(merchants) {
-  const [partners, existingMerchants] = await Promise.all([listPartners(), listMerchants()]);
-  const partnerByName = {};
-  for (const p of partners) if (!p.archived) partnerByName[(p.name || '').toLowerCase().trim()] = p;
+  const [contracts, existingMerchants] = await Promise.all([listContracts(), listMerchants()]);
+  let index = indexContractsByName(contracts);
   const merchantByName = {};
   for (const m of existingMerchants) merchantByName[m.nameLower] = m;
 
-  const unassigned = [], newPartners = [];
-
-  // Pass 1 (in memory): split rows, and collect distinct partner labels that don't exist yet.
+  const unassigned = [], newMerchants = [];
   const validRows = [];
-  const newLabels = new Map();   // lowerLabel -> display label (deduped so each partner is created once)
+  const newLabels = new Map();
   for (const src of merchants) {
     const label = (src.partnerName || '').trim();
     if (!label || label === '-') { unassigned.push(src.name); continue; }
     const key = label.toLowerCase();
-    if (!partnerByName[key] && !newLabels.has(key)) newLabels.set(key, label);
-    validRows.push({ src, key });
+    if (!resolveLabel(index, label) && !newLabels.has(key)) newLabels.set(key, label);
+    validRows.push({ src, label });
   }
 
-  // Pass 2: create the missing partners (deduped → no double-create under concurrency).
-  await mapPool([...newLabels.entries()], 20, async ([key, label]) => {
-    const partner = await putPartner({ partnerId: ulid(), name: label, currency: 'THB', aggregationMode: 'per_store', rule: null, notes: '', archived: false, noPayout: false });
-    partnerByName[key] = partner;
-    newPartners.push(label);
+  await mapPool([...newLabels.values()], 20, async label => {
+    const created = await putContract({ contractId: ulid(), merchantName: label, partnerId: null,
+      units: {}, notes: '', rule: null, aggregationMode: 'per_store', noPayout: false, currency: 'THB' });
+    contracts.push(created);
+    newMerchants.push(label);
   });
+  index = indexContractsByName(contracts);
 
-  // Pass 3: write every merchant concurrently — these are independent, so a bounded pool
-  // turns ~1600 serial writes (which timed out) into a handful of parallel batches.
   const roster = [];
-  const seenPartner = {};
-  await mapPool(validRows, 25, async ({ src, key }) => {
-    const partner = partnerByName[key];
+  const seen = {};
+  await mapPool(validRows, 25, async ({ src, label }) => {
+    const contract = resolveLabel(index, label);
     const ex = merchantByName[(src.name || '').toLowerCase().trim()];
     const merchantId = ex?.merchantId || ulid();
-    const saved = await putMerchant({ merchantId, createdAt: ex?.createdAt, name: src.name, partnerId: partner.partnerId, machineModel: src.model || null, externalId: src.externalId || ex?.externalId || null, notes: ex?.notes || '' });
-    roster.push({ merchantId, name: src.name, nameLower: saved.nameLower, partnerId: partner.partnerId, model: src.model || null });
-    seenPartner[partner.partnerId] = partner;
+    const saved = await putMerchant({ merchantId, createdAt: ex?.createdAt, name: src.name,
+      contractId: contract.contractId, partnerId: ex?.partnerId ?? null,
+      machineModel: src.model || null, externalId: src.externalId || ex?.externalId || null, notes: ex?.notes || '' });
+    roster.push({ merchantId, name: src.name, nameLower: saved.nameLower, contractId: contract.contractId, model: src.model || null });
+    seen[contract.contractId] = contract;
   });
 
-  const partnersNeedingRules = Object.values(seenPartner)
-    .filter(p => !p.noPayout && (!p.rule || !p.rule.type))
-    .map(p => ({ partnerId: p.partnerId, name: p.name }));
+  const merchantsNeedingTerms = Object.values(seen)
+    .filter(contractNeedsTerms)
+    .map(c => ({ contractId: c.contractId, name: c.merchantName }));
 
-  return { roster, partnersNeedingRules, unassigned, newPartners };
+  return { roster, merchantsNeedingTerms, unassigned, newMerchants };
 }
 
 export function groupOrders(orders, merchantMap) {
@@ -110,9 +113,9 @@ export async function prepareBulkRunRoute(event) {
   const body = JSON.parse(event.body || '{}');
   const merchants = Array.isArray(body.merchants) ? body.merchants : [];
   if (!merchants.length) return resp(400, { error: 'no_merchants' });
-  const { roster, partnersNeedingRules, unassigned, newPartners } = await applyMerchantRoster(merchants);
-  const partnerCount = new Set(roster.map(r => r.partnerId)).size;
-  return resp(200, { rosterCount: roster.length, partnerCount, newPartners, unassigned, partnersNeedingRules });
+  const { roster, merchantsNeedingTerms, unassigned, newMerchants } = await applyMerchantRoster(merchants);
+  const merchantBrandCount = new Set(roster.map(r => r.contractId)).size;
+  return resp(200, { rosterCount: roster.length, merchantBrandCount, newMerchants, unassigned, merchantsNeedingTerms });
 }
 
 export async function createBulkRunRoute(event) {
@@ -132,32 +135,32 @@ export async function createBulkRunRoute(event) {
   const ruleSnapshots = {};
   const warnings = [];
 
-  // Pre-fetch every partner in parallel (bounded) instead of one await per group.
-  const partnerIds = Object.keys(groups);
-  const fetched = await mapPool(partnerIds, 25, id => getPartner(id));
-  const partnerById = {};
-  partnerIds.forEach((id, i) => { partnerById[id] = fetched[i]; });
+  // Pre-fetch every contract in parallel (bounded) instead of one await per group.
+  const contractIds = Object.keys(groups);
+  const fetched = await mapPool(contractIds, 25, id => getContract(id));
+  const contractById = {};
+  contractIds.forEach((id, i) => { contractById[id] = fetched[i]; });
 
-  for (const [partnerId, merchantRows] of Object.entries(groups)) {
-    const partner = partnerById[partnerId];
-    if (!partner) { warnings.push(`Partner ${partnerId} not found, skipped`); continue; }
-    if (partner.noPayout) continue;
-    if (!partner.rule || !partner.rule.type) { warnings.push(`Partner "${partner.name}" has no rule, skipped`); continue; }
+  for (const [contractId, merchantRows] of Object.entries(groups)) {
+    const contract = contractById[contractId];
+    if (!contract) { warnings.push(`Merchant ${contractId} not found, skipped`); continue; }
+    if (contract.noPayout) continue;
+    if (!ruleHasValue(contract.rule)) { warnings.push(`"${contract.merchantName}" has no terms that pay, skipped`); continue; }
 
     const engineRows = merchantRows.map(m => ({ storeId: m.merchantId, machineSerial: m.merchantId, model: m.model, rentals: m.rentals, revenue: m.revenue }));
     let result;
     try {
-      result = evaluateRun({ rule: partner.rule, rows: engineRows, aggregationMode: partner.aggregationMode, allowedModels });
+      result = evaluateRun({ rule: contract.rule, rows: engineRows, aggregationMode: contract.aggregationMode, allowedModels });
     } catch (e) {
-      warnings.push(`Partner "${partner.name}" calculation error: ${e.message}`);
+      warnings.push(`"${contract.merchantName}" calculation error: ${e.message}`);
       continue;
     }
 
-    ruleSnapshots[partnerId] = partner.rule;
+    ruleSnapshots[contractId] = contract.rule;
     results.push({
-      partnerId,
-      partnerName: partner.name,
-      currency: partner.currency,
+      contractId,
+      merchantName: contract.merchantName,
+      currency: contract.currency,
       merchantCount: merchantRows.length,
       rentals: merchantRows.reduce((s, m) => s + m.rentals, 0),
       revenue: merchantRows.reduce((s, m) => s + m.revenue, 0),
@@ -174,7 +177,7 @@ export async function createBulkRunRoute(event) {
     uploadedAt: new Date().toISOString(),
     orderCount: orders.length,
     merchantCount: Object.values(groups).flat().length,
-    partnerCount: results.length,
+    merchantBrandCount: results.length,
     rosterCount: roster.length,
     unassignedCount: unassigned.length,
     unmatchedCount: unmatched.length,
