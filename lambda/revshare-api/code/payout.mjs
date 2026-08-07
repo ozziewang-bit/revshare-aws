@@ -30,6 +30,7 @@ const key = s => String(s || '').toLowerCase().trim();
 export function indexContractsByName(contracts) {
   const idx = new Map();
   for (const c of contracts || []) {
+    if (!c) continue;
     const k = key(c.merchantName);
     if (k && !idx.has(k)) idx.set(k, c);
   }

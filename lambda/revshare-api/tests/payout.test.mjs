@@ -71,3 +71,14 @@ test('indexContractsByName: later duplicates do not silently win', () => {
   ]);
   assert.equal(resolveLabel(idx, 'IMPACT').contractId, 'c1');   // first wins, deterministically
 });
+
+test('indexContractsByName: skips null/undefined holes without throwing', () => {
+  const idx = indexContractsByName([
+    { contractId: 'c1', merchantName: 'A' },
+    null,
+    undefined,
+    { contractId: 'c2', merchantName: 'B' },
+  ]);
+  assert.equal(resolveLabel(idx, 'A').contractId, 'c1');
+  assert.equal(resolveLabel(idx, 'B').contractId, 'c2');
+});
