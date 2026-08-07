@@ -765,17 +765,17 @@ const roundTripRule = r => compileRule(decompileRule(r));
 
 // A rule is representable in the grid's five-term form when decompiling then
 // recompiling reproduces it exactly. Non-representable shapes (tiered_percent, min, or
-// anything else compileRule can't emit) must stay edit-in-the-Rule-tab-only — the grid's
-// round trip would otherwise silently collapse them to "percent ALL 0%". A partner with
-// no rule at all is always representable: creating a rule from the grid is legitimate,
-// terms are only ever written through the partner dialog's tree editor, which cannot
-// fabricate one by accident.
+// anything else compileRule can't emit) show as "custom" in the grid rather than the
+// simplified summary — the terms editor's tree editor can still open and edit them (via
+// its raw-JSON mode), this flag only gates whether the grid's one-line label can describe
+// them honestly. A contract with no rule at all is always representable: creating one
+// from the grid is legitimate, terms are only ever written through the terms editor's
+// tree editor, which cannot fabricate a rule by accident.
 function isRepresentable(r) {
   if (!r || !r.type) return true;
-  // An empty sum is "no rule" in all but name. createPartnerRoute defaults every new
-  // partner to {type:'sum',children:[]}, so without this a partner created from the
-  // Link-partner dialog would land in the grid with its term cells already locked —
-  // defeating the flow that created it.
+  // An empty sum is "no rule" in all but name — the same shape the tree editor starts a
+  // brand new rule from, so without this a freshly-started row would land back in the
+  // grid with its term cells already locked, defeating the flow that created it.
   if (r.type === 'sum' && !(r.children || []).length) return true;
   return canon(roundTripRule(r)) === canon(r);
 }
@@ -1051,9 +1051,10 @@ async function renderContractsScreen() {
     const file = ev.target.files[0]; if (!file) return;
     ev.target.value = '';
     // Import straight in — no match-review step. Rows whose merchant name happens to match
-    // a partner still get linked automatically (free, and reversible from the Partner
-    // column); the rest simply arrive unlinked. Linking is a grid control now, so making it
-    // a gate in front of the import only stood between the user and their data.
+    // an existing partner record still get that link noted on the row (informational only
+    // — it does not carry terms); the rest simply arrive unlinked. Revenue-share terms are
+    // set per row via Edit terms, so making linking a gate in front of the import only
+    // stood between the user and their data.
     const btn = el.querySelector('#ct-file-choose');
     const label = btn ? btn.textContent : '';
     if (btn) { btn.disabled = true; btn.textContent = 'Importing…'; }
@@ -1063,8 +1064,8 @@ async function renderContractsScreen() {
       await renderContractsScreen();
       alert(`Imported ${rows.length} rows from the sheet.\n\n`
           + `${r.created} added, ${r.updated} updated.\n`
-          + `${r.linked} linked to an existing partner by name; ${CONTRACTS.length - r.linked} not linked.\n\n`
-          + `Use the Partner column to link any row later.`);
+          + `${r.linked} matched an existing partner record by name; ${CONTRACTS.length - r.linked} did not.\n\n`
+          + `Use Edit terms on a row to set its revenue-share terms.`);
     } catch (err) {
       alert('Could not import that file: ' + err.message);
     } finally {
