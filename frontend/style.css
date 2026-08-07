@@ -872,3 +872,6 @@ table.table tr:last-child td { border-bottom: none; }
 .ct-groups label { display: inline-flex; gap: 4px; align-items: center; cursor: pointer; white-space: nowrap; }
 .ct-computed { color: var(--ink-soft); }
 .ct-unit { color: var(--ink-faint); }
+.ct-alert { margin-right: 5px; font-size: 12px; cursor: default; }
+.ct-alert-over { color: var(--loss); }
+.ct-alert-soon { color: var(--warn); }

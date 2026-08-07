@@ -830,6 +830,11 @@ function contractRowHtml(c) {
     // `suffix` is display-only — the editor still shows the bare number, so typing and
     // saving are unaffected.
     else disp = v == null || v === '' ? '' : escape(String(v)) + (col.suffix ? `<span class="ct-unit">${escape(col.suffix)}</span>` : '');
+    // The End-date highlight only helps if that column is on screen; the Merchant column is
+    // frozen, so the icon rides there and the row stays spottable however far you scroll.
+    if (i === 0 && rf.cls) {
+      disp = `<span class="ct-alert ${rf.cls === 'ct-expired' ? 'ct-alert-over' : 'ct-alert-soon'}" title="${escape(rf.title)}">⚠</span>` + disp;
+    }
     const sticky = i === 0 ? ' ct-sticky' : '';
     const flag = col.key === 'endDate' && rf.cls ? ` ${rf.cls}` : '';
     const tip = col.key === 'endDate' && rf.title ? ` title="${escape(rf.title)}"` : '';
