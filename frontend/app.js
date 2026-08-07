@@ -670,7 +670,8 @@ const CONTRACT_GRID_COLUMNS = [
   { key: 'declineToRenew',        label: 'Decline',       type: 'bool',   width: 62  , group: 'contract' },
   { key: 'autoRenewal',           label: 'Auto-renewal',  type: 'select', width: 135 , group: 'contract' },
   { key: 'contractLink',          label: 'Contract',      type: 'url',    width: 80  , group: 'contract' },
-  { key: 'term.summary',     label: 'Rev terms',    type: 'term-summary', width: 240, group: 'terms' },
+  { key: 'term.method',      label: 'Mode',         type: 'term-mode',    width: 130, group: 'terms' },
+  { key: 'term.summary',     label: 'Rev terms',    type: 'term-summary', width: 230, group: 'terms' },
 ];
 
 // 23 columns is ~2400px — more than a laptop can show at once even full-width. Rather than
@@ -791,18 +792,31 @@ function termPartner(c) {
   return c.partnerId ? (PARTNERS_BY_ID.get(c.partnerId) || null) : null;
 }
 
-function termCellHtml(c) {
+function termCellHtml(c, col) {
+  const sub = col.key.split('.')[1];          // 'method' | 'summary'
   const p = termPartner(c);
-  if (!p) return '<span class="muted" title="Add a partner for this merchant to set revenue-share terms">—</span>';
-  if (p.noPayout) return '<span class="ct-none" title="Not paid — skipped in revenue-share runs">None</span>';
-  if (ruleIsAbsent(p.rule)) return '<span class="muted" title="No terms set yet">not set</span>';
-  if (!isRepresentable(p.rule)) {
-    return '<span class="ct-terms ct-locked" title="Shown in full when clicked">custom rule ›</span>';
+  if (!p) {
+    return sub === 'method' ? '<span class="ct-empty">–</span>'
+      : '<span class="muted" title="Add a partner for this merchant to set revenue-share terms">—</span>';
   }
+  if (p.noPayout) return '<span class="ct-none" title="Not paid — skipped in revenue-share runs">None</span>';
+  if (ruleIsAbsent(p.rule)) {
+    return sub === 'method' ? '<span class="ct-empty">–</span>' : '<span class="muted" title="No terms set yet">not set</span>';
+  }
+  // A rule the simplified form can't express (tiered_percent, min, nested shapes) has no
+  // honest one-word mode and no one-line formula — say so rather than print a wrong label.
+  if (!isRepresentable(p.rule)) {
+    return sub === 'method'
+      ? '<span class="ct-locked" title="A rule shape the simplified form cannot label">custom</span>'
+      : '<span class="ct-terms ct-locked" title="Click for the full breakdown">custom rule ›</span>';
+  }
+  const f = decompileRule(p.rule);
+  if (sub === 'method') return escape(methodToName(f.method));
   // The same one-line formula the partner Rule tab shows, so the two screens describe a
   // rule identically rather than each inventing a wording.
-  return `<span class="ct-terms" title="Click for the full breakdown">${escape(payoutFormula(decompileRule(p.rule)))}</span>`;
+  return `<span class="ct-terms" title="Click for the full breakdown">${escape(payoutFormula(f))}</span>`;
 }
+
 
 
 function contractRowHtml(c) {
@@ -811,7 +825,7 @@ function contractRowHtml(c) {
   const cells = visibleContractColumns().map((col, i) => {
     const v = cellValue(c, col.key);
     let disp;
-    if (col.type && col.type.startsWith('term-')) disp = termCellHtml(c);
+    if (col.type && col.type.startsWith('term-')) disp = termCellHtml(c, col);
     else if (col.type === 'computed') disp = `<span class="ct-computed" title="Sum of the per-model counts — edit those instead">${unitsTotal(c)}</span>`;
     else if (col.type === 'bool') disp = v ? '✓' : '';
     else if (col.type === 'url') {
