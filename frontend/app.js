@@ -857,13 +857,13 @@ function contractRowHtml(c) {
   let partnerCell;
   if (!c.partnerId) {
     partnerCell = can('manageMerchants')
-      ? `<button class="btn-ghost ct-pe-btn" data-id="${escape(c.contractId)}">+ Add partner</button>`
-      : '<span class="badge badge-warn">no partner</span>';
+      ? `<button class="btn-ghost ct-pe-btn" data-id="${escape(c.contractId)}">Set terms…</button>`
+      : '<span class="badge badge-warn">no terms</span>';
   } else if (!p) {
     partnerCell = '<span class="badge badge-warn" title="Linked to a partner that has been archived">partner archived</span>';
   } else {
     partnerCell = can('manageMerchants')
-      ? `<button class="btn-ghost ct-pe-btn" data-id="${escape(c.contractId)}" title="Edit this partner and its revenue-share terms">${escape(p.name)}</button>`
+      ? `<button class="btn-ghost ct-pe-btn" data-id="${escape(c.contractId)}" title="Edit revenue-share terms, aggregation and payout status">Edit…</button>`
       : escape(p.name);
   }
   const del = can('manageMerchants')
@@ -943,41 +943,39 @@ async function openPartnerEditor(contractId) {
   const c = CONTRACTS.find(x => x.contractId === contractId);
   if (!c) return;
   const existing = c.partnerId ? PARTNERS_BY_ID.get(c.partnerId) : null;
-  const partners = [...PARTNERS_BY_ID.values()].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
   const { card, close } = ctModal(720);
   card.innerHTML = `
-    <h3 style="margin:0 0 4px;">${existing ? 'Update' : 'Add'} partner — ${escape(c.merchantName)}</h3>
-    <p class="muted" style="margin:0 0 16px;font-size:12.5px;">The partner owns the revenue-share terms. One partner can cover several merchants.</p>
-    <label style="display:block;margin-bottom:12px;font-size:12.5px;color:var(--ink-soft);">Partner
-      <select id="ct-pe-partner" class="input" style="width:100%;margin-top:4px;">
-        <option value="">— none —</option>
-        <option value="__new__">+ Create a new partner called "${escape(c.merchantName)}"</option>
-        ${partners.map(p => `<option value="${escape(p.partnerId)}"${existing && p.partnerId === existing.partnerId ? ' selected' : ''}>${escape(p.name)}</option>`).join('')}
-      </select>
-    </label>
-    <label class="nopay-toggle" style="display:flex;gap:8px;align-items:center;margin-bottom:14px;font-size:13px;">
-      <input type="checkbox" id="ct-pe-nopay"${existing && existing.noPayout ? ' checked' : ''}> No revenue share — not paid
-    </label>
+    <h3 style="margin:0 0 4px;">Revenue-share terms — ${escape(c.merchantName)}</h3>
+    <p class="muted" style="margin:0 0 16px;font-size:12.5px;">
+      ${existing ? `Stored against partner <strong>${escape(existing.name)}</strong>.`
+                 : 'Saving creates the payout record for this merchant.'}
+    </p>
+    <div style="display:flex;gap:16px;align-items:flex-start;margin-bottom:14px;flex-wrap:wrap;">
+      <label style="font-size:12.5px;color:var(--ink-soft);">Aggregation
+        <select id="ct-pe-agg" class="input" style="min-width:230px;display:block;margin-top:4px;">
+          <option value="whole"${!existing || existing.aggregationMode !== 'per_store' ? ' selected' : ''}>Whole — one calculation across all stores</option>
+          <option value="per_store"${existing && existing.aggregationMode === 'per_store' ? ' selected' : ''}>Per store — calculate each store separately</option>
+        </select>
+      </label>
+      <label class="nopay-toggle" style="display:flex;gap:8px;align-items:center;font-size:13px;margin-top:22px;">
+        <input type="checkbox" id="ct-pe-nopay"${existing && existing.noPayout ? ' checked' : ''}> No revenue share — not paid
+      </label>
+    </div>
+    <p class="muted" style="margin:-6px 0 14px;font-size:11.5px;">
+      Per store matters when a minimum guarantee should apply to each store on its own — under
+      Whole the guarantee collapses to the partner total and small stores lose their floor.
+    </p>
     <div id="ct-pe-rule"></div>
     <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:18px;">
       <button type="button" id="ct-pe-cancel" class="btn">Cancel</button>
       <button type="button" id="ct-pe-save" class="btn btn-primary">Save</button>
     </div>`;
   const ruleBox = card.querySelector('#ct-pe-rule');
-  let editor = renderStructuredRuleEditor(ruleBox, existing ? existing.rule : null, MACHINE_MODELS_CACHE, { readOnly: false });
-
-  const sel = card.querySelector('#ct-pe-partner');
+  const editor = renderStructuredRuleEditor(ruleBox, existing ? existing.rule : null, MACHINE_MODELS_CACHE, { readOnly: false });
   const nopay = card.querySelector('#ct-pe-nopay');
+  const agg = card.querySelector('#ct-pe-agg');
   const dim = () => { ruleBox.style.opacity = nopay.checked ? '.45' : '1'; ruleBox.style.pointerEvents = nopay.checked ? 'none' : ''; };
   nopay.addEventListener('change', dim); dim();
-  // Switching to a different existing partner must reload that partner's rule — otherwise
-  // Save would write the previously shown partner's terms onto the newly chosen one.
-  sel.addEventListener('change', () => {
-    const p = PARTNERS_BY_ID.get(sel.value);
-    nopay.checked = !!(p && p.noPayout);
-    editor = renderStructuredRuleEditor(ruleBox, p ? p.rule : null, MACHINE_MODELS_CACHE, { readOnly: false });
-    dim();
-  });
   card.querySelector('#ct-pe-cancel').addEventListener('click', close);
 
   card.querySelector('#ct-pe-save').addEventListener('click', async ev => {
@@ -985,21 +983,21 @@ async function openPartnerEditor(contractId) {
     try {
       let rule;
       try { rule = editor.getRule(); } catch (e) { alert('Invalid rule: ' + e.message); return; }
-      let partnerId = sel.value;
-      if (partnerId === '__new__') {
-        if (!can('editPartners')) { alert('Creating a partner needs the "Edit partners & rules" permission.'); return; }
+      if (existing) {
+        const updated = await api('/partners/' + encodeURIComponent(existing.partnerId), { method: 'PUT',
+          body: JSON.stringify({ rule, noPayout: nopay.checked, aggregationMode: agg.value }) });
+        PARTNERS_BY_ID.set(existing.partnerId,
+          { ...existing, ...updated, rule, noPayout: nopay.checked, aggregationMode: agg.value });
+      } else {
+        // No payout record yet: create one named after the merchant. The run pipeline
+        // resolves an order report's merchant label to a partner BY NAME, so the name must
+        // match the merchant exactly — which is why it is taken from the row, not typed.
+        if (!can('editPartners')) { alert('This needs the "Edit partners & rules" permission.'); return; }
         const created = await api('/partners', { method: 'POST', body: JSON.stringify({
-          name: c.merchantName, currency: CCY, aggregationMode: 'whole', rule, noPayout: nopay.checked }) });
+          name: c.merchantName, currency: CCY, aggregationMode: agg.value, rule, noPayout: nopay.checked }) });
         PARTNERS_BY_ID.set(created.partnerId, created);
-        partnerId = created.partnerId;
-      } else if (partnerId) {
-        const updated = await api('/partners/' + encodeURIComponent(partnerId), { method: 'PUT',
-          body: JSON.stringify({ rule, noPayout: nopay.checked }) });
-        PARTNERS_BY_ID.set(partnerId, { ...PARTNERS_BY_ID.get(partnerId), ...updated, rule, noPayout: nopay.checked });
-      }
-      if ((c.partnerId || '') !== (partnerId || '')) {
         const savedContract = await api('/contracts/' + encodeURIComponent(contractId), { method: 'PUT',
-          body: JSON.stringify({ partnerId: partnerId || null }) });
+          body: JSON.stringify({ partnerId: created.partnerId }) });
         Object.assign(c, savedContract);
       }
       close(); paintContracts();
