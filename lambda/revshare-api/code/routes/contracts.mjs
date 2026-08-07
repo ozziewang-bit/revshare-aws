@@ -10,6 +10,9 @@ const WRITABLE = [
   // Contact details are entered in the app, not imported — the source workbook has no
   // contact columns, so the importer never sets these and a re-import never clears them.
   'contactName', 'contactPhone', 'contactEmail',
+  // The contract is the payout entity now: it owns the rule, how it aggregates, whether it
+  // is paid at all, and in which currency. These were PARTNER fields until 2026-08-07.
+  'rule', 'aggregationMode', 'noPayout', 'currency',
 ];
 
 function pick(body) {
