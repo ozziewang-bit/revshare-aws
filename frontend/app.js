@@ -863,7 +863,7 @@ function contractRowHtml(c) {
     partnerCell = '<span class="badge badge-warn" title="Linked to a partner that has been archived">partner archived</span>';
   } else {
     partnerCell = can('manageMerchants')
-      ? `<button class="btn-ghost ct-pe-btn" data-id="${escape(c.contractId)}" title="Update this partner and its revenue-share terms">${escape(p.name)}</button>`
+      ? `<button class="btn-ghost ct-pe-btn" data-id="${escape(c.contractId)}" title="Edit this partner and its revenue-share terms">${escape(p.name)}</button>`
       : escape(p.name);
   }
   const del = can('manageMerchants')
@@ -931,12 +931,9 @@ function openTermsView(contractId) {
       <button type="button" id="ct-tv-close" class="btn">Close</button>
     </div>
     <div id="ct-tv-rule" style="margin-top:16px;"></div>
-    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;">
-      ${can('editPartners') ? '<button type="button" id="ct-tv-edit" class="btn btn-primary">Edit terms</button>' : ''}
-    </div>`;
+    <p class="muted" style="margin:14px 0 0;font-size:12px;">Read-only. Use <strong>Edit terms</strong> at the end of the row to change these.</p>`;
   renderStructuredRuleEditor(card.querySelector('#ct-tv-rule'), p.rule, MACHINE_MODELS_CACHE, { readOnly: true });
   card.querySelector('#ct-tv-close').addEventListener('click', close);
-  card.querySelector('#ct-tv-edit')?.addEventListener('click', () => { close(); openPartnerEditor(contractId); });
 }
 
 // Add/update the partner behind a merchant: which partner it is, whether it is paid at all,
@@ -1051,7 +1048,7 @@ async function renderContractsScreen() {
   const head = visibleContractColumns()
     .map((c, i) => { const cls = colClasses(c, i, hg); hg = c.group; 
       return `<th style="min-width:${c.width}px" class="${cls}">${escape(c.label)}</th>`; })
-    .join('') + '<th class="ct-gsep" style="min-width:125px">Partner</th><th style="min-width:38px"></th>';
+    .join('') + '<th class="ct-gsep" style="min-width:135px">Edit terms</th><th style="min-width:38px"></th>';
   el.innerHTML = `
     <h1>Merchant view</h1>
     <div class="ct-toolbar">
