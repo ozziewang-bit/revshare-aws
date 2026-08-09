@@ -902,10 +902,6 @@ async function renderContractsScreen() {
         <option value="needs">◆ Needs terms</option>
         <option value="due">⚠ Contract due or overdue</option>
       </select>
-      <select id="ct-sort" class="input" style="max-width:200px">
-        <option value="name">Sort: merchant</option>
-        <option value="end">Sort: contract end</option>
-      </select>
       ${can('manageMerchants') ? '<button type="button" id="ct-new" class="btn btn-primary">+ New merchant</button>' : ''}
       ${can('manageMerchants') ? '<button type="button" id="ct-file-choose" class="btn">Upload sheet</button><input type="file" id="ct-file" accept=".xlsx" style="display:none">' : ''}
       <span class="ct-groups">${CONTRACT_GROUPS.map(g => `<label><input type="checkbox" data-group="${g.key}"${CONTRACT_GROUPS_ON[g.key] ? ' checked' : ''}> ${g.label}</label>`).join('')}</span>
@@ -913,7 +909,7 @@ async function renderContractsScreen() {
     </div>
     <div class="ct-scroll"><table class="ct-table"><thead><tr>${head}</tr></thead>
       <tbody id="ct-body"></tbody></table></div>`;
-  ['ct-search', 'ct-status', 'ct-sort'].forEach(id =>
+  ['ct-search', 'ct-status'].forEach(id =>
     el.querySelector('#' + id).addEventListener('input', paintContracts));
   // Toggling a group changes the header too, so re-render the whole screen rather than
   // just repainting rows — otherwise the <th>s and <td>s fall out of alignment.
@@ -970,7 +966,6 @@ function paintContracts() {
   const body = document.getElementById('ct-body');
   if (!body) return;
   const q = (document.getElementById('ct-search')?.value || '').toLowerCase().trim();
-  const sort = document.getElementById('ct-sort')?.value || 'name';
   const statusSel = document.getElementById('ct-status');
   const status = statusSel?.value || '';
   // Each filter selects exactly the rows carrying the matching row marker, so what the
@@ -979,9 +974,7 @@ function paintContracts() {
     (!q || (c.merchantName || '').toLowerCase().includes(q)) &&
     (status !== 'needs' || needsTerms(c)) &&
     (status !== 'due'   || !!renewalFlag(c).cls));
-  rows.sort(sort === 'end'
-    ? (a, b) => (a.endDate || '9999').localeCompare(b.endDate || '9999')
-    : (a, b) => (a.merchantName || '').localeCompare(b.merchantName || ''));
+  rows.sort((a, b) => (a.merchantName || '').localeCompare(b.merchantName || ''));
   body.innerHTML = rows.map(contractRowHtml).join('');
   document.getElementById('ct-count').textContent = `${rows.length} of ${CONTRACTS.length}`;
   // Counts live in the option labels — they move as terms get set and contracts renew, so
