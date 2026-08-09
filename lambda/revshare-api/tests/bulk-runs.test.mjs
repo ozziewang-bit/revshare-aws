@@ -101,6 +101,18 @@ test('payoutDecision: missing contract names the brand when a sample name is ava
   assert.match(d.warning, /Ghost Brand/);
 });
 
+// Archived is checked before everything except a missing contract: a merchant whose contract
+// has ended is not paid whatever its rule still says. It warns (unlike noPayout) because a
+// roster that still lists it means machines are live under an ended contract.
+test('payoutDecision: an archived merchant is skipped with a warning, even with a paying rule', () => {
+  const d = payoutDecision(
+    { contractId: 'c1', merchantName: 'Ended Co', archived: true, rule: { type: 'percent', rows: [{ model: 'ALL', percent: 50 }] }, aggregationMode: 'whole' },
+    'c1');
+  assert.equal(d.pay, false);
+  assert.match(d.warning, /Ended Co/);
+  assert.match(d.warning, /archived/);
+});
+
 test('payoutDecision: noPayout with no rule is skipped silently, no warning', () => {
   const d = payoutDecision({ contractId: 'c1', merchantName: 'A', noPayout: true, rule: null, aggregationMode: 'per_store' }, 'c1');
   assert.equal(d.pay, false);

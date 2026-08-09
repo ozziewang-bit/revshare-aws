@@ -23,6 +23,10 @@ export function ruleHasValue(node) {
 // it: a paying rule with no aggregationMode used to clear step 3 and then get skipped in step 4).
 export function contractNeedsTerms(contract) {
   if (!contract) return false;
+  // An archived merchant is one whose contract has ended. It is never paid, so it must never
+  // hold up a run either — otherwise ending a contract would make the merchant permanently
+  // block step 4 with terms nobody intends to set.
+  if (contract.archived) return false;
   if (contract.noPayout) return false;
   if (!ruleHasValue(contract.rule)) return true;
   return contract.aggregationMode !== 'whole' && contract.aggregationMode !== 'per_store';

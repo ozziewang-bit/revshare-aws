@@ -304,7 +304,9 @@ function renderNav() {
     ${can('runCalcs') ? '<button id="nav-bulk-runs" class="nav-btn">Run share</button>' : ''}
     <button id="nav-revshare-path" class="nav-btn">Analytics</button>
     <button id="nav-device-types" class="nav-btn">Device Types</button>
+    <button id="nav-archived" class="nav-btn">Archived</button>
     ${can('admin') ? '<button id="nav-users" class="nav-btn">Users</button>' : ''}`;
+  nav.querySelector('#nav-archived').addEventListener('click', () => { setActiveNav('nav-archived'); renderArchivedScreen(); });
   nav.querySelector('#nav-bulk-runs')?.addEventListener('click', () => { setActiveNav('nav-bulk-runs'); renderBulkRunsList(); });
   nav.querySelector('#nav-revshare-path').addEventListener('click', () => { setActiveNav('nav-revshare-path'); renderRevsharePathScreen(); });
   nav.querySelector('#nav-device-types').addEventListener('click', () => { setActiveNav('nav-device-types'); renderDeviceTypesScreen(); });
@@ -610,7 +612,7 @@ function contractHeadHtml() {
       colRow.push(`<th style="min-width:${cell.col.width}px" class="${colClasses(cell, i)}">${escape(cell.col.label)}</th>`);
     }
   });
-  colRow.push('<th class="ct-gsep" style="min-width:135px">Edit terms</th><th style="min-width:38px"></th>');
+  colRow.push('<th class="ct-gsep" style="min-width:135px">Edit terms</th><th style="min-width:96px"></th>');
 
   return `<tr class="ct-ghead-row">${groupRow.join('')}</tr>`
        + `<tr class="ct-chead-row">${colRow.join('')}</tr>`;
@@ -736,7 +738,7 @@ function ruleHasValue(node) {
 // A merchant needs terms when it is meant to be paid but nothing says how much. This is the
 // same condition the run's step-3 gate uses, so what is flagged here is exactly what will
 // block a run.
-const needsTerms = c => !c.noPayout && !ruleHasValue(c.rule);
+const needsTerms = c => !c.archived && !c.noPayout && !ruleHasValue(c.rule);
 
 // The merchant-view row owns its terms directly — no partner lookup involved.
 function termCellHtml(c, col) {
@@ -805,9 +807,14 @@ function contractRowHtml(c) {
   const editCell = can('manageMerchants')
     ? `<button class="btn-ghost ct-pe-btn" data-id="${escape(c.contractId)}">${ruleIsAbsent(c.rule) && !c.noPayout ? 'Set terms…' : 'Edit…'}</button>`
     : '';
-  const del = can('manageMerchants')
-    ? `<button class="btn-ghost ct-del-btn" data-id="${escape(c.contractId)}" title="Delete this merchant row">×</button>` : '';
-  return `<tr data-id="${escape(c.contractId)}">${cells}<td class="ct-cell ct-gsep">${editCell}</td><td class="ct-cell ct-c">${del}</td></tr>`;
+  // Archive is the soft exit — the contract ended, the row stops being paid, but its history
+  // stays. Delete is the hard one, kept next to it deliberately so the gentler option is the
+  // one in reach.
+  const actions = can('manageMerchants')
+    ? `<button class="btn-ghost ct-arch-btn" data-id="${escape(c.contractId)}" title="Archive — the contract has ended. Stops payouts, keeps the row.">Archive</button>`
+      + `<button class="btn-ghost ct-del-btn" data-id="${escape(c.contractId)}" title="Delete this merchant row">×</button>`
+    : '';
+  return `<tr data-id="${escape(c.contractId)}">${cells}<td class="ct-cell ct-gsep">${editCell}</td><td class="ct-cell ct-c ct-actions">${actions}</td></tr>`;
 }
 
 // ── Merchant view: add / delete / link ─────────────────────────────────────
@@ -997,6 +1004,8 @@ async function renderContractsScreen() {
     if (terms) { openTermsView(terms.closest('tr').dataset.id); return; }
     const delBtn = ev.target.closest('.ct-del-btn');
     if (delBtn) { deleteContractRow(delBtn.dataset.id); return; }
+    const archBtn = ev.target.closest('.ct-arch-btn');
+    if (archBtn) { setContractArchived(archBtn.dataset.id, true); return; }
     const td = ev.target.closest('td.ct-cell');
     if (td && td.dataset.key) startCellEdit(td);
   });
@@ -1029,6 +1038,88 @@ async function renderContractsScreen() {
   });
 }
 
+// ── Archive ────────────────────────────────────────────────────────────────
+// Archiving is the manual "this contract has ended" switch. It is not a delete: the row, its
+// terms and its store links all stay. What changes is that the merchant is never paid again —
+// `payoutDecision` in the backend skips an archived contract before it looks at any rule, and
+// its matched revenue lands in the run's `skipped` list so the run still reconciles. The
+// contract also stays in the roster name index on purpose, so a roster that still lists the
+// brand resolves to this row rather than minting a fresh duplicate stub for it.
+async function setContractArchived(id, archived) {
+  const c = CONTRACTS.find(x => x.contractId === id);
+  if (!c) return;
+  if (archived && !confirm(
+      `Archive "${c.merchantName}"?\n\n`
+    + `It moves to the Archived page and stops being paid in every future run — its machines `
+    + `may still appear in a roster, and that revenue will show up under Skipped.\n\n`
+    + `Nothing is deleted, and you can unarchive it at any time.`)) return;
+  const before = { archived: c.archived, archivedAt: c.archivedAt };
+  try {
+    const saved = await api('/contracts/' + encodeURIComponent(id), {
+      method: 'PUT', body: JSON.stringify({ archived }) });
+    // Take the server's row back: `archivedAt` is stamped there, not here.
+    c.archived = saved.archived;
+    c.archivedAt = saved.archivedAt;
+  } catch (err) {
+    Object.assign(c, before);
+    alert('Could not ' + (archived ? 'archive' : 'unarchive') + ' that merchant: ' + err.message);
+    return;
+  }
+  paintContracts();
+  paintArchived();
+}
+
+async function renderArchivedScreen() {
+  const el = document.getElementById('main');
+  el.innerHTML = '<h1>Archived merchants</h1><p class="muted">Loading…</p>';
+  CONTRACTS = await api('/contracts');
+  el.innerHTML = `
+    <h1>Archived merchants</h1>
+    <p class="muted">Contracts that have ended. They keep their terms and their history, and are
+      never paid in a run. Unarchive to bring one back into the Merchant view.</p>
+    <div class="ct-toolbar">
+      <input id="ar-search" class="input" placeholder="Search merchant…" style="max-width:240px">
+      <span class="muted" id="ar-count"></span>
+    </div>
+    <table class="ts"><thead><tr>
+      <th>Merchant</th><th>Type</th><th>Counter party</th>
+      <th>Contract start</th><th>Contract end</th><th>Archived</th><th></th>
+    </tr></thead><tbody id="ar-body"></tbody></table>`;
+  el.querySelector('#ar-search').addEventListener('input', paintArchived);
+  el.querySelector('#ar-body').addEventListener('click', ev => {
+    const btn = ev.target.closest('.ar-unarch-btn');
+    if (btn) setContractArchived(btn.dataset.id, false);
+  });
+  paintArchived();
+}
+
+function paintArchived() {
+  const body = document.getElementById('ar-body');
+  if (!body) return;                       // not the screen we're on
+  const q = (document.getElementById('ar-search')?.value || '').toLowerCase().trim();
+  const all = CONTRACTS.filter(c => c.archived);
+  const rows = all
+    .filter(c => !q || (c.merchantName || '').toLowerCase().includes(q))
+    .sort((a, b) => String(b.archivedAt || '').localeCompare(String(a.archivedAt || '')));
+  const dash = '<span class="ct-empty">–</span>';
+  const cell = v => v == null || v === '' ? dash : escape(String(v));
+  body.innerHTML = rows.length ? rows.map(c => `
+    <tr>
+      <td>${cell(c.merchantName)}</td>
+      <td>${cell(c.merchantType)}</td>
+      <td>${cell(c.counterParty)}</td>
+      <td>${cell(c.startDate)}</td>
+      <td>${cell(c.endDate)}</td>
+      <td>${cell((c.archivedAt || '').slice(0, 10))}</td>
+      <td class="ct-c">${can('manageMerchants')
+        ? `<button class="btn-ghost ar-unarch-btn" data-id="${escape(c.contractId)}" title="Return this merchant to the Merchant view">Unarchive</button>`
+        : ''}</td>
+    </tr>`).join('')
+    : '<tr><td colspan="7" class="muted">No archived merchants yet.</td></tr>';
+  const count = document.getElementById('ar-count');
+  if (count) count.textContent = all.length ? `${rows.length} of ${all.length}` : '';
+}
+
 function paintContracts() {
   // No-op when the Merchant view screen isn't mounted — openTermsEditor calls this
   // unconditionally on save, and it's also opened from other screens (the run wizard).
@@ -1039,18 +1130,22 @@ function paintContracts() {
   const status = statusSel?.value || '';
   // Each filter selects exactly the rows carrying the matching row marker, so what the
   // dropdown lists and what the ◆ / ⚠ icons mark can never drift apart.
-  let rows = CONTRACTS.filter(c =>
+  // Archived merchants are off this screen entirely — they live on the Archived page. Every
+  // count here is over `live` for the same reason: an ended contract should not appear in a
+  // total that describes work to do.
+  const live = CONTRACTS.filter(c => !c.archived);
+  let rows = live.filter(c =>
     (!q || (c.merchantName || '').toLowerCase().includes(q)) &&
     (status !== 'needs' || needsTerms(c)) &&
     (status !== 'due'   || !!renewalFlag(c).cls));
   rows.sort((a, b) => (a.merchantName || '').localeCompare(b.merchantName || ''));
   body.innerHTML = rows.map(contractRowHtml).join('');
-  document.getElementById('ct-count').textContent = `${rows.length} of ${CONTRACTS.length}`;
+  document.getElementById('ct-count').textContent = `${rows.length} of ${live.length}`;
   // Counts live in the option labels — they move as terms get set and contracts renew, so
   // they are recomputed on every paint rather than baked into the markup once.
   if (statusSel) {
-    const counts = { needs: CONTRACTS.filter(needsTerms).length,
-                     due:   CONTRACTS.filter(c => renewalFlag(c).cls).length };
+    const counts = { needs: live.filter(needsTerms).length,
+                     due:   live.filter(c => renewalFlag(c).cls).length };
     for (const opt of statusSel.options) {
       if (opt.value in counts) {
         opt.textContent = opt.textContent.replace(/ \(\d+\)$/, '') + ` (${counts[opt.value]})`;

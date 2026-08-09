@@ -919,6 +919,13 @@ table.table tr:last-child td { border-bottom: none; }
   border-radius: var(--radius-lg); padding: 22px; min-width: 380px; max-width: 92vw;
   box-shadow: var(--shadow-md); }
 .ct-del-btn { color: var(--loss); font-size: 15px; line-height: 1; padding: 2px 7px; }
+/* Row actions are borderless: at 248 rows, two bordered buttons per row turn the last
+   column into a wall of chrome. They pick up their frame on hover instead. */
+.ct-actions { white-space: nowrap; }
+.ct-actions button { border-color: transparent; background: none; }
+.ct-actions button:hover { border-color: var(--border-strong); background: var(--surface-muted); }
+.ct-arch-btn { font-size: 11px; color: var(--ink-soft); padding: 2px 7px; }
+.ct-arch-btn:hover { color: var(--accent); }
 
 /* Merchant view needs the whole window — 23 columns do not fit the 1100px content column */
 #main.main-wide { max-width: none; padding-left: 20px; padding-right: 20px; }

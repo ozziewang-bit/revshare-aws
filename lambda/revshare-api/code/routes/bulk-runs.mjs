@@ -158,6 +158,14 @@ export function payoutDecision(contract, contractId, sampleMerchantName) {
     const label = sampleMerchantName ? `"${sampleMerchantName}" (${contractId})` : contractId;
     return { pay: false, warning: `Merchant ${label} not found, skipped` };
   }
+  // Archived means the contract has ended, so there is nothing to pay. It stays in the name
+  // index on purpose, so a roster label still resolves to it rather than minting a duplicate
+  // stub — its stores keep matching orders and that revenue lands in `skipped`, where it can
+  // still be reconciled. Unlike `noPayout` this warns: a roster that still lists an archived
+  // merchant means machines are live and earning under a contract you ended.
+  if (contract.archived) {
+    return { pay: false, warning: `"${contract.merchantName}" is archived (contract ended), skipped — its machines are still in the roster` };
+  }
   if (contract.noPayout) return { pay: false };
   if (!ruleHasValue(contract.rule)) return { pay: false, warning: `"${contract.merchantName}" has no terms that pay, skipped` };
   if (contract.aggregationMode !== 'whole' && contract.aggregationMode !== 'per_store') {

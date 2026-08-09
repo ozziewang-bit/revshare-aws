@@ -13,6 +13,9 @@ const WRITABLE = [
   // The contract is the payout entity now: it owns the rule, how it aggregates, whether it
   // is paid at all, and in which currency. These were PARTNER fields until 2026-08-07.
   'rule', 'aggregationMode', 'noPayout', 'currency',
+  // Manual archive, set when a contract ends. `archivedAt` is stamped server-side, not
+  // taken from the client.
+  'archived',
 ];
 
 function pick(body) {
@@ -41,7 +44,12 @@ export async function updateContractRoute(event) {
   const body = JSON.parse(event.body || '{}');
   const existing = await getContract(id);
   if (!existing) return resp(404, { error: 'not_found' });
-  return resp(200, await putContract({ ...existing, ...pick(body), contractId: id }));
+  const next = { ...existing, ...pick(body), contractId: id };
+  // Stamp the archive date here rather than trusting a client clock, and only on the
+  // transition — re-saving an already-archived row must not move the date.
+  if (next.archived && !existing.archived) next.archivedAt = new Date().toISOString();
+  if (!next.archived) delete next.archivedAt;
+  return resp(200, await putContract(next));
 }
 
 export async function deleteContractRoute(event) {

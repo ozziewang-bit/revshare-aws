@@ -42,6 +42,14 @@ test('contractNeedsTerms: noPayout never needs terms', () => {
   assert.equal(contractNeedsTerms({ noPayout: true, rule: pct(50) }), false);
 });
 
+// Archiving ends a contract, so the merchant is never paid again. If it still counted as
+// "needs terms" it would block step 4 of every future run with terms nobody intends to set.
+test('contractNeedsTerms: an archived merchant never needs terms', () => {
+  assert.equal(contractNeedsTerms({ archived: true, rule: null }), false);
+  assert.equal(contractNeedsTerms({ archived: true, rule: pct(0) }), false);
+  assert.equal(contractNeedsTerms({ archived: true, rule: pct(50) }), false);
+});
+
 test('contractNeedsTerms: no rule, or a rule that pays nothing, needs terms', () => {
   assert.equal(contractNeedsTerms({ rule: null }), true);
   assert.equal(contractNeedsTerms({ rule: pct(0) }), true);
