@@ -897,9 +897,10 @@ async function renderContractsScreen() {
     <h1>Merchant view</h1>
     <div class="ct-toolbar">
       <input id="ct-search" class="input" placeholder="Search merchant…" style="max-width:240px">
-      <select id="ct-type" class="input" style="max-width:200px">
-        <option value="">All types</option>
-        ${MERCHANT_TYPES.map(t => `<option>${t}</option>`).join('')}
+      <select id="ct-status" class="input" style="max-width:230px">
+        <option value="">All merchants</option>
+        <option value="needs">◆ Needs terms</option>
+        <option value="due">⚠ Contract due or overdue</option>
       </select>
       <select id="ct-sort" class="input" style="max-width:200px">
         <option value="name">Sort: merchant</option>
@@ -908,13 +909,11 @@ async function renderContractsScreen() {
       ${can('manageMerchants') ? '<button type="button" id="ct-new" class="btn btn-primary">+ New merchant</button>' : ''}
       ${can('manageMerchants') ? '<button type="button" id="ct-file-choose" class="btn">Upload sheet</button><input type="file" id="ct-file" accept=".xlsx" style="display:none">' : ''}
       <span class="ct-groups">${CONTRACT_GROUPS.map(g => `<label><input type="checkbox" data-group="${g.key}"${CONTRACT_GROUPS_ON[g.key] ? ' checked' : ''}> ${g.label}</label>`).join('')}</span>
-      <label class="ct-needs-toggle"><input type="checkbox" id="ct-needs"> Needs terms <span id="ct-needs-n" class="ct-needs-n"></span></label>
       <span class="muted" id="ct-count"></span>
     </div>
     <div class="ct-scroll"><table class="ct-table"><thead><tr>${head}</tr></thead>
       <tbody id="ct-body"></tbody></table></div>`;
-  el.querySelector('#ct-needs')?.addEventListener('change', paintContracts);
-  ['ct-search', 'ct-type', 'ct-sort'].forEach(id =>
+  ['ct-search', 'ct-status', 'ct-sort'].forEach(id =>
     el.querySelector('#' + id).addEventListener('input', paintContracts));
   // Toggling a group changes the header too, so re-render the whole screen rather than
   // just repainting rows — otherwise the <th>s and <td>s fall out of alignment.
@@ -971,21 +970,31 @@ function paintContracts() {
   const body = document.getElementById('ct-body');
   if (!body) return;
   const q = (document.getElementById('ct-search')?.value || '').toLowerCase().trim();
-  const type = document.getElementById('ct-type')?.value || '';
   const sort = document.getElementById('ct-sort')?.value || 'name';
-  const onlyNeeds = document.getElementById('ct-needs')?.checked;
+  const statusSel = document.getElementById('ct-status');
+  const status = statusSel?.value || '';
+  // Each filter selects exactly the rows carrying the matching row marker, so what the
+  // dropdown lists and what the ◆ / ⚠ icons mark can never drift apart.
   let rows = CONTRACTS.filter(c =>
     (!q || (c.merchantName || '').toLowerCase().includes(q)) &&
-    (!type || c.merchantType === type) &&
-    (!onlyNeeds || needsTerms(c)));
+    (status !== 'needs' || needsTerms(c)) &&
+    (status !== 'due'   || !!renewalFlag(c).cls));
   rows.sort(sort === 'end'
     ? (a, b) => (a.endDate || '9999').localeCompare(b.endDate || '9999')
     : (a, b) => (a.merchantName || '').localeCompare(b.merchantName || ''));
   body.innerHTML = rows.map(contractRowHtml).join('');
   document.getElementById('ct-count').textContent = `${rows.length} of ${CONTRACTS.length}`;
-  const n = CONTRACTS.filter(needsTerms).length;
-  const badge = document.getElementById('ct-needs-n');
-  if (badge) { badge.textContent = n ? `(${n})` : ''; badge.classList.toggle('on', n > 0); }
+  // Counts live in the option labels — they move as terms get set and contracts renew, so
+  // they are recomputed on every paint rather than baked into the markup once.
+  if (statusSel) {
+    const counts = { needs: CONTRACTS.filter(needsTerms).length,
+                     due:   CONTRACTS.filter(c => renewalFlag(c).cls).length };
+    for (const opt of statusSel.options) {
+      if (opt.value in counts) {
+        opt.textContent = opt.textContent.replace(/ \(\d+\)$/, '') + ` (${counts[opt.value]})`;
+      }
+    }
+  }
 }
 
 // One cell at a time. Click → input; blur or Enter commits; Escape reverts.
