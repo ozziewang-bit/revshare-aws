@@ -219,8 +219,9 @@ Account `<YOUR_AWS_ACCOUNT_ID>`, region `ap-northeast-1`. IAM user `<your-iam-us
 | `infra/deploy-lambda.sh` | Zip + `update-function-code`. |
 | `infra/deploy-frontend.sh` | `aws s3 cp` per file. Injects API URL into `app.js` via sed. |
 | `infra/trust-lambda.json`, `infra/role-policy.json` | IAM templates. |
-| `infra/migrate-to-contracts.mjs` | One-off, idempotent migration (2026-08-07): copies `rule`/`aggregationMode`/`noPayout`/`currency` from each linked `PARTNER` onto its `CONTRACT`, then points every `MERCHANT` store row at a `contractId`. Conditional writes only ever set an absent field — safe to re-run. Already applied to production; not part of any deploy script. |
-| `infra/compare-pipelines.mjs` | Read-only validation companion to the migration above — diffs migrated `CONTRACT` fields against the source `PARTNER` directly. Last run: 134/134 comparable contracts matched, 0 mismatches. |
+| `infra/migrate-to-contracts.mjs` | One-off, idempotent migration (2026-08-07): copies `rule`/`aggregationMode`/`noPayout`/`currency` from each linked `PARTNER` onto its `CONTRACT`, then points every `MERCHANT` store row at a `contractId`. Conditional writes only ever set an absent field — safe to re-run. Already applied to production; not part of any deploy script. Needs the repo-root `package.json` deps below to resolve at all. |
+| `infra/compare-pipelines.mjs` | Read-only validation companion to the migration above — diffs migrated `CONTRACT` fields against the source `PARTNER` directly. Last run: 134/134 comparable contracts matched, 0 mismatches. Same dependency requirement as the migration script. |
+| `package.json` (repo root) | Declares `@aws-sdk/client-dynamodb` + `@aws-sdk/lib-dynamodb` as devDependencies (added 2026-08-07, commit `52028d0`) purely so the two `infra/` scripts above can resolve them. `node_modules` previously existed only under `lambda/revshare-api/code`; ESM resolves a bare specifier by walking up from the **importing file**, so no `cd` fixes this — a script in `infra/` needs a `node_modules` reachable from `infra/`, hence root-level deps + `npm install` at repo root. Also holds the `npm test` script. **Does not affect deploys** — `infra/deploy-lambda.sh` zips `lambda/revshare-api/code` only, which has its own `node_modules`/`package.json` for the AWS SDK version actually shipped to Lambda. |
 | `docs/superpowers/specs/` | Design specs (frozen at spec time). |
 | `docs/superpowers/plans/` | Implementation plans. |
 
@@ -228,7 +229,7 @@ Account `<YOUR_AWS_ACCOUNT_ID>`, region `ap-northeast-1`. IAM user `<your-iam-us
 
 `lambda/revshare-api/code/engine.mjs` exports:
 
-- `MACHINE_MODELS` — `Set<string>` of the nine model codes (S5, S8, S10, T8, T10, T20, T35, L20, L40)
+- `MACHINE_MODELS` — `Set<string>` of the ten model codes (S5, S8, S10, T8, T10, T20, T35, L20, L40, M10)
 - `evaluateRun({ rule, rows, aggregationMode })` → result object
 
 The engine is a **pure function**. No AWS SDK imports. Anything that adds AWS
@@ -400,9 +401,10 @@ REVSHARE_CLOUDFRONT_DIST_ID=EXXXXXX ./infra/deploy-frontend.sh
 2. **`flat_per_partner_total` is constrained to root or root-sum-child in
    `per_store` mode.** The engine validates and throws. Don't try to work
    around this — see spec §4.1 for the reasoning.
-3. **CSV rows must use the machine-model enum** (S5/S8/S10/T8/T10/T20/T35/L20/L40).
+3. **CSV rows must use the machine-model enum** (S5/S8/S10/T8/T10/T20/T35/L20/L40/M10).
    The engine throws on unknown models. Don't add a new model without also
-   adding rule-editor UX for it in `frontend/app.js`.
+   adding rule-editor UX for it in `frontend/app.js`. (`M10` is already in the engine's
+   `MACHINE_MODELS` but missing from two frontend/backend allow-lists — see §11.)
 4. **Bump `CACHE_VERSION` in `frontend/service-worker.js`** on every shell
    deploy. Same discipline as `expense`.
 5. **Per-run `ruleSnapshot` is load-bearing.** Don't try to read the current
@@ -431,13 +433,26 @@ REVSHARE_CLOUDFRONT_DIST_ID=EXXXXXX ./infra/deploy-frontend.sh
   real artwork when the brand identity is set.
 - **No automated tests on the routes or frontend** — engine has 31 tests
   but the HTTP layer is verified by manual smoke testing only.
-- **`Others` still sits inside the WH/HH comparison** (by design — 2026-08-06 only pulled
-  Electricity out, see §1b). `Others` is a `flat_per_partner_total` lump, so a `per_store`
-  partner configured with `Others` on `higher`/`hybrid-higher` will throw
-  `flat_per_partner_total is not allowed in per_store mode…` from `validatePerStoreTree`.
-  `bulk-runs.mjs` catches this per-partner and drops that partner from the run with a
-  warning rather than failing the whole run. No partner has this configuration today
-  (verified against all 206 TH partners on 2026-08-06).
+- **`M10` is a valid machine model in the engine but missing from two allow-lists.**
+  `engine.mjs`'s `MACHINE_MODELS` has ten codes, including `M10` (confirmed
+  2026-08-09) — but `frontend/app.js`'s `RS_MODELS` and
+  `lambda/revshare-api/code/routes/merchants.mjs`'s `VALID_MODELS` both list only the
+  other nine and omit it. A merchant row saved with `machineModel: 'M10'` via the
+  `/merchants` route would be rejected by `VALID_MODELS`, and the frontend's
+  device-type parser (`RS_MODELS`) can't recognise `M10` in free text either, even
+  though the Merchant view's own unit-count columns include an `M10` column
+  (`contracts.mjs` column F). Not fixed here — documented so it isn't rediscovered
+  as a surprise.
+- **`Others` still sits inside the WH/HH comparison** (pre-migration note, 2026-08-06 —
+  written when `PARTNER` was still the payout entity; the mechanism described is
+  unchanged post-migration, just re-read every "partner" below as the `CONTRACT` that
+  inherited it). By design — 2026-08-06 only pulled Electricity out, see §1b. `Others` is
+  a `flat_per_partner_total` lump, so a `per_store` partner configured with `Others` on
+  `higher`/`hybrid-higher` will throw `flat_per_partner_total is not allowed in per_store
+  mode…` from `validatePerStoreTree`. `bulk-runs.mjs` catches this per-partner and drops
+  that partner from the run with a warning rather than failing the whole run. No partner
+  had this configuration as of the last check (verified against all 206 TH partners on
+  2026-08-06).
 
 ## 12. Starting fresh in a future session
 
