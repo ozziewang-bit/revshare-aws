@@ -179,11 +179,13 @@ Batch-updating rules NEVER alters past runs — only the merchant's (`CONTRACT`'
 current rule, affecting future runs only. There is no in-place recompute for bulk runs by
 design (user requirement: keep historical periods as-is).
 
-**Current data (live baseline verified 2026-08-07):** 207 `CONTRACT` rows (134 still
-linked to the `PARTNER` row they were migrated from; 73 unlinked — created directly on the
-Merchant view or by roster auto-create), 4,066 `MERCHANT` store-registry rows (3,630
-carrying a `contractId`; 436 with none — see "Deliberately unpaid" above), 199 brands in
-use, 0 bulk runs of any kind against this data as of that date. The pre-migration
+**Current data (live, verified 2026-08-09 after the adoption):** 248 `CONTRACT` rows —
+175 linked to the `PARTNER` row they were migrated or adopted from (134 from the first
+migration + 41 from the adoption), 73 unlinked (created directly on the Merchant view or
+by roster auto-create). 4,066 `MERCHANT` store-registry rows, 3,865 carrying a
+`contractId`; **201 with none** — see "Deliberately unpaid" above. 199 brands in use.
+**0 bulk runs of any kind have ever been performed against this data**, which is why the
+first real run is also the first end-to-end test of the pipeline. The pre-migration
 **"Current data"** note this replaced (112 partners, KA regenerated 2026-05-31, canonical
 2026-05 run total 680,172.65) describes the old `PARTNER`-only world and is now historical.
 
@@ -243,7 +245,7 @@ Account `<YOUR_AWS_ACCOUNT_ID>`, region `ap-northeast-1`. IAM user `<your-iam-us
 | `infra/deploy-frontend.sh` | `aws s3 cp` per file. Injects API URL into `app.js` via sed. |
 | `infra/trust-lambda.json`, `infra/role-policy.json` | IAM templates. |
 | `infra/migrate-to-contracts.mjs` | One-off, idempotent migration (2026-08-07): copies `rule`/`aggregationMode`/`noPayout`/`currency` from each linked `PARTNER` onto its `CONTRACT`, then points every `MERCHANT` store row at a `contractId`. Conditional writes only ever set an absent field — safe to re-run. Already applied to production; not part of any deploy script. Needs the repo-root `package.json` deps below to resolve at all. |
-| `infra/adopt-payable-brands.mjs` | One-off, idempotent (2026-08-09): brings the 41 of the 65 "deliberately unpaid" brands that are actually payable (paying rule, not `noPayout`) into the Merchant view — creates a `CONTRACT` per candidate `PARTNER` and points its store rows at it. Skips a partner that already has a contract (by `partnerId`). `--dry-run` reports counts + the brand list without writing. **As of this writing it has only been dry-run** (41 brands / 235 stores confirmed) — not yet applied; needs explicit user approval first, same as the earlier migration. Needs the repo-root `package.json` deps (now including `ulid`, added 2026-08-09) to resolve. |
+| `infra/adopt-payable-brands.mjs` | One-off, idempotent (2026-08-09): brings the 41 of the 65 "deliberately unpaid" brands that are actually payable (paying rule, not `noPayout`) into the Merchant view — creates a `CONTRACT` per candidate `PARTNER` and points its store rows at it. Skips a partner that already has a contract (by `partnerId`). `--dry-run` reports counts + the brand list without writing. **Applied 2026-08-09 after explicit user approval** — 41 contracts created, 235 store rows pointed, 0 raced; a second dry run adopts nothing. Do not re-run casually. Needs the repo-root `package.json` deps (now including `ulid`, added 2026-08-09) to resolve. |
 | `infra/compare-pipelines.mjs` | Read-only validation companion to the migration above — diffs migrated `CONTRACT` fields against the source `PARTNER` directly. Last run: 134/134 comparable contracts matched, 0 mismatches. Same dependency requirement as the migration script. |
 | `package.json` (repo root) | Declares `@aws-sdk/client-dynamodb` + `@aws-sdk/lib-dynamodb` as devDependencies (added 2026-08-07, commit `52028d0`) plus `ulid` (added 2026-08-09, for `infra/adopt-payable-brands.mjs`'s new `CONTRACT` rows) purely so the `infra/` scripts above can resolve them. `node_modules` previously existed only under `lambda/revshare-api/code`; ESM resolves a bare specifier by walking up from the **importing file**, so no `cd` fixes this — a script in `infra/` needs a `node_modules` reachable from `infra/`, hence root-level deps + `npm install` at repo root. Also holds the `npm test` script. **Does not affect deploys** — `infra/deploy-lambda.sh` zips `lambda/revshare-api/code` only, which has its own `node_modules`/`package.json` for the AWS SDK version actually shipped to Lambda. |
 | `docs/superpowers/specs/` | Design specs (frozen at spec time). |
@@ -280,7 +282,7 @@ Single DDB table `RevsharePartner`. Five row families:
 | pk | sk | What |
 |---|---|---|
 | `CONTRACT` | `CONTRACT#<contractId>` | **The payout entity (since 2026-08-07).** Merchant contract terms (type, counter party, unit counts, start/end, etc.) **plus** `rule`, `aggregationMode`, `noPayout`, `currency` — the fields a bulk run actually evaluates. Optional `partnerId` back-link to the `PARTNER` row it was migrated from. Edited entirely from the Merchant view screen. |
-| `MERCHANT` | `MERCHANT#<merchantId>` | Store-registry row — one per physical machine/location, seeded from the roster upload. Carries `contractId` pointing at the `CONTRACT` (payout) row for its brand; 3,630 of 4,066 rows have one (see §1b "Deliberately unpaid" for the other 436). |
+| `MERCHANT` | `MERCHANT#<merchantId>` | Store-registry row — one per physical machine/location, seeded from the roster upload. Carries `contractId` pointing at the `CONTRACT` (payout) row for its brand; 3,865 of 4,066 rows have one (3,630 from the first migration, +235 from the adoption) (see §1b "Deliberately unpaid" for the other 201). |
 | `PARTNER` | `META#<partnerId>` | **Retained but dormant.** The pre-2026-08-07 config + rule row. Nothing reads these any more — the Partners UI and its routes are gone (see §1b) — but the rows are kept on purpose so a migrated `CONTRACT`'s rule can be checked against the original it was copied from (`infra/compare-pipelines.mjs`). Do not delete without asking; do not treat as canonical for anything current. |
 | `RUN#<partnerId>` | `RUN#<runId>` | Legacy single-partner run row (one CSV upload + computed result, `ruleSnapshot` + `csvRaw` + `csvParsed` + `result`). The routes that write/read these (`/partners/:id/runs*`) still exist but have no frontend caller and no dedicated test file (`tests/` has no `runs.test.mjs`) — dormant alongside `PARTNER`. |
 | `BULKRUN` | `BULKRUN#<runId>` | **Slim summary index only** (counts, totals, `s3Key`). Full payload (results, unmatched names, ruleSnapshots) lives in S3 — see below. This is the live run type; everything in §1b's Run share wizard writes here. |
