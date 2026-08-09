@@ -924,8 +924,24 @@ table.table tr:last-child td { border-bottom: none; }
 .ct-actions { white-space: nowrap; }
 .ct-actions button { border-color: transparent; background: none; }
 .ct-actions button:hover { border-color: var(--border-strong); background: var(--surface-muted); }
-.ct-arch-btn { font-size: 11px; color: var(--ink-soft); padding: 2px 7px; }
-.ct-arch-btn:hover { color: var(--accent); }
+/* Archive is deliberately not shaped like the app's other buttons: it is a state change on a
+   row, not a form action, and it sits beside a destructive ×. The dashed pill reads as
+   "put this away" rather than "submit" or "delete", and the dashes give it a silhouette no
+   other control here has, so it is identifiable before the label is read. */
+.ct-actions .ct-arch-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 10.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--ink-soft);
+  padding: 2px 8px; border-radius: 999px;
+  border: 1px dashed var(--border-strong); background: none;
+}
+.ct-actions .ct-arch-btn:hover {
+  color: var(--warn); border-style: solid; border-color: var(--warn); background: var(--warn-soft);
+}
+/* The glyph carries the meaning at a glance; drop it to a size that doesn't shout next to
+   10.5px caps. */
+.ct-arch-ico { font-size: 11px; line-height: 1; filter: grayscale(1); opacity: .75; }
+.ct-actions .ct-arch-btn:hover .ct-arch-ico { filter: none; opacity: 1; }
 
 /* Merchant view needs the whole window — 23 columns do not fit the 1100px content column */
 #main.main-wide { max-width: none; padding-left: 20px; padding-right: 20px; }

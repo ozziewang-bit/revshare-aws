@@ -811,7 +811,7 @@ function contractRowHtml(c) {
   // stays. Delete is the hard one, kept next to it deliberately so the gentler option is the
   // one in reach.
   const actions = can('manageMerchants')
-    ? `<button class="btn-ghost ct-arch-btn" data-id="${escape(c.contractId)}" title="Archive — the contract has ended. Stops payouts, keeps the row.">Archive</button>`
+    ? `<button class="ct-arch-btn" data-id="${escape(c.contractId)}" title="Archive — the contract has ended. Stops payouts, keeps the row."><span class="ct-arch-ico">🗄</span>Archive</button>`
       + `<button class="btn-ghost ct-del-btn" data-id="${escape(c.contractId)}" title="Delete this merchant row">×</button>`
     : '';
   return `<tr data-id="${escape(c.contractId)}">${cells}<td class="ct-cell ct-gsep">${editCell}</td><td class="ct-cell ct-c ct-actions">${actions}</td></tr>`;

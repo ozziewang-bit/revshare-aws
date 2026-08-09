@@ -1,7 +1,7 @@
 # revshare-aws — handoff
 
 Last updated: 2026-08-09 (manual merchant archive + Archived tab; merchant-view header-click column sections, status filter).
-Service-worker `CACHE_VERSION` is at `revshare-v110` (bump on every shell change).
+Service-worker `CACHE_VERSION` is at `revshare-v111` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
 end-to-end before touching anything. The codebase is the ultimate source of
