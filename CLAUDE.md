@@ -1,7 +1,7 @@
 # revshare-aws — handoff
 
-Last updated: 2026-08-07 (merchant view is the payout entity; Partners page removed; `PARTNER` rows kept but dormant).
-Service-worker `CACHE_VERSION` is at `revshare-v104` (bump on every shell change).
+Last updated: 2026-08-09 (whole-branch code-review fixes: skipped-brand reconciliation, readiness/payout gate agreement on aggregationMode, region-scoped currency default, corrected "Deliberately unpaid" claim).
+Service-worker `CACHE_VERSION` is at `revshare-v105` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
 end-to-end before touching anything. The codebase is the ultimate source of
@@ -63,10 +63,14 @@ CloudFront (`E1ALROWEFJOG3Q`) is deprecated — the unified site lives on
   3. **Review rules** — any resolved merchant whose rule doesn't actually pay anything is
      listed inline, opening the Merchant view's own terms dialog for immediate editing.
      Step 4 is locked until every one has a paying rule (or is `noPayout`). The readiness
-     test is `ruleHasValue` (`lambda/revshare-api/code/payout.mjs`) — it walks the rule
-     tree for a non-zero leaf, replacing the old `!rule || !rule.type` check, which passed
-     a bare `percent ALL 0%`. That is why **39 partners** could reach a run and be paid
-     zero with no warning before 2026-08-07.
+     test is `contractNeedsTerms` (`lambda/revshare-api/code/payout.mjs`), which itself
+     calls `ruleHasValue` — it walks the rule tree for a non-zero leaf, replacing the old
+     `!rule || !rule.type` check, which passed a bare `percent ALL 0%`. That is why **39
+     partners** could reach a run and be paid zero with no warning before 2026-08-07.
+     `contractNeedsTerms` also requires a valid `aggregationMode` (`whole`/`per_store`) as of
+     2026-08-09 — it used to check only the rule, so a contract with a paying rule and no
+     `aggregationMode` could clear this step and then get silently skipped at run time by
+     `payoutDecision` (which does check it). **73 live contracts** hit that gap before the fix.
   4. **Order list** — upload the order report (`.xlsx`); orders are overlaid onto the roster.
      Submits `POST /bulk-runs` with `merchants[]` + `orders[]`.
   - **Roster-authoritative:** every roster machine with a resolved `contractId` becomes an
@@ -74,9 +78,15 @@ CloudFront (`E1ALROWEFJOG3Q`) is deprecated — the unified site lives on
     merchants are still paid their fixed fees (MG/placement) per rule. Orders whose
     merchant is not in the roster are **unmatched** (not paid) — surfaced in a banner. A
     roster machine whose brand has **no `CONTRACT` at all** is a separate, permanent case
-    — see "Deliberately unpaid" below.
-  - Run detail: per-merchant table w/ revenue-share %, unmatched-orders banner,
-    per-merchant CSV zip download (`<year>_<month>_revshare.zip`), per-run Delete, and
+    — see "Deliberately unpaid" below. A brand that *does* have a `CONTRACT` but isn't paid
+    this run (`noPayout`, no usable terms, or a calc error) still matches its orders — its
+    revenue does not disappear, it goes into the run's **`skipped`** list (2026-08-09, see
+    below) rather than `unmatched`.
+  - Run detail: per-merchant table w/ revenue-share %, a **Skipped** section (brands that
+    matched orders but weren't paid, with store count/rentals/revenue/reason per brand), an
+    unmatched-orders banner, and an explicit reconciliation line — `paid + skipped +
+    unmatched` must equal the order report's total revenue, shown as ✓/✗ rather than assumed
+    — plus per-merchant CSV zip download (`<year>_<month>_revshare.zip`), per-run Delete, and
     **Archive** button (visible to `runCalcs` users). Archived runs show **🔒 Locked** —
     Delete is blocked (409) and an **Unarchive** button appears for admins only.
 - **Analytics** (`nav-revshare-path`) — monthly combo chart (Revenue/Payout bars +
@@ -104,12 +114,25 @@ in the backend at all (no route registered). `parseKaExcel` is dead code in
 in the store registry with no matching `CONTRACT` row — they never appeared in the
 `All_Merchant` merchant-sheet import that seeded `CONTRACT`. They are **not paid**, by the
 user's 2026-08-07 decision that the merchant sheet is authoritative. They are **not
-deleted**: `buildRosterRows` (`bulk-runs.mjs`) drops a roster machine with no `contractId`
-before grouping, so it can never acquire a payout, and any order against it lands in the
-run's unmatched list instead of being silently attributed. If the same brand later
-appears in an uploaded roster, `applyMerchantRoster` auto-creates a `CONTRACT` for it
-(flagged `noPayout: true`) — visible in the Merchant view from then on, still unpaid until
-someone flips the flag there.
+deleted**. On 2026-08-09 review, 41 of these 65 turned out to be payable partners (a rule
+that pays something, not `noPayout`), covering 235 stores — see `infra/adopt-payable-brands.mjs`.
+The user ruled: bring those 41 in, carrying their existing rule/aggregation; the other 24
+(no paying rule) stay unpaid as originally decided.
+
+**Corrected 2026-08-09 — the paragraph below used to claim orders against these brands land
+in `unmatched`. That was wrong; here's what actually happens.** `applyMerchantRoster`
+auto-creates a `CONTRACT` stub (flagged `noPayout: true`) for **every** roster label that
+doesn't already resolve to one — not just when the same brand happens to reappear later. So
+by the time a roster reaches `buildRosterRows`, every row already carries a `contractId`;
+the `if (!m.contractId) continue` guard in `buildRosterRows` is dead code in production (kept
+as defence in depth — see the comment at that line). Orders against one of these brands
+**do match** their roster row — they are not unmatched — and accrue revenue exactly like any
+other brand; the brand itself is skipped at payout time by `payoutDecision` because it's
+`noPayout`. That revenue now surfaces in the run's **`skipped`** list (added 2026-08-09,
+Finding 1 of the 2026-08-09 review) instead of silently vanishing from every total on the
+page while still counting inside `orderCount`. The Merchant view still shows the brand as
+visible-but-unpaid from the first roster upload onward; flipping `noPayout` off there (with
+a paying rule) makes it get paid from the next run.
 
 **Rule model (NEW — replaces the old leaf-tree editor UX):** a merchant's (`CONTRACT`
 row's) rule is built from **share terms** + a **payout method**. Terms: GP% (percent of revenue),
@@ -179,7 +202,7 @@ CSV already handle per_store correctly; this was a config issue, not a code bug.
 default to the lower-paying `whole` branch, which is exactly how 7-Eleven's original
 under-payment happened.
 
-Tests: `npm test` → **118/118** pass (incl. `payout.test.mjs` — `ruleHasValue` /
+Tests: `npm test` → **121/121** pass (incl. `payout.test.mjs` — `ruleHasValue` /
 `contractNeedsTerms` / label resolution; `bulk-runs.test.mjs` — roster-to-contract
 resolution + order-less fixed-fee; `contracts.test.mjs` — sheet-row normalisation, name
 matching, and import-plan diffing, all contract-fields-only/no-rule-touch).
@@ -200,16 +223,16 @@ Account `<YOUR_AWS_ACCOUNT_ID>`, region `ap-northeast-1`. IAM user `<your-iam-us
 |---|---|
 | `lambda/revshare-api/code/engine.mjs` | Pure calculation engine. No AWS SDK. Tested via `node:test`. |
 | `lambda/revshare-api/code/csv.mjs` | CSV parser + validation. |
-| `lambda/revshare-api/code/db.mjs` | DynamoDB + S3 wrappers for every row family: Partner, Merchant (store registry), Contract, Run, BulkRun, machine-model Config. |
-| `lambda/revshare-api/code/payout.mjs` | Pure payout-decision module (2026-08-07). No AWS imports. Exports `ruleHasValue` (does a rule tree pay anything?), `contractNeedsTerms`, `indexContractsByName`/`resolveLabel` (name-based roster resolution). |
+| `lambda/revshare-api/code/db.mjs` | DynamoDB + S3 wrappers for every row family: Partner, Merchant (store registry), Contract, Run, BulkRun, machine-model Config. Also exports `DEFAULT_CURRENCY` (2026-08-09) — the region's default currency for auto-created contract stubs, `process.env.REVSHARE_CURRENCY` overridable, `'THB'` here. This file is **never synced between regions**, so the Singapore `db.mjs` must define its own `DEFAULT_CURRENCY` (default `'SGD'`) by hand — see §5/§8. `bulk-runs.mjs` reads it via a namespace import (`import * as dbModule from '../db.mjs'`), not a named one — a named import of a symbol the target `db.mjs` doesn't export is a static ESM error that fails the whole module load, which is exactly what took SG down for ~2 minutes during this fix before the import was changed. Until SG's `db.mjs` gets the mirror, SG silently falls back to `'THB'` (wrong, but non-fatal) rather than crashing. |
+| `lambda/revshare-api/code/payout.mjs` | Pure payout-decision module (2026-08-07). No AWS imports. Exports `ruleHasValue` (does a rule tree pay anything?), `contractNeedsTerms` (also requires a valid `aggregationMode` as of 2026-08-09, to agree with `payoutDecision`), `indexContractsByName`/`resolveLabel` (name-based roster resolution). |
 | `lambda/revshare-api/code/routes/` | partners.mjs, runs.mjs |
 | `lambda/revshare-api/code/index.mjs` | Lambda entry: auth gate + route dispatch. |
 | `lambda/revshare-api/code/routes/merchants.mjs` | Store-registry (`MERCHANT`) CRUD routes. |
 | `lambda/revshare-api/code/routes/import.mjs` | POST /import/rev-share — parses KA Excel JSON into partners + merchants. Exports `compileRule`, `parseDeviceType`. Dormant: no frontend caller (see §1b). |
-| `lambda/revshare-api/code/routes/bulk-runs.mjs` | Bulk run routes. Exports `buildRosterRows` (roster-authoritative row seeding, keyed by `contractId`), `applyMerchantRoster` (resolves roster labels to `CONTRACT` rows, auto-creating a `noPayout: true` stub for any unmatched label), `payoutDecision` (why a contract is/isn't paid), `groupOrders` (legacy, order-only grouping, unused in the live route). |
+| `lambda/revshare-api/code/routes/bulk-runs.mjs` | Bulk run routes. Exports `buildRosterRows` (roster-authoritative row seeding, keyed by `contractId`; its `if (!m.contractId) continue` guard is defence in depth, not a live path — `applyMerchantRoster` always assigns a `contractId` first), `applyMerchantRoster` (resolves roster labels to `CONTRACT` rows, auto-creating a `noPayout: true` stub for any unmatched label; currency comes from `db.mjs`'s `DEFAULT_CURRENCY`, not a literal), `payoutDecision` (why a contract is/isn't paid; names the merchant in its warning when a sample name is available), `groupOrders` (legacy, order-only grouping, unused in the live route). `createBulkRunRoute` also builds a **`skipped`** list (2026-08-09) — brands that matched roster/order rows but weren't paid — with `skippedCount`/`skippedRevenue`/`totalOrderRevenue` on the run, so revenue never disappears from every total silently; see §1b and Finding 1 of the 2026-08-09 review. `paidBrandCount`/`rosterBrandCount` replace the old overloaded `merchantBrandCount` on the run payload (the `/bulk-runs/prepare` response still uses `merchantBrandCount` for its own, unambiguous meaning: distinct contracts in the roster). |
 | `lambda/revshare-api/code/contracts.mjs` | Contract sheet-row normalisation, name matching (`matchContracts`), import diffing (`buildImportPlan`). Contract fields only — never touches `rule`. |
 | `lambda/revshare-api/code/routes/contracts.mjs` | Contract (`CONTRACT`) CRUD + import routes. `WRITABLE` includes `rule`/`aggregationMode`/`noPayout`/`currency` for direct PUT edits — `CONTRACT` is the payout entity now (§5). |
-| `lambda/revshare-api/tests/` | `engine.test.mjs`, `csv.test.mjs`, `contracts.test.mjs`, `payout.test.mjs`, `bulk-runs.test.mjs`, others — `npm test` → 118 total. |
+| `lambda/revshare-api/tests/` | `engine.test.mjs`, `csv.test.mjs`, `contracts.test.mjs`, `payout.test.mjs`, `bulk-runs.test.mjs`, others — `npm test` → 121 total. |
 | `frontend/index.html` | SPA shell + pre-paint auth gate. |
 | `frontend/style.css` | All styles (tokenized). |
 | `frontend/app.js` | All app JS: auth, screens, Merchant view grid + terms editor, run flow. |
@@ -220,8 +243,9 @@ Account `<YOUR_AWS_ACCOUNT_ID>`, region `ap-northeast-1`. IAM user `<your-iam-us
 | `infra/deploy-frontend.sh` | `aws s3 cp` per file. Injects API URL into `app.js` via sed. |
 | `infra/trust-lambda.json`, `infra/role-policy.json` | IAM templates. |
 | `infra/migrate-to-contracts.mjs` | One-off, idempotent migration (2026-08-07): copies `rule`/`aggregationMode`/`noPayout`/`currency` from each linked `PARTNER` onto its `CONTRACT`, then points every `MERCHANT` store row at a `contractId`. Conditional writes only ever set an absent field — safe to re-run. Already applied to production; not part of any deploy script. Needs the repo-root `package.json` deps below to resolve at all. |
+| `infra/adopt-payable-brands.mjs` | One-off, idempotent (2026-08-09): brings the 41 of the 65 "deliberately unpaid" brands that are actually payable (paying rule, not `noPayout`) into the Merchant view — creates a `CONTRACT` per candidate `PARTNER` and points its store rows at it. Skips a partner that already has a contract (by `partnerId`). `--dry-run` reports counts + the brand list without writing. **As of this writing it has only been dry-run** (41 brands / 235 stores confirmed) — not yet applied; needs explicit user approval first, same as the earlier migration. Needs the repo-root `package.json` deps (now including `ulid`, added 2026-08-09) to resolve. |
 | `infra/compare-pipelines.mjs` | Read-only validation companion to the migration above — diffs migrated `CONTRACT` fields against the source `PARTNER` directly. Last run: 134/134 comparable contracts matched, 0 mismatches. Same dependency requirement as the migration script. |
-| `package.json` (repo root) | Declares `@aws-sdk/client-dynamodb` + `@aws-sdk/lib-dynamodb` as devDependencies (added 2026-08-07, commit `52028d0`) purely so the two `infra/` scripts above can resolve them. `node_modules` previously existed only under `lambda/revshare-api/code`; ESM resolves a bare specifier by walking up from the **importing file**, so no `cd` fixes this — a script in `infra/` needs a `node_modules` reachable from `infra/`, hence root-level deps + `npm install` at repo root. Also holds the `npm test` script. **Does not affect deploys** — `infra/deploy-lambda.sh` zips `lambda/revshare-api/code` only, which has its own `node_modules`/`package.json` for the AWS SDK version actually shipped to Lambda. |
+| `package.json` (repo root) | Declares `@aws-sdk/client-dynamodb` + `@aws-sdk/lib-dynamodb` as devDependencies (added 2026-08-07, commit `52028d0`) plus `ulid` (added 2026-08-09, for `infra/adopt-payable-brands.mjs`'s new `CONTRACT` rows) purely so the `infra/` scripts above can resolve them. `node_modules` previously existed only under `lambda/revshare-api/code`; ESM resolves a bare specifier by walking up from the **importing file**, so no `cd` fixes this — a script in `infra/` needs a `node_modules` reachable from `infra/`, hence root-level deps + `npm install` at repo root. Also holds the `npm test` script. **Does not affect deploys** — `infra/deploy-lambda.sh` zips `lambda/revshare-api/code` only, which has its own `node_modules`/`package.json` for the AWS SDK version actually shipped to Lambda. |
 | `docs/superpowers/specs/` | Design specs (frozen at spec time). |
 | `docs/superpowers/plans/` | Implementation plans. |
 
@@ -247,7 +271,7 @@ Run all tests:
 ```bash
 npm test    # from repo root
 ```
-118/118 should pass.
+121/121 should pass.
 
 ## 5. Data model
 
@@ -348,6 +372,29 @@ syncs shared code TH→SG except `db.mjs`, then deploys `revshare-api` + `revsha
 If it reports SG code changed, commit it in the `revshare_sg` repo. (`db.mjs` is
 never synced — it holds each region's table/bucket; mirror db.mjs logic changes
 by hand.) The frontend is a single shared site (one deploy serves both regions).
+
+**Outstanding manual mirror (2026-08-09, not yet done — flagged by this session, needs to be
+applied by hand in `~/revshare_sg`):** TH's `db.mjs` now exports `DEFAULT_CURRENCY =
+process.env.REVSHARE_CURRENCY || 'THB'`, and `bulk-runs.mjs` (synced verbatim to SG) reads it
+instead of hardcoding `'THB'` when auto-creating a contract stub. SG's `db.mjs` needs the same
+export, with `'SGD'` as its hardcoded default:
+```js
+export const DEFAULT_CURRENCY = process.env.REVSHARE_CURRENCY || 'SGD';
+```
+**What actually happened when this shipped (2026-08-09):** the first cut of this fix used a
+named import (`import { DEFAULT_CURRENCY } from '../db.mjs'`), which is a static ESM binding
+— importing a name the target module doesn't export fails the whole module load. Deploying
+that to SG ahead of the SG `db.mjs` mirror took `revshare-api-sg`'s `/healthz` down
+(`Internal server error`) for about two minutes before it was caught and fixed in the same
+session by switching to a namespace import (`import * as dbModule from '../db.mjs'; const
+DEFAULT_CURRENCY = dbModule.DEFAULT_CURRENCY || 'THB';` — a plain property read, not a static
+binding, so a missing export degrades to the `'THB'` fallback instead of crashing the module).
+**That fallback is still wrong for Singapore** — new SG contract stubs will carry `'THB'`
+until the mirror above is applied — it's just no longer fatal. Apply the mirror to stop the
+silent-wrong-currency case, not to prevent a crash (that risk is already closed). This is the
+same class of incident that took Singapore down for three hours earlier in this project — a
+`db.mjs`-shaped omission — caught fast this time because deploys were healthz-checked
+immediately.
 
 Frontend (SPA):
 ```bash

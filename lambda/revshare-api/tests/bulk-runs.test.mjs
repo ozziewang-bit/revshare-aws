@@ -55,7 +55,14 @@ test('buildRosterRows groups by contractId, not partnerId', () => {
   assert.equal(groups.c2.length, 1);
 });
 
-test('buildRosterRows drops stores with no contract — the 436 case — without throwing', () => {
+// This exercises the `if (!m.contractId) continue` guard directly, but that guard is not a
+// live path in production: applyMerchantRoster auto-creates a noPayout stub CONTRACT for
+// every roster label, so no real roster row ever reaches buildRosterRows without a
+// contractId. It's defence in depth for a caller that skips applyMerchantRoster (e.g. this
+// test). It does NOT model "the 436 case" (brands with no CONTRACT before a roster upload) —
+// those get a contractId assigned during applyMerchantRoster and are skipped-but-matched at
+// payout time instead (see payoutDecision + the `skipped` list in createBulkRunRoute).
+test('buildRosterRows: defensive guard drops a contractId-less row without throwing', () => {
   const roster = [
     { merchantId: 'm1', name: 'Store A', nameLower: 'store a', contractId: 'c1', model: 'S8' },
     { merchantId: 'm2', name: 'Orphan',  nameLower: 'orphan',  contractId: null, model: 'S8' },
@@ -86,6 +93,12 @@ test('payoutDecision: missing contract is skipped with a warning', () => {
   const d = payoutDecision(null, 'c-missing');
   assert.equal(d.pay, false);
   assert.match(d.warning, /c-missing/);
+});
+
+test('payoutDecision: missing contract names the brand when a sample name is available, instead of a bare ULID', () => {
+  const d = payoutDecision(null, 'c-missing', 'Ghost Brand');
+  assert.equal(d.pay, false);
+  assert.match(d.warning, /Ghost Brand/);
 });
 
 test('payoutDecision: noPayout with no rule is skipped silently, no warning', () => {

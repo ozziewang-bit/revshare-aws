@@ -16,11 +16,16 @@ export function ruleHasValue(node) {
   }
 }
 
-// A merchant needs terms when it is meant to be paid but nothing says how much.
+// A merchant needs terms when it is meant to be paid but nothing says how much or how to
+// aggregate it. Must agree with `payoutDecision` (bulk-runs.mjs) — that is what actually runs
+// at calc time — or a contract can pass this gate and still be silently skipped at run time
+// (the aggregationMode half of this check was missing until 2026-08-09; 73 live contracts hit
+// it: a paying rule with no aggregationMode used to clear step 3 and then get skipped in step 4).
 export function contractNeedsTerms(contract) {
   if (!contract) return false;
   if (contract.noPayout) return false;
-  return !ruleHasValue(contract.rule);
+  if (!ruleHasValue(contract.rule)) return true;
+  return contract.aggregationMode !== 'whole' && contract.aggregationMode !== 'per_store';
 }
 
 const key = s => String(s || '').toLowerCase().trim();

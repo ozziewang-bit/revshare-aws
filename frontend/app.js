@@ -793,7 +793,7 @@ async function openTermsEditor(contractId, onSaved) {
     </div>
     <p class="muted" style="margin:-6px 0 14px;font-size:11.5px;">
       Per store matters when a minimum guarantee should apply to each store on its own — under
-      Whole the guarantee collapses to the partner total and small stores lose their floor.
+      Whole the guarantee collapses to the merchant total and small stores lose their floor.
     </p>
     <div id="ct-pe-rule"></div>
     <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:18px;">
@@ -1099,7 +1099,7 @@ async function renderBulkRunsList() {
     <tbody>${runs.map(r => `<tr data-id="${r.runId}" style="cursor:pointer;">
       <td>${escape(periodMonth(r.periodStart))}${r.archived ? ' <span class="badge badge-neutral" title="Archived — cannot be deleted without unarchiving">🔒 Locked</span>' : ''}</td>
       <td>${escape(r.uploadedAt?.split('T')[0] || '')}</td>
-      <td>${r.merchantBrandCount}</td>
+      <td>${r.paidBrandCount}${r.rosterBrandCount > r.paidBrandCount ? ` <span class="muted" style="font-size:11.5px;">of ${r.rosterBrandCount}</span>` : ''}</td>
       <td>${(r.totalPayout || 0).toFixed(2)}</td>
       <td>${r.unmatchedCount > 0 ? `<span style="color:#f03e3e;">${r.unmatchedCount}</span>` : '0'}</td>
       <td style="text-align:right;">${(!r.archived && can('deleteRuns')) ? `<button class="btn-ghost del-run" data-id="${r.runId}" style="color:var(--loss);">Delete</button>` : ''}</td>
@@ -1518,7 +1518,7 @@ function buildPartnerCsv(result) {
   // per_store top-level lump sum (flat_per_partner_total) — not tied to any one merchant
   if (perStore && eng.topLevel && eng.topLevel.payout) {
     sumShare += eng.topLevel.payout;
-    rows.push([q('(partner-level lump sum)'), '', '', n2(eng.topLevel.payout)].join(','));
+    rows.push([q('(merchant-level lump sum)'), '', '', n2(eng.topLevel.payout)].join(','));
   }
 
   const totalRow = [q('Total'), sumRentals, n2(sumRevenue), n2(sumShare)].join(',');
@@ -1552,6 +1552,18 @@ async function renderBulkRunDetail(runId) {
   const totalSharePct = totalRevenue > 0 ? ((run.totalPayout || 0) / totalRevenue * 100).toFixed(1) + '%' : '—';
   const isArchived = !!run.archived;
 
+  // Reconciliation: every order either matched a roster row that got paid (totalRevenue),
+  // matched one that was skipped (skippedRevenue), or matched nothing (unmatchedRevenue) — no
+  // other bucket exists, so these three must sum to the order report's total revenue. Show
+  // the check rather than assuming it holds, so a future gap shows up here instead of only
+  // in a finance reconciliation weeks later.
+  const fmt2 = v => Number(v || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const skippedRevenue = Number(run.skippedRevenue ?? (run.skipped || []).reduce((s, r) => s + (r.revenue || 0), 0));
+  const unmatchedRevenue = Number(run.unmatchedRevenue || 0);
+  const reconciledTotal = totalRevenue + skippedRevenue + unmatchedRevenue;
+  const hasOrderTotal = typeof run.totalOrderRevenue === 'number';
+  const reconciles = hasOrderTotal ? Math.abs(reconciledTotal - run.totalOrderRevenue) < 0.01 : null;
+
   // Archive / Unarchive / Delete action bar
   const archiveBar = (() => {
     const parts = [];
@@ -1574,7 +1586,7 @@ async function renderBulkRunDetail(runId) {
 
   el.innerHTML = `
     ${archiveBar}
-    <p class="muted">Period: <strong>${escape(periodMonth(run.periodStart))}</strong> · Uploaded: ${escape(run.uploadedAt?.split('T')[0])} · ${run.orderCount} orders · ${run.merchantBrandCount} merchants</p>
+    <p class="muted">Period: <strong>${escape(periodMonth(run.periodStart))}</strong> · Uploaded: ${escape(run.uploadedAt?.split('T')[0])} · ${run.orderCount} orders · ${run.paidBrandCount} merchant(s) paid${run.rosterBrandCount > run.paidBrandCount ? ` of ${run.rosterBrandCount} in roster` : ''}</p>
     ${(run.results?.length) ? `<p><a href="#" id="dl-revshare-zip" class="zip-link">↓ ${escape(periodTag(run.periodStart))}_revshare</a> <span class="muted" style="font-size:12px;">(zip · one CSV per merchant)</span></p>` : ''}
     ${run.unmatchedOrderCount ? `
       <div style="margin:8px 0 4px;padding:12px 16px;background:#fff5f5;border:1px solid #ffa8a8;border-radius:8px;font-size:13.5px;">
@@ -1602,14 +1614,37 @@ async function renderBulkRunDetail(runId) {
       <td>${totalSharePct}</td>
     </tr></tfoot>
     </table>
+    ${run.skipped?.length ? `
+      <div style="margin-top:24px;padding:16px;background:#fff9db;border-radius:8px;border:1px solid #ffe066;">
+        <strong style="color:#e67700;">⚠ ${run.skipped.length} merchant(s) skipped — matched orders, not paid</strong>
+        <p style="color:#868e96;font-size:13px;">These merchants' stores were in the roster and had matching orders, but were not paid this run (no revenue share, no usable terms, or a calculation error). Their revenue is not in the Payout total above — it's accounted for here instead.</p>
+        <table class="ts" style="margin-top:8px;">
+          <thead><tr><th>Merchant</th><th>Stores</th><th>Rentals</th><th>Revenue</th><th>Reason</th></tr></thead>
+          <tbody>${run.skipped.map(s => `<tr>
+            <td>${escape(s.merchantName || s.contractId)}</td>
+            <td>${s.merchantCount}</td>
+            <td>${s.rentals}</td>
+            <td>${Number(s.revenue).toFixed(2)}</td>
+            <td style="font-size:12.5px;color:#868e96;">${escape(s.reason || '')}</td>
+          </tr>`).join('')}</tbody>
+          <tfoot><tr><td>Total</td><td></td><td></td><td>${skippedRevenue.toFixed(2)}</td><td></td></tr></tfoot>
+        </table>
+      </div>` : ''}
     ${run.unmatched?.length ? `
       <div style="margin-top:24px;padding:16px;background:#fff5f5;border-radius:8px;border:1px solid #ffa8a8;">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
           <strong style="color:#c92a2a;">⚠ ${run.unmatched.length} unmatched merchant(s)</strong>
           <button id="dl-unmatched" class="btn-ghost" style="color:var(--accent);">↓ Download list (CSV)</button>
         </div>
-        <p style="color:#868e96;font-size:13px;">These names were in the order report but not found in the merchant registry. Add them under the correct partner and re-run.</p>
+        <p style="color:#868e96;font-size:13px;">These names were in the order report but not found in the merchant registry. Add them under the correct merchant and re-run.</p>
         <ul style="font-size:13px;">${run.unmatched.map(n => `<li>${escape(n)}</li>`).join('')}</ul>
+      </div>` : ''}
+    ${hasOrderTotal ? `
+      <div style="margin-top:24px;padding:12px 16px;border-radius:8px;font-size:13px;${reconciles ? 'background:#ebfbee;border:1px solid #8ce99a;color:#2b8a3e;' : 'background:#fff5f5;border:1px solid #ffa8a8;color:#c92a2a;'}">
+        <strong>${reconciles ? '✓ Reconciles' : '✗ Does NOT reconcile'}:</strong>
+        paid ${fmt2(totalRevenue)} + skipped ${fmt2(skippedRevenue)} + unmatched ${fmt2(unmatchedRevenue)}
+        = ${fmt2(reconciledTotal)} ${reconciles ? '' : `vs. total order revenue ${fmt2(run.totalOrderRevenue)} — `}
+        ${reconciles ? `matches the order report's total revenue (${fmt2(run.totalOrderRevenue)}).` : 'this run does not account for all order revenue — investigate before treating totals as final.'}
       </div>` : ''}`;
 
   el.querySelector('#dl-revshare-zip')?.addEventListener('click', (ev) => {

@@ -42,14 +42,28 @@ test('contractNeedsTerms: noPayout never needs terms', () => {
   assert.equal(contractNeedsTerms({ noPayout: true, rule: pct(50) }), false);
 });
 
-test('contractNeedsTerms: a paying rule needs nothing', () => {
-  assert.equal(contractNeedsTerms({ rule: pct(50) }), false);
-});
-
 test('contractNeedsTerms: no rule, or a rule that pays nothing, needs terms', () => {
   assert.equal(contractNeedsTerms({ rule: null }), true);
   assert.equal(contractNeedsTerms({ rule: pct(0) }), true);
   assert.equal(contractNeedsTerms({ rule: { type: 'sum', children: [] } }), true);
+});
+
+// The readiness gate (contractNeedsTerms) must agree with the run-time gate (payoutDecision
+// in bulk-runs.mjs) on aggregationMode, or a contract can clear step 3 and still be skipped
+// silently when the run actually executes — the 73-live-contract bug fixed 2026-08-09.
+test('contractNeedsTerms: a paying rule with no aggregationMode still needs terms', () => {
+  assert.equal(contractNeedsTerms({ rule: pct(50) }), true);
+  assert.equal(contractNeedsTerms({ rule: pct(50), aggregationMode: null }), true);
+  assert.equal(contractNeedsTerms({ rule: pct(50), aggregationMode: 'bogus' }), true);
+});
+
+test('contractNeedsTerms: a paying rule with a valid aggregationMode needs nothing', () => {
+  assert.equal(contractNeedsTerms({ rule: pct(50), aggregationMode: 'whole' }), false);
+  assert.equal(contractNeedsTerms({ rule: pct(50), aggregationMode: 'per_store' }), false);
+});
+
+test('contractNeedsTerms: noPayout never needs terms even with a bogus aggregationMode', () => {
+  assert.equal(contractNeedsTerms({ noPayout: true, rule: pct(50), aggregationMode: 'bogus' }), false);
 });
 
 test('indexContractsByName / resolveLabel match case- and space-insensitively', () => {

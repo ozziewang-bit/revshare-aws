@@ -8,6 +8,12 @@ import { ulid } from 'ulid';
 const REGION = process.env.AWS_REGION || 'ap-northeast-1';
 const TABLE  = process.env.REVSHARE_TABLE || 'RevsharePartner';
 const RUNS_BUCKET = process.env.REVSHARE_RUNS_BUCKET || 'revshare-runs-812751451548-sea7';
+// Region-scoped default currency for auto-created contract stubs (bulk-runs.mjs). This file
+// is never synced between regions (unlike bulk-runs.mjs, which is), so this is where the
+// region-specific literal has to live — same pattern as TABLE/RUNS_BUCKET above. The Singapore
+// db.mjs (~/revshare_sg) must define this export with 'SGD' as its hardcoded default, or the
+// TH literal 'THB' will keep shipping to SG via the synced bulk-runs.mjs import.
+export const DEFAULT_CURRENCY = process.env.REVSHARE_CURRENCY || 'THB';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }));
 const s3 = new S3Client({ region: REGION });
@@ -170,10 +176,14 @@ export async function putBulkRun(bulkRun) {
     uploadedAt: bulkRun.uploadedAt,
     orderCount: bulkRun.orderCount ?? 0,
     merchantCount: bulkRun.merchantCount ?? 0,
-    merchantBrandCount: bulkRun.merchantBrandCount ?? 0,
+    paidBrandCount: bulkRun.paidBrandCount ?? 0,
+    rosterBrandCount: bulkRun.rosterBrandCount ?? 0,
     unmatchedCount: bulkRun.unmatchedCount ?? 0,
     unmatchedOrderCount: bulkRun.unmatchedOrderCount ?? 0,
     unmatchedRevenue: bulkRun.unmatchedRevenue ?? 0,
+    skippedCount: bulkRun.skippedCount ?? 0,
+    skippedRevenue: bulkRun.skippedRevenue ?? 0,
+    totalOrderRevenue: bulkRun.totalOrderRevenue ?? 0,
     totalPayout: bulkRun.totalPayout ?? 0,
     warningCount: (bulkRun.warnings || []).length,
     archived: bulkRun.archived || false
