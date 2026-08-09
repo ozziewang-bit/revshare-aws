@@ -852,6 +852,26 @@ table.table tr:last-child td { border-bottom: none; }
 .ct-table th.ct-r { text-align: right; }
 .ct-table th.ct-c { text-align: center; }
 
+/* Two-row header: a group row on top, click to collapse or spread that whole section, and
+   the column labels beneath it. The column row has to stick BELOW the group row rather than
+   at 0, or the two overlap as soon as the grid scrolls — which is what the fixed group-row
+   height exists to give the offset a number. Sentence case, so the section titles read as a
+   level above the small uppercase column labels rather than competing with them. */
+#main .ct-table thead tr.ct-ghead-row th {
+  top: 0; height: 27px; box-sizing: border-box; padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--ink-soft); font-size: 11px; text-transform: none; letter-spacing: .01em;
+}
+#main .ct-table thead tr.ct-chead-row th { top: 27px; }
+.ct-ghead-btn { cursor: pointer; user-select: none; }
+.ct-ghead-btn:hover { background: var(--accent-soft); color: var(--accent); }
+.ct-caret { color: var(--ink-faint); font-size: 9px; }
+.ct-ghead-btn:hover .ct-caret { color: var(--accent); }
+/* A closed group keeps one narrow column, so the header that reopens it never disappears
+   along with the data it hides. */
+.ct-ghead-closed { min-width: 92px; }
+.ct-ghead-stub { min-width: 0; padding: 0; }
+
 .ct-cell { padding: 7px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
 .ct-r { text-align: right; }
 .ct-c { text-align: center; }
@@ -905,9 +925,6 @@ table.table tr:last-child td { border-bottom: none; }
 #main.main-wide .ct-table { font-size: 12.5px; }
 #main.main-wide .ct-cell { padding: 6px 8px; }
 #main.main-wide .ct-table th { padding: 8px 8px; }
-.ct-groups { display: inline-flex; gap: 12px; align-items: center; font-size: 12.5px;
-  color: var(--ink-soft); padding-left: 4px; border-left: 1px solid var(--border); }
-.ct-groups label { display: inline-flex; gap: 4px; align-items: center; cursor: pointer; white-space: nowrap; }
 .ct-computed { color: var(--ink-soft); }
 .ct-unit { color: var(--ink-faint); }
 .ct-alert { margin-right: 5px; font-size: 12px; cursor: default; }

@@ -545,8 +545,84 @@ let CONTRACT_GROUPS_ON = (() => {
   } catch { /* corrupt or unavailable storage — fall through to all-on */ }
   return Object.fromEntries(CONTRACT_GROUPS.map(g => [g.key, true]));
 })();
-const visibleContractColumns = () =>
-  CONTRACT_GRID_COLUMNS.filter(c => !c.group || c.group === 'id' || CONTRACT_GROUPS_ON[c.group]);
+// The grid's columns as contiguous groups, in render order. `id` is not toggleable — the
+// merchant is what identifies the row, so there must always be something to read.
+function contractLayout() {
+  const segs = [];
+  for (const col of CONTRACT_GRID_COLUMNS) {
+    const key = col.group || 'id';
+    let seg = segs[segs.length - 1];
+    if (!seg || seg.key !== key) {
+      const g = CONTRACT_GROUPS.find(x => x.key === key);
+      segs.push(seg = { key, label: g ? g.label : '', toggleable: !!g,
+                        open: !g || CONTRACT_GROUPS_ON[key] !== false, cols: [] });
+    }
+    seg.cols.push(col);
+  }
+  return segs;
+}
+
+// One entry per rendered cell: every open group's columns, plus a single stub cell standing
+// in for each closed group. A closed group keeps that one narrow column so its header — the
+// only way to reopen it — never disappears along with its data. Header and body both walk
+// this list, so they cannot disagree about how many cells a row has.
+function contractRenderCells() {
+  const out = [];
+  let prev = null;
+  for (const seg of contractLayout()) {
+    if (seg.toggleable && !seg.open) {
+      out.push({ stub: seg, sep: prev !== null });
+    } else {
+      seg.cols.forEach((col, i) => out.push({ col, sep: i === 0 && prev !== null }));
+    }
+    prev = seg.key;
+  }
+  return out;
+}
+// Recomputed whenever the header is built; contractRowHtml reads it so the cell list is
+// walked once per paint rather than once per row.
+let CT_CELLS = contractRenderCells();
+
+function contractHeadHtml() {
+  const groupRow = [], colRow = [];
+  for (const seg of contractLayout()) {
+    if (!seg.toggleable) {
+      // The Merchant column is frozen, so the group row needs its own pinned cell above it —
+      // otherwise group labels slide under the frozen column when the grid scrolls right.
+      groupRow.push('<th class="ct-sticky"></th>');
+      if (seg.cols.length > 1) groupRow.push(`<th colspan="${seg.cols.length - 1}"></th>`);
+    } else if (seg.open) {
+      groupRow.push(`<th class="ct-gsep ct-ghead-btn" colspan="${seg.cols.length}" data-group="${seg.key}"`
+        + ` title="Hide the ${escape(seg.label)} columns">${escape(seg.label)} <span class="ct-caret">▾</span></th>`);
+    } else {
+      groupRow.push(`<th class="ct-gsep ct-ghead-btn ct-ghead-closed" data-group="${seg.key}"`
+        + ` title="Show the ${escape(seg.label)} columns"><span class="ct-caret">▸</span> ${escape(seg.label)}</th>`);
+    }
+  }
+  groupRow.push('<th class="ct-gsep" colspan="2"></th>');
+
+  CT_CELLS = contractRenderCells();
+  CT_CELLS.forEach((cell, i) => {
+    if (cell.stub) {
+      colRow.push(`<th class="ct-gsep ct-ghead-stub" data-group="${cell.stub.key}"`
+        + ` title="Show the ${escape(cell.stub.label)} columns"></th>`);
+    } else {
+      colRow.push(`<th style="min-width:${cell.col.width}px" class="${colClasses(cell, i)}">${escape(cell.col.label)}</th>`);
+    }
+  });
+  colRow.push('<th class="ct-gsep" style="min-width:135px">Edit terms</th><th style="min-width:38px"></th>');
+
+  return `<tr class="ct-ghead-row">${groupRow.join('')}</tr>`
+       + `<tr class="ct-chead-row">${colRow.join('')}</tr>`;
+}
+
+function toggleContractGroup(key) {
+  CONTRACT_GROUPS_ON = { ...CONTRACT_GROUPS_ON, [key]: CONTRACT_GROUPS_ON[key] === false };
+  try { localStorage.setItem('rs_ct_groups', JSON.stringify(CONTRACT_GROUPS_ON)); } catch { /* private mode */ }
+  const thead = document.querySelector('.ct-table thead');
+  if (thead) thead.innerHTML = contractHeadHtml();   // header and body must be rebuilt together
+  paintContracts();
+}
 
 const MERCHANT_TYPES = ['F&B', 'Hospitality', 'Lifestyle', 'Shopping Malls', 'Nightlife',
                         'Exhibition Center', 'Convenience Store', 'other'];
@@ -561,14 +637,15 @@ const unitsTotal = c => UNIT_MODEL_KEYS.reduce((a, m) => a + (Number((c.units ||
 // Presentation derived from the column's type, computed once and used by BOTH the header
 // and the body so the two can never drift out of alignment.
 const GROUP_ORDER = ['id', 'contact', 'machines', 'contract', 'terms'];
-function colClasses(col, i, prevGroup) {
+function colClasses(cell, i) {
   const out = [];
+  const col = cell.col;
   if (col.type === 'bool') out.push('ct-c');
   else if (['number', 'computed', 'term-num', 'term-model'].includes(col.type)) out.push('ct-r');
   if (i === 0) out.push('ct-sticky');
   // A hairline where one group of columns ends and the next begins — at 25 columns the eye
   // needs somewhere to rest.
-  if (prevGroup && col.group && col.group !== prevGroup) out.push('ct-gsep');
+  if (cell.sep) out.push('ct-gsep');
   return out.join(' ');
 }
 
@@ -686,8 +763,9 @@ function termCellHtml(c, col) {
 
 function contractRowHtml(c) {
   const rf = renewalFlag(c);
-  let bg = null;
-  const cells = visibleContractColumns().map((col, i) => {
+  const cells = CT_CELLS.map((cell, i) => {
+    if (cell.stub) return '<td class="ct-cell ct-gsep ct-ghead-stub"></td>';
+    const col = cell.col;
     const v = cellValue(c, col.key);
     let disp;
     if (col.type && col.type.startsWith('term-')) disp = termCellHtml(c, col);
@@ -717,7 +795,7 @@ function contractRowHtml(c) {
     // An explicit dash for empty, so "nothing recorded" is distinguishable from a cell that
     // simply failed to render — at this width a blank cell reads as a glitch.
     if (disp === '') disp = '<span class="ct-empty">–</span>';
-    const cls = colClasses(col, i, bg); bg = col.group;
+    const cls = colClasses(cell, i);
     const flag = col.key === 'endDate' && rf.cls ? ` ${rf.cls}` : '';
     const tip = col.key === 'endDate' && rf.title ? ` title="${escape(rf.title)}"` : '';
     return `<td class="ct-cell ${cls}${flag}" data-id="${escape(c.contractId)}" data-key="${col.key}"${tip}>${disp}</td>`;
@@ -888,11 +966,6 @@ async function renderContractsScreen() {
   ]);
   CONTRACTS = contracts;
   MACHINE_MODELS_CACHE = machineModels;
-  let hg = null;
-  const head = visibleContractColumns()
-    .map((c, i) => { const cls = colClasses(c, i, hg); hg = c.group; 
-      return `<th style="min-width:${c.width}px" class="${cls}">${escape(c.label)}</th>`; })
-    .join('') + '<th class="ct-gsep" style="min-width:135px">Edit terms</th><th style="min-width:38px"></th>';
   el.innerHTML = `
     <h1>Merchant view</h1>
     <div class="ct-toolbar">
@@ -904,21 +977,17 @@ async function renderContractsScreen() {
       </select>
       ${can('manageMerchants') ? '<button type="button" id="ct-new" class="btn btn-primary">+ New merchant</button>' : ''}
       ${can('manageMerchants') ? '<button type="button" id="ct-file-choose" class="btn">Upload sheet</button><input type="file" id="ct-file" accept=".xlsx" style="display:none">' : ''}
-      <span class="ct-groups">${CONTRACT_GROUPS.map(g => `<label><input type="checkbox" data-group="${g.key}"${CONTRACT_GROUPS_ON[g.key] ? ' checked' : ''}> ${g.label}</label>`).join('')}</span>
       <span class="muted" id="ct-count"></span>
     </div>
-    <div class="ct-scroll"><table class="ct-table"><thead><tr>${head}</tr></thead>
+    <div class="ct-scroll"><table class="ct-table"><thead>${contractHeadHtml()}</thead>
       <tbody id="ct-body"></tbody></table></div>`;
   ['ct-search', 'ct-status'].forEach(id =>
     el.querySelector('#' + id).addEventListener('input', paintContracts));
-  // Toggling a group changes the header too, so re-render the whole screen rather than
-  // just repainting rows — otherwise the <th>s and <td>s fall out of alignment.
-  el.querySelectorAll('.ct-groups input[data-group]').forEach(cb =>
-    cb.addEventListener('change', () => {
-      CONTRACT_GROUPS_ON = { ...CONTRACT_GROUPS_ON, [cb.dataset.group]: cb.checked };
-      try { localStorage.setItem('rs_ct_groups', JSON.stringify(CONTRACT_GROUPS_ON)); } catch { /* private mode */ }
-      renderContractsScreen();
-    }));
+  // Delegated on <thead>, which survives its own innerHTML being replaced on every toggle.
+  el.querySelector('.ct-table thead').addEventListener('click', ev => {
+    const th = ev.target.closest('[data-group]');
+    if (th) toggleContractGroup(th.dataset.group);
+  });
   paintContracts();
   el.querySelector('#ct-body').addEventListener('click', ev => {
     if (ev.target.closest('a')) return;          // let the contract link open normally
