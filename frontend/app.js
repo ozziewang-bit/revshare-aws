@@ -491,7 +491,7 @@ async function renderRevsharePathScreen() {
   const main = document.getElementById('main');
   main.innerHTML = `<div class="page-head"><h2>Analytics</h2></div>
     <div style="max-width:340px;margin-bottom:8px;">
-      <input id="rp-search" class="search-input" list="rp-options" placeholder="Search partner… (or Total)" autocomplete="off">
+      <input id="rp-search" class="search-input" list="rp-options" placeholder="Search merchant… (or Total)" autocomplete="off">
       <datalist id="rp-options"></datalist>
     </div>
     <div id="rp-title" class="muted" style="margin:4px 0 10px;font-size:13px;"></div>
@@ -514,11 +514,11 @@ async function renderRevsharePathScreen() {
     const payout = run.totalPayout || 0;
     return { month: m, revenue, payout, sharePct: pct(payout, revenue) };
   });
-  const partnerSeries = {};
+  const series = {};
   months.forEach(m => (byMonth[m].results || []).forEach(r => {
-    (partnerSeries[r.partnerName] = partnerSeries[r.partnerName] || []).push({ month: m, revenue: r.revenue || 0, payout: r.payout || 0, sharePct: pct(r.payout || 0, r.revenue || 0) });
+    (series[r.merchantName] = series[r.merchantName] || []).push({ month: m, revenue: r.revenue || 0, payout: r.payout || 0, sharePct: pct(r.payout || 0, r.revenue || 0) });
   }));
-  const names = Object.keys(partnerSeries).sort((a, b) => a.localeCompare(b));
+  const names = Object.keys(series).sort((a, b) => a.localeCompare(b));
   const byLower = {}; names.forEach(n => { byLower[n.toLowerCase()] = n; });
 
   document.getElementById('rp-options').innerHTML = ['Total', ...names].map(n => `<option value="${escape(n)}"></option>`).join('');
@@ -528,9 +528,9 @@ async function renderRevsharePathScreen() {
     const chartEl = document.getElementById('rp-chart');
     const key = (sel || '').trim().toLowerCase();
     let label, data;
-    if (!key || key === 'total') { label = 'Total — all partners'; data = totalSeries; }
-    else if (byLower[key]) { label = byLower[key]; data = partnerSeries[byLower[key]]; }
-    else { titleEl.textContent = ''; chartEl.innerHTML = `<p class="muted">No partner matching “${escape(sel)}”.</p>`; return; }
+    if (!key || key === 'total') { label = 'Total — all merchants'; data = totalSeries; }
+    else if (byLower[key]) { label = byLower[key]; data = series[byLower[key]]; }
+    else { titleEl.textContent = ''; chartEl.innerHTML = `<p class="muted">No merchant matching “${escape(sel)}”.</p>`; return; }
     titleEl.textContent = label;
     chartEl.innerHTML = data && data.length ? revsharePathChartSvg(data) : '<p class="muted">No calculations yet to chart.</p>';
   }
@@ -913,7 +913,10 @@ function openTermsView(contractId) {
 // paid at all, and its full rule — edited with the same tree editor as the partner Rule
 // tab rather than the flattened cells this grid used to carry. The row IS the payout
 // record now; there is no partner to create or link.
-async function openTermsEditor(contractId) {
+// `onSaved(saved)` is optional and fires only after a successful save (not on cancel) —
+// callers outside the Merchant view screen (e.g. the run wizard) use it to know when to
+// re-check readiness, since this dialog has no other way to report completion.
+async function openTermsEditor(contractId, onSaved) {
   const c = CONTRACTS.find(x => x.contractId === contractId);
   if (!c) return;
   const { card, close } = ctModal(720);
@@ -959,6 +962,7 @@ async function openTermsEditor(contractId) {
         body: JSON.stringify({ rule, noPayout: nopay.checked, aggregationMode: agg.value }) });
       Object.assign(c, saved);
       close(); paintContracts();
+      onSaved?.(saved);
     } catch (err) {
       alert('Could not save: ' + err.message);
     } finally { btn.disabled = false; btn.textContent = 'Save'; }
@@ -1075,6 +1079,10 @@ async function renderContractsScreen() {
 }
 
 function paintContracts() {
+  // No-op when the Merchant view screen isn't mounted — openTermsEditor calls this
+  // unconditionally on save, and it's also opened from other screens (the run wizard).
+  const body = document.getElementById('ct-body');
+  if (!body) return;
   const q = (document.getElementById('ct-search')?.value || '').toLowerCase().trim();
   const type = document.getElementById('ct-type')?.value || '';
   const sort = document.getElementById('ct-sort')?.value || 'name';
@@ -1084,7 +1092,7 @@ function paintContracts() {
   rows.sort(sort === 'end'
     ? (a, b) => (a.endDate || '9999').localeCompare(b.endDate || '9999')
     : (a, b) => (a.merchantName || '').localeCompare(b.merchantName || ''));
-  document.getElementById('ct-body').innerHTML = rows.map(contractRowHtml).join('');
+  body.innerHTML = rows.map(contractRowHtml).join('');
   document.getElementById('ct-count').textContent = `${rows.length} of ${CONTRACTS.length}`;
 }
 
@@ -1232,11 +1240,11 @@ async function renderBulkRunsList() {
   const runs = await api('/bulk-runs');
   const out = document.getElementById('bulk-runs-out');
   if (!runs.length) { out.innerHTML = '<p class="muted">No calculations yet.</p>'; return; }
-  out.innerHTML = `<table class="ts"><thead><tr><th>Period</th><th>Uploaded</th><th>Partners</th><th>Total payout</th><th>Unmatched</th><th></th></tr></thead>
+  out.innerHTML = `<table class="ts"><thead><tr><th>Period</th><th>Uploaded</th><th>Merchants</th><th>Total payout</th><th>Unmatched</th><th></th></tr></thead>
     <tbody>${runs.map(r => `<tr data-id="${r.runId}" style="cursor:pointer;">
       <td>${escape(periodMonth(r.periodStart))}${r.archived ? ' <span class="badge badge-neutral" title="Archived — cannot be deleted without unarchiving">🔒 Locked</span>' : ''}</td>
       <td>${escape(r.uploadedAt?.split('T')[0] || '')}</td>
-      <td>${r.partnerCount}</td>
+      <td>${r.merchantBrandCount}</td>
       <td>${(r.totalPayout || 0).toFixed(2)}</td>
       <td>${r.unmatchedCount > 0 ? `<span style="color:#f03e3e;">${r.unmatchedCount}</span>` : '0'}</td>
       <td style="text-align:right;">${(!r.archived && can('deleteRuns')) ? `<button class="btn-ghost del-run" data-id="${r.runId}" style="color:var(--loss);">Delete</button>` : ''}</td>
@@ -1277,8 +1285,8 @@ function renderNewBulkRunForm() {
   function render() {
     const step1Done = !!(wiz.periodStart && wiz.periodEnd);
     const step2Done = !!(wiz.prepare);
-    const pendingRules = (wiz.prepare?.partnersNeedingRules || []);
-    const step3Done = step2Done && pendingRules.length === 0;
+    const pendingTerms = (wiz.prepare?.merchantsNeedingTerms || []);
+    const step3Done = step2Done && pendingTerms.length === 0;
 
     main.innerHTML = `
       <div class="page-head">
@@ -1320,8 +1328,8 @@ function renderNewBulkRunForm() {
           </div>
           <div id="wiz-ml-status" style="margin-top:10px;"></div>
           ${step2Done ? `<div style="margin-top:10px;padding:12px 16px;background:#ebfbee;border:1px solid #8ce99a;border-radius:8px;font-size:13.5px;">
-            <strong>Roster loaded:</strong> ${wiz.prepare.rosterCount} machines · ${wiz.prepare.partnerCount} partners
-            ${wiz.prepare.newPartners?.length ? `· <span style="color:#2b8a3e;">${wiz.prepare.newPartners.length} new partner(s) created</span>` : ''}
+            <strong>Roster loaded:</strong> ${wiz.prepare.rosterCount} machines · ${wiz.prepare.merchantBrandCount} merchants
+            ${wiz.prepare.newMerchants?.length ? `· <span style="color:#2b8a3e;">${wiz.prepare.newMerchants.length} new merchant(s) created</span>` : ''}
             ${wiz.prepare.unassigned?.length ? `· <span style="color:#e67700;">${wiz.prepare.unassigned.length} unassigned store(s)</span>` : ''}
           </div>` : ''}
           `}
@@ -1333,9 +1341,9 @@ function renderNewBulkRunForm() {
         <div class="wizard-step-head"><span class="wizard-step-num">3</span> Review rules</div>
         <div class="wizard-step-body">
           ${!step2Done ? '<p class="muted">Complete Step 2 first.</p>' : (
-            pendingRules.length === 0
-              ? '<p style="color:#2b8a3e;">✓ All partners have rules — Step 4 is unlocked.</p>'
-              : `<p style="color:#e67700;"><strong>${pendingRules.length} partner(s) need a rule before you can run:</strong></p>
+            pendingTerms.length === 0
+              ? '<p style="color:#2b8a3e;">✓ All merchants have revenue-share terms — Step 4 is unlocked.</p>'
+              : `<p style="color:#e67700;"><strong>${pendingTerms.length} merchant(s) need revenue-share terms before you can run:</strong></p>
                  <div id="wiz-rule-editors"></div>`
           )}
         </div>
@@ -1403,8 +1411,8 @@ function renderNewBulkRunForm() {
       });
     }
 
-    // Step 3 rule editors (called after render if step2Done and pending rules)
-    if (step2Done && pendingRules.length > 0) {
+    // Step 3 rule editors (called after render if step2Done and pending terms)
+    if (step2Done && pendingTerms.length > 0) {
       renderWizardRuleEditors();
     }
 
@@ -1456,36 +1464,47 @@ function renderNewBulkRunForm() {
     }
   }
 
-  // Render inline rule editors for each partner needing a rule (Task 11)
+  // List the merchants still needing revenue-share terms; each opens the Merchant view's
+  // own terms dialog (openTermsEditor) rather than a partner-shaped editor — the row IS
+  // the payout record now. That dialog reads from the CONTRACTS / MACHINE_MODELS_CACHE
+  // globals, which only the Merchant view screen normally populates, so load them here
+  // too since the wizard never renders that screen.
   async function renderWizardRuleEditors() {
     const slot = document.getElementById('wiz-rule-editors');
     if (!slot) return;
-    const pendingRules = wiz.prepare?.partnersNeedingRules || [];
-    if (!pendingRules.length) return;
+    const pendingTerms = wiz.prepare?.merchantsNeedingTerms || [];
+    if (!pendingTerms.length) return;
+    slot.innerHTML = 'Loading…';
+    try {
+      const [contracts, machineModels] = await Promise.all([api('/contracts'), api('/machine-models')]);
+      CONTRACTS = contracts;
+      MACHINE_MODELS_CACHE = machineModels;
+    } catch (e) {
+      slot.innerHTML = `<p style="color:#f03e3e;">Could not load merchant data: ${escape(e.message)}</p>`;
+      return;
+    }
     slot.innerHTML = '';
-    for (const { partnerId, name } of pendingRules) {
-      const card = document.createElement('div');
-      card.dataset.partnerId = partnerId;
-      card.style.cssText = 'border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:16px;';
-      card.innerHTML = `<div style="font-weight:600;margin-bottom:12px;">${escape(name)}</div><div class="re-slot"></div>`;
-      slot.appendChild(card);
-      const editorSlot = card.querySelector('.re-slot');
-      let partner;
-      try {
-        partner = await api('/partners/' + partnerId);
-      } catch (e) {
-        editorSlot.innerHTML = `<p style="color:#f03e3e;">Could not load partner: ${escape(e.message)}</p>`;
-        continue;
-      }
-      await renderRuleEditorInto(editorSlot, partner, () => {
-        // Drop this partner from pending list and re-check unlock
-        wiz.prepare.partnersNeedingRules = wiz.prepare.partnersNeedingRules.filter(p => p.partnerId !== partnerId);
-        card.innerHTML = `<p style="color:#2b8a3e;">✓ ${escape(name)} — rule saved</p>`;
-        // Check if all done → re-render to unlock step 4
-        if (wiz.prepare.partnersNeedingRules.length === 0) {
-          render();
-        }
+    pendingTerms.forEach(({ contractId, name }) => {
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;border:1px solid var(--border);border-radius:8px;padding:12px 16px;margin-bottom:10px;';
+      row.innerHTML = `<span style="font-weight:600;">${escape(name)}</span><button type="button" class="btn-ghost wiz-set-terms">Set terms…</button>`;
+      slot.appendChild(row);
+      row.querySelector('.wiz-set-terms').addEventListener('click', () => {
+        openTermsEditor(contractId, refreshReadiness);
       });
+    });
+
+    // Re-run prepare (idempotent) after a save so the still-needs-terms question is
+    // answered by the backend's own readiness rule (ruleHasValue), not a re-derived
+    // copy of it here that could drift out of sync.
+    async function refreshReadiness() {
+      try {
+        wiz.prepare = await api('/bulk-runs/prepare', { method: 'POST', body: JSON.stringify({ merchants: wiz.merchants }) });
+      } catch (e) {
+        alert('Could not refresh readiness: ' + e.message);
+        return;
+      }
+      render();
     }
   }
 
@@ -1590,7 +1609,7 @@ function revsharePathChartSvg(data) {
 }
 
 function sanitizeFilename(s) {
-  return String(s).replace(/[\/\\:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim() || 'partner';
+  return String(s).replace(/[\/\\:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim() || 'merchant';
 }
 
 // Split `total` across `weights` at 2-decimal precision so the parts sum
@@ -1611,7 +1630,7 @@ function apportion(total, weights) {
   return out.map(c => c / 100);
 }
 
-// One CSV per partner, ORDER REPORT format:
+// One CSV per merchant (roster brand), ORDER REPORT format:
 // Merchant name,Total rentals,Total revenue,Total share amount
 function buildPartnerCsv(result) {
   const q = s => `"${String(s).replace(/"/g, '""')}"`;
@@ -1656,7 +1675,7 @@ function downloadRevshareZip(run) {
   const enc = new TextEncoder();
   const used = {};
   const files = (run.results || []).map(r => {
-    let base = `${sanitizeFilename(r.partnerName)}_${tag}`;
+    let base = `${sanitizeFilename(r.merchantName)}_${tag}`;
     if (used[base]) { base = `${base} (${used[base]++})`; } else { used[base] = 1; }
     return { name: `${base}.csv`, data: enc.encode('﻿' + buildPartnerCsv(r)) };
   });
@@ -1700,8 +1719,8 @@ async function renderBulkRunDetail(runId) {
 
   el.innerHTML = `
     ${archiveBar}
-    <p class="muted">Period: <strong>${escape(periodMonth(run.periodStart))}</strong> · Uploaded: ${escape(run.uploadedAt?.split('T')[0])} · ${run.orderCount} orders · ${run.partnerCount} partners</p>
-    ${(run.results?.length) ? `<p><a href="#" id="dl-revshare-zip" class="zip-link">↓ ${escape(periodTag(run.periodStart))}_revshare</a> <span class="muted" style="font-size:12px;">(zip · one CSV per partner)</span></p>` : ''}
+    <p class="muted">Period: <strong>${escape(periodMonth(run.periodStart))}</strong> · Uploaded: ${escape(run.uploadedAt?.split('T')[0])} · ${run.orderCount} orders · ${run.merchantBrandCount} merchants</p>
+    ${(run.results?.length) ? `<p><a href="#" id="dl-revshare-zip" class="zip-link">↓ ${escape(periodTag(run.periodStart))}_revshare</a> <span class="muted" style="font-size:12px;">(zip · one CSV per merchant)</span></p>` : ''}
     ${run.unmatchedOrderCount ? `
       <div style="margin:8px 0 4px;padding:12px 16px;background:#fff5f5;border:1px solid #ffa8a8;border-radius:8px;font-size:13.5px;">
         <strong style="color:#c92a2a;">⚠ ${Number(run.unmatchedOrderCount).toLocaleString('en-US')} order(s) dropped</strong>
@@ -1710,9 +1729,9 @@ async function renderBulkRunDetail(runId) {
         Matched <strong>${Number((run.orderCount || 0) - run.unmatchedOrderCount).toLocaleString('en-US')}</strong> of ${Number(run.orderCount || 0).toLocaleString('en-US')} paid orders.
       </div>` : ''}
     ${run.warnings?.length ? `<p style="color:#e67700;">${run.warnings.map(escape).join('<br>')}</p>` : ''}
-    <table class="ts"><thead><tr><th>Partner</th><th>Merchants</th><th>Rentals</th><th>Revenue</th><th>Payout</th><th>Revenue share %</th></tr></thead>
+    <table class="ts"><thead><tr><th>Merchant</th><th>Merchants</th><th>Rentals</th><th>Revenue</th><th>Payout</th><th>Revenue share %</th></tr></thead>
     <tbody>${(run.results || []).sort((a,b) => b.payout - a.payout).map(r => `<tr>
-      <td>${escape(r.partnerName)}</td>
+      <td>${escape(r.merchantName)}</td>
       <td>${r.merchantCount}</td>
       <td>${r.rentals}</td>
       <td>${Number(r.revenue).toFixed(2)}</td>
