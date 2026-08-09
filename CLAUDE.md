@@ -463,6 +463,18 @@ REVSHARE_CLOUDFRONT_DIST_ID=EXXXXXX ./infra/deploy-frontend.sh
 
 ## 11. Known limitations / v2 candidates
 
+- **Duplicate store names concentrate revenue on one row — verified 2026-08-09, unfixed.**
+  `buildRosterRows` indexes roster rows by `nameLower` with last-write-wins, so **every order
+  for a duplicated store name lands on a single row and its siblings stay at 0 revenue**. The
+  live registry has **1,043 duplicate name groups covering 2,831 of 4,066 store rows**, and
+  **14 names span more than one `contractId`** — for those, revenue moves between brands.
+  Under `whole` aggregation the partner total is unaffected. Under **`per_store` it is not**:
+  it changes `max(GP, MG)` store by store, and 7-Eleven is `per_store` with 2,162 stores.
+  Total revenue is conserved, so the run page's reconciliation banner shows OK and **will not
+  catch this**. Predates the merchant-view migration. Fixing it needs a stable per-store key
+  (the roster's `externalId`, or name+machine model) instead of the name alone — check what
+  the order report actually joins on before changing it.
+
 - **No CloudFront / no custom domain** — site is HTTP-only via S3 static
   website. Provisioning CloudFront + ACM cert is a 30-minute Console job;
   set `REVSHARE_CLOUDFRONT_DIST_ID` in env after that and the deploy
