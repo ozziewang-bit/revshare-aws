@@ -638,6 +638,29 @@ function isRepresentable(r) {
 // Treat an empty sum as "no rule" everywhere the no-rule guards apply, for the same reason.
 const ruleIsAbsent = r => !r || !r.type || (r.type === 'sum' && !(r.children || []).length);
 
+// Mirror of `ruleHasValue` in lambda/revshare-api/code/payout.mjs — kept deliberately
+// identical, because the run pipeline decides who gets paid with that function and this
+// screen must not disagree with it. `ruleIsAbsent` above is the weaker "is there a tree at
+// all" test; this is "does the tree actually pay anything", which is what matters: a rule of
+// `percent ALL 0%` has a tree and pays nothing, and the run skips it.
+// The SPA cannot import from lambda/ (no build step), so this is a maintained duplicate —
+// change one, change the other.
+function ruleHasValue(node) {
+  if (!node || typeof node !== 'object') return false;
+  switch (node.type) {
+    case 'flat_per_partner_total': return Number(node.amount) > 0;
+    case 'percent':                return (node.rows || []).some(r => Number(r.percent) > 0);
+    case 'flat_per_machine':       return (node.rows || []).some(r => Number(r.amount) > 0);
+    case 'tiered_percent':         return (node.rows || []).some(r => (r.tiers || []).some(t => Number(t.percent) > 0));
+    default:                       return (node.children || []).some(ruleHasValue);
+  }
+}
+
+// A merchant needs terms when it is meant to be paid but nothing says how much. This is the
+// same condition the run's step-3 gate uses, so what is flagged here is exactly what will
+// block a run.
+const needsTerms = c => !c.noPayout && !ruleHasValue(c.rule);
+
 // The merchant-view row owns its terms directly — no partner lookup involved.
 function termCellHtml(c, col) {
   const sub = col.key.split('.')[1];          // 'method' | 'summary'
@@ -681,8 +704,15 @@ function contractRowHtml(c) {
     else disp = v == null || v === '' ? '' : escape(String(v)) + (col.suffix ? `<span class="ct-unit">${escape(col.suffix)}</span>` : '');
     // The End-date highlight only helps if that column is on screen; the Merchant column is
     // frozen, so the icon rides there and the row stays spottable however far you scroll.
-    if (i === 0 && rf.cls) {
-      disp = `<span class="ct-alert ${rf.cls === 'ct-expired' ? 'ct-alert-over' : 'ct-alert-soon'}" title="${escape(rf.title)}">⚠</span>` + disp;
+    if (i === 0) {
+      // Two independent row-level flags ride the frozen Merchant column so they stay visible
+      // however far right the grid is scrolled: renewal risk, and "this will block a run".
+      if (needsTerms(c)) {
+        disp = '<span class="ct-alert ct-alert-terms" title="No terms that pay anything — this merchant will block Step 4 of a run until its terms are set, or it is marked None">◆</span>' + disp;
+      }
+      if (rf.cls) {
+        disp = `<span class="ct-alert ${rf.cls === 'ct-expired' ? 'ct-alert-over' : 'ct-alert-soon'}" title="${escape(rf.title)}">⚠</span>` + disp;
+      }
     }
     // An explicit dash for empty, so "nothing recorded" is distinguishable from a cell that
     // simply failed to render — at this width a blank cell reads as a glitch.
@@ -878,10 +908,12 @@ async function renderContractsScreen() {
       ${can('manageMerchants') ? '<button type="button" id="ct-new" class="btn btn-primary">+ New merchant</button>' : ''}
       ${can('manageMerchants') ? '<button type="button" id="ct-file-choose" class="btn">Upload sheet</button><input type="file" id="ct-file" accept=".xlsx" style="display:none">' : ''}
       <span class="ct-groups">${CONTRACT_GROUPS.map(g => `<label><input type="checkbox" data-group="${g.key}"${CONTRACT_GROUPS_ON[g.key] ? ' checked' : ''}> ${g.label}</label>`).join('')}</span>
+      <label class="ct-needs-toggle"><input type="checkbox" id="ct-needs"> Needs terms <span id="ct-needs-n" class="ct-needs-n"></span></label>
       <span class="muted" id="ct-count"></span>
     </div>
     <div class="ct-scroll"><table class="ct-table"><thead><tr>${head}</tr></thead>
       <tbody id="ct-body"></tbody></table></div>`;
+  el.querySelector('#ct-needs')?.addEventListener('change', paintContracts);
   ['ct-search', 'ct-type', 'ct-sort'].forEach(id =>
     el.querySelector('#' + id).addEventListener('input', paintContracts));
   // Toggling a group changes the header too, so re-render the whole screen rather than
@@ -941,14 +973,19 @@ function paintContracts() {
   const q = (document.getElementById('ct-search')?.value || '').toLowerCase().trim();
   const type = document.getElementById('ct-type')?.value || '';
   const sort = document.getElementById('ct-sort')?.value || 'name';
+  const onlyNeeds = document.getElementById('ct-needs')?.checked;
   let rows = CONTRACTS.filter(c =>
     (!q || (c.merchantName || '').toLowerCase().includes(q)) &&
-    (!type || c.merchantType === type));
+    (!type || c.merchantType === type) &&
+    (!onlyNeeds || needsTerms(c)));
   rows.sort(sort === 'end'
     ? (a, b) => (a.endDate || '9999').localeCompare(b.endDate || '9999')
     : (a, b) => (a.merchantName || '').localeCompare(b.merchantName || ''));
   body.innerHTML = rows.map(contractRowHtml).join('');
   document.getElementById('ct-count').textContent = `${rows.length} of ${CONTRACTS.length}`;
+  const n = CONTRACTS.filter(needsTerms).length;
+  const badge = document.getElementById('ct-needs-n');
+  if (badge) { badge.textContent = n ? `(${n})` : ''; badge.classList.toggle('on', n > 0); }
 }
 
 // One cell at a time. Click → input; blur or Enter commits; Escape reverts.
