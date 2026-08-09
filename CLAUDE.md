@@ -1,7 +1,7 @@
 # revshare-aws — handoff
 
-Last updated: 2026-08-06 (Contracts tab — flat editable merchant-contract grid, seeded from the `All_Merchant` sheet).
-Service-worker `CACHE_VERSION` is at `revshare-v83` (bump on every shell change).
+Last updated: 2026-08-07 (merchant view is the payout entity; Partners page removed; `PARTNER` rows kept but dormant).
+Service-worker `CACHE_VERSION` is at `revshare-v104` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
 end-to-end before touching anything. The codebase is the ultimate source of
@@ -9,17 +9,21 @@ truth — when this doc and the code disagree, the code wins.
 
 ## 1. What this is
 
-A ChargeSpot partner revenue-share calculator. Finance picks a partner, uploads
-a CSV of per-machine rental + revenue numbers for some period, and the
-calculator applies that partner's stored rule (a small tree of leaves + combinators)
-to produce an auditable payout breakdown plus a printable PDF statement.
+A ChargeSpot revenue-share calculator. Finance uploads a merchant roster + an
+order report for a period; the calculator resolves each roster brand (by its
+`Merchant label`) to a **Merchant view row** — a `CONTRACT` DDB row, which is
+now the payout entity — and evaluates that row's stored rule (a small tree of
+leaves + combinators) to produce an auditable per-merchant payout breakdown.
+There is no per-partner UI or PDF statement any more; see §1b and §5.
 
 Full design spec: [`docs/superpowers/specs/2026-05-28-revshare-design.md`](docs/superpowers/specs/2026-05-28-revshare-design.md).
 Initial implementation plan (33 tasks): [`docs/superpowers/plans/2026-05-28-revshare.md`](docs/superpowers/plans/2026-05-28-revshare.md).
 Run-flow redesign spec + plan: [`docs/superpowers/specs/2026-06-17-revshare-run-flow-redesign-design.md`](docs/superpowers/specs/2026-06-17-revshare-run-flow-redesign-design.md) + [`docs/superpowers/plans/2026-06-17-revshare-run-flow-redesign.md`](docs/superpowers/plans/2026-06-17-revshare-run-flow-redesign.md).
 Electricity-outside-comparison spec + plan: [`docs/superpowers/specs/2026-08-06-electricity-outside-comparison-design.md`](docs/superpowers/specs/2026-08-06-electricity-outside-comparison-design.md) + [`docs/superpowers/plans/2026-08-06-electricity-outside-comparison.md`](docs/superpowers/plans/2026-08-06-electricity-outside-comparison.md).
+Merchant-view-as-source-of-truth spec + plan (Partners page removed, `CONTRACT` becomes
+the payout entity): [`docs/superpowers/specs/2026-08-07-merchant-view-as-source-of-truth-design.md`](docs/superpowers/specs/2026-08-07-merchant-view-as-source-of-truth-design.md) + [`docs/superpowers/plans/2026-08-07-merchant-view-as-source-of-truth.md`](docs/superpowers/plans/2026-08-07-merchant-view-as-source-of-truth.md).
 
-## 1b. CURRENT STATE (2026-06-17) — read this, the sections below are partly stale
+## 1b. CURRENT STATE (2026-08-07) — read this, the sections below are partly stale
 
 Branding: app is **"RevShare SEA"** with a topbar **Thailand/Singapore** switcher
 (`REGIONS` config in `app.js`; choice persists in `localStorage('rs_region')`,
@@ -27,72 +31,88 @@ default `th`, full `location.reload()` on switch so no TH↔SG state bleeds). TH
 API `7z269nmx74` / DDB `RevsharePartner`; SG → API `4qcyojfg79` / DDB
 `RevsharePartnerSG` (the separate `revshare_sg` repo is the SG backend source —
 keep its Lambda in parity with TH). Currency follows region via `CCY`/`SYM`
-(THB/฿ · SGD/S$) across the chart axis, rule-editor labels, batch-CSV header,
-PDF footer, and the new-partner default; per-partner stored `currency` still
-drives each partner's own display. The SG standalone CloudFront (`E1ALROWEFJOG3Q`)
-is deprecated — the unified site lives on `d2t76jfby056ul`.
+(THB/฿ · SGD/S$) across the chart axis and rule-editor labels; each `CONTRACT`
+row's own stored `currency` drives that merchant's display in runs (this field
+moved off `PARTNER` onto `CONTRACT` on 2026-08-07 — see §5). The SG standalone
+CloudFront (`E1ALROWEFJOG3Q`) is deprecated — the unified site lives on
+`d2t76jfby056ul`.
 
 **UI tabs (frontend/app.js):**
-- **Partners** — partner list + detail (Merchants / Rule / Analytics tabs).
-- **Run share** — roster-driven 4-step wizard for bulk monthly calc:
+- **Merchant view** (`nav-contracts`) — the landing screen and, as of 2026-08-07, the only
+  place a payout record is edited. One flat, editable grid of every `CONTRACT` row: the
+  contact/machines/contract/share-terms column groups from the old Contracts tab
+  (toggleable), search + type filter, inline cell editing, **+ New merchant**, **Upload
+  sheet** (imports the `All_Merchant` sheet via `POST /contracts/import` — contract
+  fields only, never touches `rule`), and an **Edit terms…** dialog per row for the
+  share-terms rule itself (GP%/Electricity/Placement/Others/MG + payout method +
+  `aggregationMode` + the `noPayout` checkbox — all gated `manageMerchants`). The grid's
+  share-term editor still round-trips through the same `compileRule`/`decompileRule` and
+  has the same read-only fallback for shapes it can't faithfully represent — see "Rule
+  model" below. `rule`, `aggregationMode`, `noPayout`, and `currency` all live on this
+  `CONTRACT` row now — it **is** the payout entity (see §5).
+- **Run share** (`nav-bulk-runs`, gated `runCalcs`) — roster-driven 4-step wizard for bulk
+  monthly calc:
   1. **Period** — pick period start/end.
   2. **Merchant list** — upload the ChargeSpot "Businessmen list" `.xlsx` (Approved-only
-     roster). Partner name comes from the **`Merchant label`** column; machine model is
-     parsed from **`device type.`**. Calls `POST /bulk-runs/prepare`: upserts the merchant
-     registry, creates missing partners (empty rule), and returns rule-readiness.
-  3. **Review rules** — any roster partner with no usable rule is listed inline for immediate
-     editing. Step 4 is locked until every roster partner has a rule (or is `noPayout`).
+     roster). Brand name comes from the **`Merchant label`** column; machine model is
+     parsed from **`device type.`**. Calls `POST /bulk-runs/prepare`, which resolves each
+     label to a Merchant view (`CONTRACT`) row by name — auto-creating one, flagged
+     `noPayout: true`, for any label with no existing row (a brand absent from the
+     merchant sheet is not paid, by the user's 2026-08-07 decision, but stays visible) —
+     and returns rule-readiness.
+  3. **Review rules** — any resolved merchant whose rule doesn't actually pay anything is
+     listed inline, opening the Merchant view's own terms dialog for immediate editing.
+     Step 4 is locked until every one has a paying rule (or is `noPayout`). The readiness
+     test is `ruleHasValue` (`lambda/revshare-api/code/payout.mjs`) — it walks the rule
+     tree for a non-zero leaf, replacing the old `!rule || !rule.type` check, which passed
+     a bare `percent ALL 0%`. That is why **39 partners** could reach a run and be paid
+     zero with no warning before 2026-08-07.
   4. **Order list** — upload the order report (`.xlsx`); orders are overlaid onto the roster.
      Submits `POST /bulk-runs` with `merchants[]` + `orders[]`.
-  - **Roster-authoritative:** every roster machine becomes an engine row (rentals/revenue 0);
-    orders are overlaid by merchant name. Order-less merchants are still paid their fixed fees
-    (MG/placement) per rule. Orders whose merchant is not in the roster are **unmatched** (not
-    paid) — surfaced in a banner.
-  - Run detail: per-partner table w/ revenue-share %, unmatched-orders banner,
-    per-partner CSV zip download (`<year>_<month>_revshare.zip`), per-run Delete, and
+  - **Roster-authoritative:** every roster machine with a resolved `contractId` becomes an
+    engine row (rentals/revenue 0); orders are overlaid by merchant name. Order-less
+    merchants are still paid their fixed fees (MG/placement) per rule. Orders whose
+    merchant is not in the roster are **unmatched** (not paid) — surfaced in a banner. A
+    roster machine whose brand has **no `CONTRACT` at all** is a separate, permanent case
+    — see "Deliberately unpaid" below.
+  - Run detail: per-merchant table w/ revenue-share %, unmatched-orders banner,
+    per-merchant CSV zip download (`<year>_<month>_revshare.zip`), per-run Delete, and
     **Archive** button (visible to `runCalcs` users). Archived runs show **🔒 Locked** —
     Delete is blocked (409) and an **Unarchive** button appears for admins only.
-- **Analytics** (global + per-partner tab) — monthly combo chart (Revenue/Payout
-  bars + Revenue-share % line, data labels). Global tab defaults to Total (all
-  partners) with a partner search/filter. Built from stored run results.
+- **Analytics** (`nav-revshare-path`) — monthly combo chart (Revenue/Payout bars +
+  Revenue-share % line, data labels), keyed by merchant name across stored bulk-run
+  results. Defaults to Total (all merchants) with a search/filter over individual merchants.
 - **Device Types** — machine-model CRUD.
-- **Contracts** — one flat, fully editable grid of every merchant's contract terms
-  (type, counter party, per-model unit counts, start/end, termination notice,
-  decline-to-renew, auto-renewal, contract-doc link) plus the partner's share terms.
-  Seeded by uploading the `All_Merchant` sheet of the merchant workbook.
-  **The importer writes contract fields only and never touches a partner rule** —
-  the sheet's share terms are shown in the preview and discarded. Mapping sheet terms
-  onto app rules is deliberately deferred. Share-term cells write through the **same
-  `compileRule`/`decompileRule`** the Rule tab uses — never a second compiler. A rule
-  the grid's five-term form can't faithfully represent (checked by round-tripping:
-  `canon(compileRule(decompileRule(r))) === canon(r)`, e.g. `tiered_percent`, `min`,
-  legacy untagged rules) renders **read-only**, directing edits to the Rule tab instead
-  of silently flattening it to `percent ALL 0%`. `saveTerms` never PUTs when nothing
-  changed — for a rule-less partner the no-change baseline is the round-tripped form,
-  not raw `null`, so a stray blur can't fabricate a `0%` rule that would then pass
-  `applyMerchantRoster`'s readiness gate and get silently paid 0 in a bulk run.
-  Switching Mode to `default`/`hybrid` while MG rows exist **confirms first** (those
-  methods drop MG in `compileRule`); adding MG rows while on `default`/`hybrid` offers
-  to switch to `hybrid-higher` instead of silently discarding them. MG and Placement
-  cells open a per-model popover sourced from `GET /machine-models` (the managed
-  Device Types list), not the parser-only `RS_MODELS` constant. Rows with no linked
-  partner have their term cells disabled. `Sliding Scale` is listed as a Mode option
-  but disabled — the engine has `tiered_percent` but no editor for it yet. (The
-  uploaded `All_Merchant` **workbook** — not the app or DDB — describes 4 merchants
-  on a sliding-scale ladder of 15/20/25/30/35% at 99/199/299/399/400+; that tier
-  data isn't imported or stored anywhere the app can calculate it today.) Import:
-  the `All_Merchant` sheet has 208 rows; 132
-  match an existing partner by name (131 unique names — `IMPACT` appears twice and
-  both rows match), 76 are unmatched; a clean import creates 207 contracts (the
-  backend collapses the duplicate `IMPACT` match into one contract).
-- **Update** tab — **removed** (2026-06-17). Rule-batch CSV upload is no longer in the UI.
-  The `POST /import/rule-batch` route itself is gone from the backend entirely (no handler
-  is registered). `parseKaExcel` still exists as dead code in `frontend/app.js` — defined,
-  never called. `/import/rev-share` (`routes/import.mjs`) still exists and is registered in
-  the backend, reachable via a direct API call, but has no caller wired up in the frontend.
 
-**Rule model (NEW — replaces the old leaf-tree editor UX):** a partner's rule is
-built from **share terms** + a **payout method**. Terms: GP% (percent of revenue),
+**Partners page — removed (2026-08-07).** The partner list + detail (Merchants / Rule /
+Analytics tabs), the new-partner form, and the per-partner single-run flow with its
+printable PDF statement are gone from the UI (937 lines removed from `app.js`;
+`frontend/lib/html2canvas.min.js` + `jspdf.umd.min.js` are still loaded by `index.html`
+and cached by the service worker but are now dead weight — nothing calls them). `PARTNER`
+rows and the `/partners`, `/partners/:id/runs*` routes are **retained but dormant** —
+nothing in the frontend reads or calls them any more. They exist by explicit user
+decision, so a migrated `CONTRACT` row's rule can still be checked against the original
+`PARTNER` rule it was copied from (see `infra/compare-pipelines.mjs`, §5). Don't read
+"dormant" as "safe to delete" without asking first.
+
+**Update** tab — already removed (2026-06-17). `POST /import/rule-batch` no longer exists
+in the backend at all (no route registered). `parseKaExcel` is dead code in
+`frontend/app.js` — defined, never called. `POST /import/rev-share`
+(`routes/import.mjs`) is still registered in the backend but has no frontend caller.
+
+**Deliberately unpaid (2026-08-07):** 65 brands (436 store-registry `MERCHANT` rows) exist
+in the store registry with no matching `CONTRACT` row — they never appeared in the
+`All_Merchant` merchant-sheet import that seeded `CONTRACT`. They are **not paid**, by the
+user's 2026-08-07 decision that the merchant sheet is authoritative. They are **not
+deleted**: `buildRosterRows` (`bulk-runs.mjs`) drops a roster machine with no `contractId`
+before grouping, so it can never acquire a payout, and any order against it lands in the
+run's unmatched list instead of being silently attributed. If the same brand later
+appears in an uploaded roster, `applyMerchantRoster` auto-creates a `CONTRACT` for it
+(flagged `noPayout: true`) — visible in the Merchant view from then on, still unpaid until
+someone flips the flag there.
+
+**Rule model (NEW — replaces the old leaf-tree editor UX):** a merchant's (`CONTRACT`
+row's) rule is built from **share terms** + a **payout method**. Terms: GP% (percent of revenue),
 Electricity (lump), Placement (**per machine type**), Others (lump), and MG
 (Minimum Guarantee, **per machine type**). `compileRule`/`decompileRule` (frontend `app.js` + backend `routes/import.mjs`)
 tag leaves with `_t` (term) and the root with `_method` so decompile is exact;
@@ -113,42 +133,56 @@ that none of the 6 max-root partners carried an electricity term. **Engine is
 unchanged** — it still just evaluates `sum`/`max`/`percent`/`flat_per_machine`/
 `flat_per_partner_total`.
 
-**No-payout partners (2026-06-11):** a partner can carry `noPayout: true` (set via the Rule
-tab / new-partner form checkbox "No revenue share — not paid"). Such partners show a calm
-neutral **"No payout"** badge (normal row) in the partner list and are **skipped in bulk runs
-regardless of any rule** (`bulk-runs.mjs` skips them before the no-rule check). The red
-**"No rule"** danger badge + warning banner now flag **only** partners that are empty **and
-not** `noPayout` (genuinely missing). Persisted via the partner PUT merge; create route sets
-`noPayout: !!body.noPayout`. No engine/DDB-schema change.
+**No-payout merchants (2026-06-11; moved to `CONTRACT` 2026-08-07):** a merchant can carry
+`noPayout: true`, set via the Merchant view's **Edit terms…** dialog checkbox "No revenue
+share — not paid". Such rows show a calm neutral **"None"** in the terms column and are
+**skipped in bulk runs regardless of any rule** (`payoutDecision` in `bulk-runs.mjs` checks
+`noPayout` before it checks whether the rule pays anything). A row with no rule at all (and
+not `noPayout`) shows **"not set"** in the same column instead — there is no separate
+danger-badge list view any more; both states are visible only per-row in the Merchant view
+grid. Persisted via the `CONTRACT` PUT merge (`WRITABLE` in `routes/contracts.mjs`); the
+roster's auto-create path (`applyMerchantRoster`) sets `noPayout: true` on every new stub.
+No engine/DDB-schema change.
 
 **Business rule (load-bearing):** KA "Placement (monthly)" is charged **per
-machine / per store** (`flat_per_machine`), NOT a partner lump. MG is also
+machine / per store** (`flat_per_machine`), NOT a lump per merchant. MG is also
 per machine, varying by device type. (The old import wrongly treated placement
 as a lump and MG as a single flat amount — fixed 2026-05-31.)
 
 **Bulk runs are stored in S3** (see §5), not inline in DDB.
 
 **Immutability:** a run is a frozen snapshot (results + `ruleSnapshots` in S3).
-Batch-updating rules NEVER alters past runs — only the partner's current rule,
-affecting future runs only. There is no in-place recompute for bulk runs by
+Batch-updating rules NEVER alters past runs — only the merchant's (`CONTRACT`'s)
+current rule, affecting future runs only. There is no in-place recompute for bulk runs by
 design (user requirement: keep historical periods as-is).
 
-**Current data:** 112 partners, all rules regenerated into the new shape from
-the KA file on 2026-05-31. The canonical 2026-05 run total is **680,172.65**
-(per-machine placement); an earlier 528,383.32 run is superseded but still stored.
+**Current data (live baseline verified 2026-08-07):** 207 `CONTRACT` rows (134 still
+linked to the `PARTNER` row they were migrated from; 73 unlinked — created directly on the
+Merchant view or by roster auto-create), 4,066 `MERCHANT` store-registry rows (3,630
+carrying a `contractId`; 436 with none — see "Deliberately unpaid" above), 199 brands in
+use, 0 bulk runs of any kind against this data as of that date. The pre-migration
+**"Current data"** note this replaced (112 partners, KA regenerated 2026-05-31, canonical
+2026-05 run total 680,172.65) describes the old `PARTNER`-only world and is now historical.
 
-**Aggregation mode + MG floors (2026-06-08):** a `higher`/`hybrid-higher` rule's
-MG floor only applies **per merchant** when the partner is `aggregationMode:
-per_store`. In `whole` mode the `max(GP, MG)` collapses to the partner aggregate,
-so small stores get only their GP slice (no floor). **7-Eleven** was switched to
-`per_store` on 2026-06-08 for this reason (per-store guarantee; partner total
+**Aggregation mode + MG floors (2026-06-08; field moved to `CONTRACT` 2026-08-07):** a
+`higher`/`hybrid-higher` rule's MG floor only applies **per merchant** when the contract is
+`aggregationMode: per_store`. In `whole` mode the `max(GP, MG)` collapses to the merchant's
+aggregate, so small stores get only their GP slice (no floor). **7-Eleven** was switched to
+`per_store` on 2026-06-08 for this reason (per-store guarantee; total
 244,527.50 → 333,252.50 on 2026-05 — pending a re-upload of more accurate raw
 data). **กะทู้** has the same `max(50% GP, S8=200)` shape and is still `whole`
 (should be flipped; no current impact). BIG-C/BTS/AOT/Turtle Shop are MG-dominated
 at every store, so whole == per_store — no change needed. The engine + per-merchant
 CSV already handle per_store correctly; this was a config issue, not a code bug.
+`createBulkRunRoute` now also rejects a `CONTRACT` whose `aggregationMode` is neither
+`whole` nor `per_store` (skips with a warning) rather than letting `evaluateRun` silently
+default to the lower-paying `whole` branch, which is exactly how 7-Eleven's original
+under-payment happened.
 
-Tests: `npm test` → **94/94** pass (incl. `bulk-runs.test.mjs` — roster seeding + order-less fixed-fee; `contracts.test.mjs` — sheet-row normalisation, name matching, and import-plan diffing, all contract-fields-only/no-rule-touch).
+Tests: `npm test` → **118/118** pass (incl. `payout.test.mjs` — `ruleHasValue` /
+`contractNeedsTerms` / label resolution; `bulk-runs.test.mjs` — roster-to-contract
+resolution + order-less fixed-fee; `contracts.test.mjs` — sheet-row normalisation, name
+matching, and import-plan diffing, all contract-fields-only/no-rule-touch).
 
 ## 2. Live URLs and resources
 
@@ -166,24 +200,27 @@ Account `<YOUR_AWS_ACCOUNT_ID>`, region `ap-northeast-1`. IAM user `<your-iam-us
 |---|---|
 | `lambda/revshare-api/code/engine.mjs` | Pure calculation engine. No AWS SDK. Tested via `node:test`. |
 | `lambda/revshare-api/code/csv.mjs` | CSV parser + validation. |
-| `lambda/revshare-api/code/db.mjs` | DynamoDB wrappers (Partner / Run rows). |
+| `lambda/revshare-api/code/db.mjs` | DynamoDB + S3 wrappers for every row family: Partner, Merchant (store registry), Contract, Run, BulkRun, machine-model Config. |
+| `lambda/revshare-api/code/payout.mjs` | Pure payout-decision module (2026-08-07). No AWS imports. Exports `ruleHasValue` (does a rule tree pay anything?), `contractNeedsTerms`, `indexContractsByName`/`resolveLabel` (name-based roster resolution). |
 | `lambda/revshare-api/code/routes/` | partners.mjs, runs.mjs |
 | `lambda/revshare-api/code/index.mjs` | Lambda entry: auth gate + route dispatch. |
-| `lambda/revshare-api/code/routes/merchants.mjs` | Merchant CRUD routes. |
-| `lambda/revshare-api/code/routes/import.mjs` | POST /import/rev-share — parses KA Excel JSON into partners + merchants. Exports `compileRule`, `parseDeviceType`. |
-| `lambda/revshare-api/code/routes/bulk-runs.mjs` | Bulk run routes. Exports `buildRosterRows` (roster-authoritative row seeding), `applyMerchantRoster` (upsert registry + create partners), `groupOrders` (legacy, order-only grouping). |
-| `lambda/revshare-api/code/contracts.mjs` | Contract sheet-row normalisation, name matching (`matchContracts`), import diffing (`buildImportPlan`). Contract fields only — never touches a rule. |
-| `lambda/revshare-api/code/routes/contracts.mjs` | Contract CRUD + import routes. |
-| `lambda/revshare-api/tests/` | `engine.test.mjs`, `csv.test.mjs`, `contracts.test.mjs`, others — `npm test` → 94 total. |
+| `lambda/revshare-api/code/routes/merchants.mjs` | Store-registry (`MERCHANT`) CRUD routes. |
+| `lambda/revshare-api/code/routes/import.mjs` | POST /import/rev-share — parses KA Excel JSON into partners + merchants. Exports `compileRule`, `parseDeviceType`. Dormant: no frontend caller (see §1b). |
+| `lambda/revshare-api/code/routes/bulk-runs.mjs` | Bulk run routes. Exports `buildRosterRows` (roster-authoritative row seeding, keyed by `contractId`), `applyMerchantRoster` (resolves roster labels to `CONTRACT` rows, auto-creating a `noPayout: true` stub for any unmatched label), `payoutDecision` (why a contract is/isn't paid), `groupOrders` (legacy, order-only grouping, unused in the live route). |
+| `lambda/revshare-api/code/contracts.mjs` | Contract sheet-row normalisation, name matching (`matchContracts`), import diffing (`buildImportPlan`). Contract fields only — never touches `rule`. |
+| `lambda/revshare-api/code/routes/contracts.mjs` | Contract (`CONTRACT`) CRUD + import routes. `WRITABLE` includes `rule`/`aggregationMode`/`noPayout`/`currency` for direct PUT edits — `CONTRACT` is the payout entity now (§5). |
+| `lambda/revshare-api/tests/` | `engine.test.mjs`, `csv.test.mjs`, `contracts.test.mjs`, `payout.test.mjs`, `bulk-runs.test.mjs`, others — `npm test` → 118 total. |
 | `frontend/index.html` | SPA shell + pre-paint auth gate. |
 | `frontend/style.css` | All styles (tokenized). |
-| `frontend/app.js` | All app JS: auth, screens, rule editor, run flow, PDF. |
+| `frontend/app.js` | All app JS: auth, screens, Merchant view grid + terms editor, run flow. |
 | `frontend/service-worker.js` | PWA shell cache. **Bump `CACHE_VERSION` on every shell change.** |
-| `frontend/lib/` | Self-hosted html2canvas + jsPDF (used by client-side PDF generation). |
+| `frontend/lib/` | Self-hosted html2canvas + jsPDF + xlsx + zip.js. html2canvas/jsPDF are loaded but **unused** since the PDF-statement flow was removed with the Partners page (2026-08-07) — dead weight, not yet pruned. xlsx/zip.js are still used (roster/order upload, CSV-zip download). |
 | `infra/setup-once.md` | One-time AWS resource walkthrough + live IDs. |
 | `infra/deploy-lambda.sh` | Zip + `update-function-code`. |
 | `infra/deploy-frontend.sh` | `aws s3 cp` per file. Injects API URL into `app.js` via sed. |
 | `infra/trust-lambda.json`, `infra/role-policy.json` | IAM templates. |
+| `infra/migrate-to-contracts.mjs` | One-off, idempotent migration (2026-08-07): copies `rule`/`aggregationMode`/`noPayout`/`currency` from each linked `PARTNER` onto its `CONTRACT`, then points every `MERCHANT` store row at a `contractId`. Conditional writes only ever set an absent field — safe to re-run. Already applied to production; not part of any deploy script. |
+| `infra/compare-pipelines.mjs` | Read-only validation companion to the migration above — diffs migrated `CONTRACT` fields against the source `PARTNER` directly. Last run: 134/134 comparable contracts matched, 0 mismatches. |
 | `docs/superpowers/specs/` | Design specs (frozen at spec time). |
 | `docs/superpowers/plans/` | Implementation plans. |
 
@@ -209,18 +246,19 @@ Run all tests:
 ```bash
 npm test    # from repo root
 ```
-94/94 should pass.
+118/118 should pass.
 
 ## 5. Data model
 
-Single DDB table `RevsharePartner`. Four row families:
+Single DDB table `RevsharePartner`. Five row families:
 
 | pk | sk | What |
 |---|---|---|
-| `PARTNER` | `META#<partnerId>` | Partner config + frozen rule tree. |
-| `RUN#<partnerId>` | `RUN#<runId>` | One run = one CSV upload + computed result. Includes `ruleSnapshot` (rule frozen at calc time) + `csvRaw` (base64) + `csvParsed` + `result`. |
-| `BULKRUN` | `BULKRUN#<runId>` | **Slim summary index only** (counts, totals, `s3Key`). Full payload (results, unmatched names, ruleSnapshots) lives in S3 — see below. |
-| `CONTRACT` | `CONTRACT#<contractId>` | Merchant contract terms + optional `partnerId` link. No share terms — those live on the partner rule. |
+| `CONTRACT` | `CONTRACT#<contractId>` | **The payout entity (since 2026-08-07).** Merchant contract terms (type, counter party, unit counts, start/end, etc.) **plus** `rule`, `aggregationMode`, `noPayout`, `currency` — the fields a bulk run actually evaluates. Optional `partnerId` back-link to the `PARTNER` row it was migrated from. Edited entirely from the Merchant view screen. |
+| `MERCHANT` | `MERCHANT#<merchantId>` | Store-registry row — one per physical machine/location, seeded from the roster upload. Carries `contractId` pointing at the `CONTRACT` (payout) row for its brand; 3,630 of 4,066 rows have one (see §1b "Deliberately unpaid" for the other 436). |
+| `PARTNER` | `META#<partnerId>` | **Retained but dormant.** The pre-2026-08-07 config + rule row. Nothing reads these any more — the Partners UI and its routes are gone (see §1b) — but the rows are kept on purpose so a migrated `CONTRACT`'s rule can be checked against the original it was copied from (`infra/compare-pipelines.mjs`). Do not delete without asking; do not treat as canonical for anything current. |
+| `RUN#<partnerId>` | `RUN#<runId>` | Legacy single-partner run row (one CSV upload + computed result, `ruleSnapshot` + `csvRaw` + `csvParsed` + `result`). The routes that write/read these (`/partners/:id/runs*`) still exist but have no frontend caller and no dedicated test file (`tests/` has no `runs.test.mjs`) — dormant alongside `PARTNER`. |
+| `BULKRUN` | `BULKRUN#<runId>` | **Slim summary index only** (counts, totals, `s3Key`). Full payload (results, unmatched names, ruleSnapshots) lives in S3 — see below. This is the live run type; everything in §1b's Run share wizard writes here. |
 
 **Bulk-run payloads live in S3, not DynamoDB.** A bulk run over a full month
 (20k+ orders → ~1.5k merchants) exceeds DynamoDB's hard 400 KB item limit.
@@ -230,28 +268,41 @@ then fetches the full payload from S3 via `s3Key` (legacy pre-S3 runs without
 `s3Key` are returned inline for backward compat). The Lambda role has
 `s3:GetObject`/`s3:PutObject` on that bucket only (see `infra/role-policy.json`).
 
-**Rule snapshot per run** is load-bearing: editing a partner's rule does NOT
-retroactively change old run results. Each run's PDF/statement reproduces
-exactly what was computed at the time.
+**Rule snapshot per run** is load-bearing: editing a merchant's (`CONTRACT`'s) rule does
+NOT retroactively change old run results. Each bulk run's stored `ruleSnapshots`
+reproduce exactly what was evaluated at the time.
+
+**Why `PARTNER` survives:** the 2026-08-07 migration (`infra/migrate-to-contracts.mjs`)
+copied `rule`/`aggregationMode`/`noPayout`/`currency` from each linked `PARTNER` onto its
+`CONTRACT` — additively, only ever setting an absent field — and pointed every `MERCHANT`
+store row at a `contractId`. It never deleted a `PARTNER` row. That was a deliberate user
+decision, not an oversight: keeping the originals lets anyone re-verify a migrated rule by
+diffing it against where it came from. `infra/compare-pipelines.mjs` is that diff, read-only,
+and last reported 134/134 comparable contracts matching their source partner with 0
+mismatches.
 
 ## 6. Backend routes
 
 **Auth required** — Google Sign-In token (see §9). All routes except `GET /healthz` require a valid Bearer token from an `@inforich.com` / `@inforichjapan.com` account. Writes require specific permissions; reads are open to any authenticated user except `/users` (admin only).
 
+All `/partners*` routes below are **dormant** — no frontend caller since the Partners page
+was removed 2026-08-07 (see §1b, §5). They still work if called directly; kept so a
+migrated `CONTRACT` rule can be checked against its `PARTNER` source.
+
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/healthz` | Liveness probe |
-| GET | `/partners` | List non-archived partners |
-| POST | `/partners` | Create partner |
-| GET | `/partners/:id` | Get partner (incl. rule) |
-| PUT | `/partners/:id` | Update partner (name/currency/aggregationMode/rule/notes) |
-| DELETE | `/partners/:id` | Soft-archive |
-| POST | `/partners/:id/runs` | Create run from uploaded CSV (`{periodStart, periodEnd, csvBase64}`) |
-| GET | `/partners/:id/runs` | List partner's runs |
-| GET | `/partners/:id/runs/:runId` | Get one run (incl. csvRaw, csvParsed, result) |
-| POST | `/partners/:id/runs/:runId/rerun` | Re-apply current rule to stored CSV |
-| POST | `/bulk-runs/prepare` | Apply uploaded merchant list: upsert registry, create missing partners (empty rule). Returns `{rosterCount, partnerCount, newPartners, unassigned, partnersNeedingRules}`. Requires `runCalcs`. |
-| POST | `/bulk-runs` | Create bulk run. Body: `{periodStart, periodEnd, merchants[], orders[]}`. Re-applies roster idempotently, runs engine. Requires `runCalcs`. |
+| GET | `/partners` | List non-archived partners *(dormant)* |
+| POST | `/partners` | Create partner *(dormant)* |
+| GET | `/partners/:id` | Get partner (incl. rule) *(dormant)* |
+| PUT | `/partners/:id` | Update partner (name/currency/aggregationMode/rule/notes) *(dormant)* |
+| DELETE | `/partners/:id` | Soft-archive *(dormant)* |
+| POST | `/partners/:id/runs` | Create run from uploaded CSV (`{periodStart, periodEnd, csvBase64}`) *(dormant)* |
+| GET | `/partners/:id/runs` | List partner's runs *(dormant)* |
+| GET | `/partners/:id/runs/:runId` | Get one run (incl. csvRaw, csvParsed, result) *(dormant)* |
+| POST | `/partners/:id/runs/:runId/rerun` | Re-apply current rule to stored CSV *(dormant)* |
+| POST | `/bulk-runs/prepare` | Resolve an uploaded roster's `Merchant label`s to `CONTRACT` rows by name, auto-creating a `noPayout: true` stub for any label with no match. Returns `{rosterCount, merchantBrandCount, newMerchants, unassigned, merchantsNeedingTerms}`. Requires `runCalcs`. |
+| POST | `/bulk-runs` | Create bulk run. Body: `{periodStart, periodEnd, merchants[], orders[]}`. Re-applies roster idempotently, evaluates each resolved contract's rule via the engine. Requires `runCalcs`. |
 | GET | `/bulk-runs` | List bulk run summaries. |
 | GET | `/bulk-runs/:id` | Get full bulk run (from S3). |
 | POST | `/bulk-runs/:id/archive` | Lock run (sets `archived: true`). Requires `runCalcs`. Locked runs block DELETE (409). |
@@ -326,7 +377,12 @@ REVSHARE_CLOUDFRONT_DIST_ID=EXXXXXX ./infra/deploy-frontend.sh
   manageDeviceTypes, applyRuleBatch, admin` (`admin` ⇒ all). admin email (env) ⇒ all; else
   a **`RevshareUsers`** DDB row (`{email, permissions, updatedAt, updatedBy}`); else
   read-only. Frontend gates controls with `can(perm)`; admin **Users** screen
-  (`renderUsersScreen`) edits grants via `/users`.
+  (`renderUsersScreen`) edits grants via `/users`. **`editPartners` is still a grantable
+  permission on that screen but has had no frontend effect since 2026-08-07** — its two
+  `can('editPartners')` call sites both lived in the now-deleted Partners page. It still
+  gates the dormant backend `/partners` routes (`requiredPermission` in `auth.mjs`); it
+  just has nothing left to unlock in the UI. Not a bug — left as-is rather than rediscovered
+  as one in a future session.
 - **Shared users table:** one `RevshareUsers` table (ap-southeast-7) read by **both**
   Lambdas via `users-db.mjs` (own DDB client, table name a shared constant — NOT in the
   region-specific `db.mjs`). IAM `revshare-users-access` inline policy on both roles.
@@ -349,9 +405,10 @@ REVSHARE_CLOUDFRONT_DIST_ID=EXXXXXX ./infra/deploy-frontend.sh
    adding rule-editor UX for it in `frontend/app.js`.
 4. **Bump `CACHE_VERSION` in `frontend/service-worker.js`** on every shell
    deploy. Same discipline as `expense`.
-5. **Per-run `ruleSnapshot` is load-bearing.** Don't try to read
-   `partner.rule` to display old runs — the run row already has the rule it
-   was computed with frozen inside it.
+5. **Per-run `ruleSnapshot` is load-bearing.** Don't try to read the current
+   `CONTRACT.rule` (or, in a legacy single-partner run, `partner.rule`) to
+   display an old run — the run row already has the rule it was computed
+   with frozen inside it.
 
 ## 11. Known limitations / v2 candidates
 
@@ -362,7 +419,9 @@ REVSHARE_CLOUDFRONT_DIST_ID=EXXXXXX ./infra/deploy-frontend.sh
 - **No advanced tree editor** — the basic rule editor (vertical leaf cards
   under implicit SUM) covers ~80% of contract shapes. Rules requiring
   MAX/MIN nesting must be edited via the raw rule JSON in DynamoDB, or
-  via the API directly (`PUT /partners/:id` with the rule body).
+  via the API directly (`PUT /contracts/:id` with the rule body — `CONTRACT`
+  is the payout entity now, see §5; the equivalent `PUT /partners/:id` still
+  exists but is dormant).
 - **No multi-currency / FX** — each partner stands alone in their fixed
   currency. By design.
 - **No partner-facing portal** — only finance staff log in.
