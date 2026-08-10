@@ -1,4 +1,8 @@
 :root {
+  /* Read by the merchant grid's sticky header, which must pin below the topbar rather
+     than under it. Change .topbar's height and this follows. */
+  --topbar-h: 56px;
+  --ct-ghead-h: 27px;
   --bg: #fafaf9;
   --surface: #ffffff;
   --surface-muted: #f5f5f4;
@@ -39,7 +43,7 @@ input, select, textarea { font-family: inherit; }
 
 /* ============ TOPBAR ============ */
 .topbar {
-  height: 56px;
+  height: var(--topbar-h);
   background: var(--surface);
   border-bottom: 1px solid var(--border);
   box-shadow: 0 1px 4px rgba(15,23,42,.06);
@@ -835,25 +839,35 @@ table.table tr:last-child td { border-bottom: none; }
 .ct-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
 .ct-toolbar .input, .ct-toolbar .btn, .ct-toolbar button { height: 32px; }
 .ct-toolbar .input { padding: 0 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); font-size: 13px; }
-/* Horizontal scrolling stays inside this box (the frozen Merchant column is `sticky; left:0`
-   and needs a scrollport to stick to). Vertical is the PAGE's job: no height cap, so the box
-   grows to fit all rows and the browser's own scrollbar moves through them.
-   Note `overflow-y` is left to compute to `auto` rather than set to `visible` — CSS coerces
-   `visible` to `auto` whenever the other axis scrolls, so writing it would only mislead. With
-   no height constraint it never triggers, which is the point.
-   The cost of this, accepted deliberately: a sticky element resolves against its nearest
-   scrollport, and this box no longer scrolls vertically — so the header rows scroll away with
-   the page instead of pinning. Pinning them again means making the page itself the horizontal
-   scroller, which drags the nav and toolbar sideways too. */
-.ct-scroll { overflow-x: auto;
-  border: 1px solid var(--border); border-radius: 10px; }
+/* The grid has NO scroll container of its own — the page scrolls in both directions. That is
+   what makes the locked header possible: a sticky element pins against its nearest scrolling
+   ancestor, so while this box scrolled, the header could only ever pin to the box. With the
+   box gone, `sticky` on the header rows and on the frozen Merchant column both resolve
+   against the viewport, and both stay put while the whole page moves under them.
+   Do not put `overflow-x: auto` back without also putting the header's `top` offsets back —
+   the two are one decision, not two. */
+.ct-scroll { border: 1px solid var(--border); border-radius: 10px; }
+
+/* Consequences of the page being the horizontal scroller, scoped to the one screen wide
+   enough to need it. Without these, scrolling right to reach the Share-terms columns drags
+   the nav and the search box off the left edge with everything else.
+   `width: 100vw` on the topbar is what keeps its contents laid out across one screen rather
+   than across the table's full width — `justify-content: space-between` would otherwise fling
+   the nav pill to x=2400. 100vw can overshoot by a scrollbar width on platforms with classic
+   scrollbars, which is exactly why this is scoped with :has() to a page that already scrolls
+   horizontally: it cannot introduce a scrollbar that wasn't there. */
+body:has(#main.main-wide) .topbar { width: 100vw; left: 0; }
+/* No z-index on these two: they precede the table in the DOM, so it already paints over them,
+   which is what should happen when the toolbar scrolls up past the pinned header. Raising
+   them above the header would make the toolbar slide across it on the way out. */
+#main.main-wide .ct-toolbar { position: sticky; left: 20px; width: max-content; }
+#main.main-wide > h1 { position: sticky; left: 20px; width: max-content; }
 .ct-table { border-collapse: separate; border-spacing: 0; font-size: 13px; white-space: nowrap;
   font-variant-numeric: tabular-nums; }   /* digits share a width, so numbers line up */
 
 /* Header follows the app's existing table voice (see table.ts): small, uppercase, faint.
-   `sticky` here is now doing horizontal work only — it is what the frozen Merchant column's
-   `left: 0` and the z-index layering hang off. Vertically it is inert, because .ct-scroll no
-   longer scrolls on that axis (see the note there). */
+   It pins to the viewport, below the 56px topbar — which is itself sticky, so a header pinned
+   at 0 would slide underneath it and be invisible. */
 .ct-table th {
   position: sticky; z-index: 2;
   background: var(--surface-muted);
@@ -868,15 +882,16 @@ table.table tr:last-child td { border-bottom: none; }
 /* Two-row header: a group row on top, click to collapse or spread that whole section, and
    the column labels beneath it. Sentence case, so the section titles read as a level above
    the small uppercase column labels rather than competing with them.
-   The rows carried `top: 0` / `top: 27px` while the grid scrolled vertically inside its own
-   box, so the second row would pin below the first instead of overlapping it. The page owns
-   vertical scrolling now, so those offsets did nothing and were removed rather than left to
-   imply a pinning that no longer happens. Restore both if the boxed scroll ever returns. */
+   Both rows pin, stacked: the group row directly under the topbar, the column row directly
+   under that. The column row's offset has to be the topbar plus the group row's own height,
+   or the two overlap the moment the page scrolls — which is the whole reason the group row
+   carries a fixed height rather than being left to its content. */
 #main .ct-table thead tr.ct-ghead-row th {
-  height: 27px; box-sizing: border-box; padding: 5px 8px;
+  top: var(--topbar-h); height: var(--ct-ghead-h); box-sizing: border-box; padding: 5px 8px;
   border-bottom: 1px solid var(--border);
   color: var(--ink-soft); font-size: 11px; text-transform: none; letter-spacing: .01em;
 }
+#main .ct-table thead tr.ct-chead-row th { top: calc(var(--topbar-h) + var(--ct-ghead-h)); }
 .ct-ghead-btn { cursor: pointer; user-select: none; }
 .ct-ghead-btn:hover { background: var(--accent-soft); color: var(--accent); }
 .ct-caret { color: var(--ink-faint); font-size: 9px; }
