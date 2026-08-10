@@ -835,14 +835,27 @@ table.table tr:last-child td { border-bottom: none; }
 .ct-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
 .ct-toolbar .input, .ct-toolbar .btn, .ct-toolbar button { height: 32px; }
 .ct-toolbar .input { padding: 0 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); font-size: 13px; }
-.ct-scroll { overflow-x: auto; overflow-y: auto; max-height: calc(100vh - 260px);
+/* Horizontal scrolling stays inside this box (the frozen Merchant column is `sticky; left:0`
+   and needs a scrollport to stick to). Vertical is the PAGE's job: no height cap, so the box
+   grows to fit all rows and the browser's own scrollbar moves through them.
+   Note `overflow-y` is left to compute to `auto` rather than set to `visible` — CSS coerces
+   `visible` to `auto` whenever the other axis scrolls, so writing it would only mislead. With
+   no height constraint it never triggers, which is the point.
+   The cost of this, accepted deliberately: a sticky element resolves against its nearest
+   scrollport, and this box no longer scrolls vertically — so the header rows scroll away with
+   the page instead of pinning. Pinning them again means making the page itself the horizontal
+   scroller, which drags the nav and toolbar sideways too. */
+.ct-scroll { overflow-x: auto;
   border: 1px solid var(--border); border-radius: 10px; }
 .ct-table { border-collapse: separate; border-spacing: 0; font-size: 13px; white-space: nowrap;
   font-variant-numeric: tabular-nums; }   /* digits share a width, so numbers line up */
 
-/* Header follows the app's existing table voice (see table.ts): small, uppercase, faint. */
+/* Header follows the app's existing table voice (see table.ts): small, uppercase, faint.
+   `sticky` here is now doing horizontal work only — it is what the frozen Merchant column's
+   `left: 0` and the z-index layering hang off. Vertically it is inert, because .ct-scroll no
+   longer scrolls on that axis (see the note there). */
 .ct-table th {
-  position: sticky; top: 0; z-index: 2;
+  position: sticky; z-index: 2;
   background: var(--surface-muted);
   color: var(--ink-faint);
   text-align: left; font-weight: 600;
@@ -853,16 +866,17 @@ table.table tr:last-child td { border-bottom: none; }
 .ct-table th.ct-c { text-align: center; }
 
 /* Two-row header: a group row on top, click to collapse or spread that whole section, and
-   the column labels beneath it. The column row has to stick BELOW the group row rather than
-   at 0, or the two overlap as soon as the grid scrolls — which is what the fixed group-row
-   height exists to give the offset a number. Sentence case, so the section titles read as a
-   level above the small uppercase column labels rather than competing with them. */
+   the column labels beneath it. Sentence case, so the section titles read as a level above
+   the small uppercase column labels rather than competing with them.
+   The rows carried `top: 0` / `top: 27px` while the grid scrolled vertically inside its own
+   box, so the second row would pin below the first instead of overlapping it. The page owns
+   vertical scrolling now, so those offsets did nothing and were removed rather than left to
+   imply a pinning that no longer happens. Restore both if the boxed scroll ever returns. */
 #main .ct-table thead tr.ct-ghead-row th {
-  top: 0; height: 27px; box-sizing: border-box; padding: 5px 8px;
+  height: 27px; box-sizing: border-box; padding: 5px 8px;
   border-bottom: 1px solid var(--border);
   color: var(--ink-soft); font-size: 11px; text-transform: none; letter-spacing: .01em;
 }
-#main .ct-table thead tr.ct-chead-row th { top: 27px; }
 .ct-ghead-btn { cursor: pointer; user-select: none; }
 .ct-ghead-btn:hover { background: var(--accent-soft); color: var(--accent); }
 .ct-caret { color: var(--ink-faint); font-size: 9px; }

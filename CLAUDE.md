@@ -1,7 +1,7 @@
 # revshare-aws — handoff
 
 Last updated: 2026-08-10 (merchant-sheet re-import applied — 251 contracts; sparse-duplicate merge bug found and fixed; infra/import-merchant-sheet.mjs added).
-Service-worker `CACHE_VERSION` is at `revshare-v112` (bump on every shell change).
+Service-worker `CACHE_VERSION` is at `revshare-v113` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
 end-to-end before touching anything. The codebase is the ultimate source of
