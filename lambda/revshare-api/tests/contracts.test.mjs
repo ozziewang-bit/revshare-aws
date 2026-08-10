@@ -233,3 +233,29 @@ test('normalizeContractRow collapses auto-renewal to a plain Yes/No', () => {
   // An unrecognised value is preserved, not guessed at.
   assert.equal(normalizeContractRow(row({ 14: 'Under review' })).autoRenewal, 'Under review');
 });
+
+// A re-import of the merchant sheet must not resurrect an archived merchant or disturb the
+// payout fields, none of which the sheet carries. `buildImportPlan` spreads `...existing`
+// first, so anything absent from the sheet survives — this pins that, because the sheet is
+// re-imported routinely and archiving is the newest of these fields.
+test('buildImportPlan preserves archive state and payout fields on re-import', () => {
+  const existing = [{
+    contractId: 'c1', merchantName: 'BIG-C', merchantNameLower: 'big-c',
+    archived: true, archivedAt: '2026-08-10T03:00:00.000Z',
+    rule: { type: 'percent', rows: [{ model: 'ALL', percent: 50 }] },
+    aggregationMode: 'per_store', noPayout: false, currency: 'THB',
+  }];
+  const plan = buildImportPlan([mk('BIG-C', { merchantType: 'Shopping Malls', installedUnits: 12 })], existing, [], {});
+  assert.equal(plan.creates.length, 0);
+  assert.equal(plan.updates.length, 1);
+  const u = plan.updates[0];
+  assert.equal(u.archived, true);
+  assert.equal(u.archivedAt, '2026-08-10T03:00:00.000Z');
+  assert.deepEqual(u.rule, { type: 'percent', rows: [{ model: 'ALL', percent: 50 }] });
+  assert.equal(u.aggregationMode, 'per_store');
+  assert.equal(u.currency, 'THB');
+  // ...while the fields the sheet does carry are still applied.
+  assert.equal(u.merchantType, 'Shopping Malls');
+  assert.equal(u.installedUnits, 12);
+  assert.equal('sheetTerms' in u, false);
+});

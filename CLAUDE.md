@@ -234,7 +234,7 @@ CSV already handle per_store correctly; this was a config issue, not a code bug.
 default to the lower-paying `whole` branch, which is exactly how 7-Eleven's original
 under-payment happened.
 
-Tests: `npm test` → **123/123** pass (incl. `payout.test.mjs` — `ruleHasValue` /
+Tests: `npm test` → **124/124** pass (incl. `payout.test.mjs` — `ruleHasValue` /
 `contractNeedsTerms` / label resolution; `bulk-runs.test.mjs` — roster-to-contract
 resolution + order-less fixed-fee; `contracts.test.mjs` — sheet-row normalisation, name
 matching, and import-plan diffing, all contract-fields-only/no-rule-touch).
@@ -264,7 +264,7 @@ Account `<YOUR_AWS_ACCOUNT_ID>`, region `ap-northeast-1`. IAM user `<your-iam-us
 | `lambda/revshare-api/code/routes/bulk-runs.mjs` | Bulk run routes. Exports `buildRosterRows` (roster-authoritative row seeding, keyed by `contractId`; its `if (!m.contractId) continue` guard is defence in depth, not a live path — `applyMerchantRoster` always assigns a `contractId` first), `applyMerchantRoster` (resolves roster labels to `CONTRACT` rows, auto-creating a `noPayout: true` stub for any unmatched label; currency comes from `db.mjs`'s `DEFAULT_CURRENCY`, not a literal), `payoutDecision` (why a contract is/isn't paid; names the merchant in its warning when a sample name is available), `groupOrders` (legacy, order-only grouping, unused in the live route). `createBulkRunRoute` also builds a **`skipped`** list (2026-08-09) — brands that matched roster/order rows but weren't paid — with `skippedCount`/`skippedRevenue`/`totalOrderRevenue` on the run, so revenue never disappears from every total silently; see §1b and Finding 1 of the 2026-08-09 review. `paidBrandCount`/`rosterBrandCount` replace the old overloaded `merchantBrandCount` on the run payload (the `/bulk-runs/prepare` response still uses `merchantBrandCount` for its own, unambiguous meaning: distinct contracts in the roster). |
 | `lambda/revshare-api/code/contracts.mjs` | Contract sheet-row normalisation, name matching (`matchContracts`), import diffing (`buildImportPlan`). Contract fields only — never touches `rule`. |
 | `lambda/revshare-api/code/routes/contracts.mjs` | Contract (`CONTRACT`) CRUD + import routes. `WRITABLE` includes `rule`/`aggregationMode`/`noPayout`/`currency` for direct PUT edits — `CONTRACT` is the payout entity now (§5). |
-| `lambda/revshare-api/tests/` | `engine.test.mjs`, `csv.test.mjs`, `contracts.test.mjs`, `payout.test.mjs`, `bulk-runs.test.mjs`, others — `npm test` → 123 total. |
+| `lambda/revshare-api/tests/` | `engine.test.mjs`, `csv.test.mjs`, `contracts.test.mjs`, `payout.test.mjs`, `bulk-runs.test.mjs`, others — `npm test` → 124 total. |
 | `frontend/index.html` | SPA shell + pre-paint auth gate. |
 | `frontend/style.css` | All styles (tokenized). |
 | `frontend/app.js` | All app JS: auth, screens, Merchant view grid + terms editor, run flow. |
@@ -303,7 +303,7 @@ Run all tests:
 ```bash
 npm test    # from repo root
 ```
-123/123 should pass.
+124/124 should pass.
 
 ## 5. Data model
 
