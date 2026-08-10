@@ -259,3 +259,41 @@ test('buildImportPlan preserves archive state and payout fields on re-import', (
   assert.equal(u.installedUnits, 12);
   assert.equal('sheetTerms' in u, false);
 });
+
+// The workbook contains sparse duplicate rows — a second "Future Rangsit" line carrying only
+// the counter party. Before 2026-08-10 the intra-batch merge was a plain Object.assign, so
+// those blanks erased the populated row's dates, unit counts and auto-renewal on a real
+// import. Later rows may still overwrite, but only where they carry a value.
+test('buildImportPlan: a sparse duplicate row does not erase the populated one', () => {
+  const full = mk('Future Rangsit', {
+    counterParty: 'Rangsit Plaza Company Limited', installedUnits: 5, units: { L40: 5 },
+    startDate: '2026-08-01', endDate: '2027-07-31', autoRenewal: 'No', merchantType: 'Shopping Malls',
+  });
+  const sparse = mk('Future Rangsit', {
+    counterParty: 'Future City Leasehold Real Estate Investment Trust',
+    installedUnits: null, units: {}, startDate: null, endDate: null, autoRenewal: null,
+    merchantType: 'Shopping Malls',
+  });
+  const plan = buildImportPlan([full, sparse], [], [], {});
+  assert.equal(plan.creates.length, 1);
+  const c = plan.creates[0];
+  // The later row's real value wins...
+  assert.equal(c.counterParty, 'Future City Leasehold Real Estate Investment Trust');
+  // ...while everything it left blank survives from the populated row.
+  assert.equal(c.installedUnits, 5);
+  assert.deepEqual(c.units, { L40: 5 });
+  assert.equal(c.startDate, '2026-08-01');
+  assert.equal(c.endDate, '2027-07-31');
+  assert.equal(c.autoRenewal, 'No');
+});
+
+// Order still matters when both rows carry a value — this is the IMPACT case, where the two
+// sheet lines are both fully populated and the later one is the intended winner.
+test('buildImportPlan: a later populated duplicate still wins every field', () => {
+  const a = mk('IMPACT', { counterParty: 'Thai name', installedUnits: 6, units: { L40: 6 } });
+  const b = mk('IMPACT', { counterParty: 'English name', installedUnits: 1, units: { L40: 1 } });
+  const c = buildImportPlan([a, b], [], [], {}).creates[0];
+  assert.equal(c.counterParty, 'English name');
+  assert.equal(c.installedUnits, 1);
+  assert.deepEqual(c.units, { L40: 1 });
+});

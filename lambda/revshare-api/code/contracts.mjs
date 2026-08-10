@@ -132,7 +132,21 @@ export function buildImportPlan(rows, existingContracts, partners, links = {}) {
 
     const already = planned.get(k);
     if (already) {
-      Object.assign(already, contractFields, { partnerId });   // later row in the batch wins per field
+      // Later row in the batch wins per field — but only where it actually carries a value.
+      // The real sheet holds SPARSE duplicates: a second "Future Rangsit" line with nothing
+      // but the counter party filled in. A blind Object.assign let those blanks erase the
+      // populated row's dates, unit counts and auto-renewal (it did, on the 2026-08-10
+      // import). Blank is null/undefined/'', and for `units` an object with no entries,
+      // since normalizeContractRow emits {} for a row with no model counts.
+      // Caveat: `declineToRenew` comes from `bool()`, which maps a blank cell to `false`
+      // rather than null, so a sparse row still contributes false there. Distinguishing the
+      // two needs a change in the normalizer, not here.
+      for (const [f, v] of Object.entries(contractFields)) {
+        if (v === null || v === undefined || v === '') continue;
+        if (f === 'units' && Object.keys(v).length === 0) continue;
+        already[f] = v;
+      }
+      already.partnerId = partnerId;
       continue;
     }
 

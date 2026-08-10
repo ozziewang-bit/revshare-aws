@@ -1,6 +1,6 @@
 # revshare-aws — handoff
 
-Last updated: 2026-08-09 (manual merchant archive + Archived tab; merchant-view header-click column sections, status filter).
+Last updated: 2026-08-10 (merchant-sheet re-import applied — 251 contracts; sparse-duplicate merge bug found and fixed; infra/import-merchant-sheet.mjs added).
 Service-worker `CACHE_VERSION` is at `revshare-v112` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
@@ -197,6 +197,18 @@ its `MERCHANT` store links all stay. What changes:
   over live rows only**.
 No engine or DDB-schema change. Tests: `payout.test.mjs` + `bulk-runs.test.mjs` (123 total).
 
+**Sparse duplicate rows in the merchant sheet (2026-08-10, fixed):** `buildImportPlan`'s
+intra-batch merge used to be a plain `Object.assign`, documented as "later row in the batch wins
+per field". The real workbook contains **sparse** duplicates — a second `Future Rangsit` line
+carrying only the counter party — so those blanks erased the populated row's `installedUnits`,
+`units`, `startDate`, `endDate` and `autoRenewal`. It did exactly that on the 2026-08-10 import
+before being caught and repaired. The merge now copies a later row's field only when it carries
+a value (blank = `null`/`undefined`/`''`, and for `units` an object with no entries). `IMPACT`,
+whose two lines are both fully populated, still resolves later-row-wins as before. Two tests in
+`contracts.test.mjs` pin both halves. **Caveat:** `declineToRenew` comes from `bool()`, which
+maps a blank cell to `false` rather than `null`, so a sparse row still contributes `false`
+there — separating those needs a normalizer change, not a merge change.
+
 **Business rule (load-bearing):** KA "Placement (monthly)" is charged **per
 machine / per store** (`flat_per_machine`), NOT a lump per merchant. MG is also
 per machine, varying by device type. (The old import wrongly treated placement
@@ -234,7 +246,7 @@ CSV already handle per_store correctly; this was a config issue, not a code bug.
 default to the lower-paying `whole` branch, which is exactly how 7-Eleven's original
 under-payment happened.
 
-Tests: `npm test` → **124/124** pass (incl. `payout.test.mjs` — `ruleHasValue` /
+Tests: `npm test` → **126/126** pass (incl. `payout.test.mjs` — `ruleHasValue` /
 `contractNeedsTerms` / label resolution; `bulk-runs.test.mjs` — roster-to-contract
 resolution + order-less fixed-fee; `contracts.test.mjs` — sheet-row normalisation, name
 matching, and import-plan diffing, all contract-fields-only/no-rule-touch).
@@ -264,7 +276,7 @@ Account `<YOUR_AWS_ACCOUNT_ID>`, region `ap-northeast-1`. IAM user `<your-iam-us
 | `lambda/revshare-api/code/routes/bulk-runs.mjs` | Bulk run routes. Exports `buildRosterRows` (roster-authoritative row seeding, keyed by `contractId`; its `if (!m.contractId) continue` guard is defence in depth, not a live path — `applyMerchantRoster` always assigns a `contractId` first), `applyMerchantRoster` (resolves roster labels to `CONTRACT` rows, auto-creating a `noPayout: true` stub for any unmatched label; currency comes from `db.mjs`'s `DEFAULT_CURRENCY`, not a literal), `payoutDecision` (why a contract is/isn't paid; names the merchant in its warning when a sample name is available), `groupOrders` (legacy, order-only grouping, unused in the live route). `createBulkRunRoute` also builds a **`skipped`** list (2026-08-09) — brands that matched roster/order rows but weren't paid — with `skippedCount`/`skippedRevenue`/`totalOrderRevenue` on the run, so revenue never disappears from every total silently; see §1b and Finding 1 of the 2026-08-09 review. `paidBrandCount`/`rosterBrandCount` replace the old overloaded `merchantBrandCount` on the run payload (the `/bulk-runs/prepare` response still uses `merchantBrandCount` for its own, unambiguous meaning: distinct contracts in the roster). |
 | `lambda/revshare-api/code/contracts.mjs` | Contract sheet-row normalisation, name matching (`matchContracts`), import diffing (`buildImportPlan`). Contract fields only — never touches `rule`. |
 | `lambda/revshare-api/code/routes/contracts.mjs` | Contract (`CONTRACT`) CRUD + import routes. `WRITABLE` includes `rule`/`aggregationMode`/`noPayout`/`currency` for direct PUT edits — `CONTRACT` is the payout entity now (§5). |
-| `lambda/revshare-api/tests/` | `engine.test.mjs`, `csv.test.mjs`, `contracts.test.mjs`, `payout.test.mjs`, `bulk-runs.test.mjs`, others — `npm test` → 124 total. |
+| `lambda/revshare-api/tests/` | `engine.test.mjs`, `csv.test.mjs`, `contracts.test.mjs`, `payout.test.mjs`, `bulk-runs.test.mjs`, others — `npm test` → 126 total. |
 | `frontend/index.html` | SPA shell + pre-paint auth gate. |
 | `frontend/style.css` | All styles (tokenized). |
 | `frontend/app.js` | All app JS: auth, screens, Merchant view grid + terms editor, run flow. |
@@ -276,6 +288,7 @@ Account `<YOUR_AWS_ACCOUNT_ID>`, region `ap-northeast-1`. IAM user `<your-iam-us
 | `infra/trust-lambda.json`, `infra/role-policy.json` | IAM templates. |
 | `infra/migrate-to-contracts.mjs` | One-off, idempotent migration (2026-08-07): copies `rule`/`aggregationMode`/`noPayout`/`currency` from each linked `PARTNER` onto its `CONTRACT`, then points every `MERCHANT` store row at a `contractId`. Conditional writes only ever set an absent field — safe to re-run. Already applied to production; not part of any deploy script. Needs the repo-root `package.json` deps below to resolve at all. |
 | `infra/adopt-payable-brands.mjs` | One-off, idempotent (2026-08-09): brings the 41 of the 65 "deliberately unpaid" brands that are actually payable (paying rule, not `noPayout`) into the Merchant view — creates a `CONTRACT` per candidate `PARTNER` and points its store rows at it. Skips a partner that already has a contract (by `partnerId`). `--dry-run` reports counts + the brand list without writing. **Applied 2026-08-09 after explicit user approval** — 41 contracts created, 235 store rows pointed, 0 raced; a second dry run adopts nothing. Do not re-run casually. Needs the repo-root `package.json` deps (now including `ulid`, added 2026-08-09) to resolve. |
+| `infra/import-merchant-sheet.mjs` | Applies an updated `All_Merchant` workbook to the live `CONTRACT` rows — the CLI form of the Merchant view's **Upload sheet** button, reusing `normalizeContractRow`/`buildImportPlan` and writing `putContract`'s exact shape (the HTTP route needs a browser Google token). Dry run by default, `--apply` to write. Verifies the two header anchors first, ABORTS if any planned update would change `rule`/`aggregationMode`/`noPayout`/`currency`/`archived`, never deletes a merchant absent from the sheet, and canonicalises the sheet's stale `Big C`/`Baan Ying`/`Future Rangsit` spellings onto the live rows. Comparisons are key-order-insensitive — DynamoDB does not preserve map key order, so a plain `JSON.stringify` diff reports phantom `units` changes on every re-run. Idempotent: a second dry run reports 0 changes. Applied 2026-08-10. |
 | `infra/compare-pipelines.mjs` | Read-only validation companion to the migration above — diffs migrated `CONTRACT` fields against the source `PARTNER` directly. Last run: 134/134 comparable contracts matched, 0 mismatches. Same dependency requirement as the migration script. |
 | `package.json` (repo root) | Declares `@aws-sdk/client-dynamodb` + `@aws-sdk/lib-dynamodb` as devDependencies (added 2026-08-07, commit `52028d0`) plus `ulid` (added 2026-08-09, for `infra/adopt-payable-brands.mjs`'s new `CONTRACT` rows) purely so the `infra/` scripts above can resolve them. `node_modules` previously existed only under `lambda/revshare-api/code`; ESM resolves a bare specifier by walking up from the **importing file**, so no `cd` fixes this — a script in `infra/` needs a `node_modules` reachable from `infra/`, hence root-level deps + `npm install` at repo root. Also holds the `npm test` script. **Does not affect deploys** — `infra/deploy-lambda.sh` zips `lambda/revshare-api/code` only, which has its own `node_modules`/`package.json` for the AWS SDK version actually shipped to Lambda. |
 | `docs/superpowers/specs/` | Design specs (frozen at spec time). |
@@ -303,7 +316,7 @@ Run all tests:
 ```bash
 npm test    # from repo root
 ```
-124/124 should pass.
+126/126 should pass.
 
 ## 5. Data model
 
