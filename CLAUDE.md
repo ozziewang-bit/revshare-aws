@@ -405,14 +405,16 @@ If it reports SG code changed, commit it in the `revshare_sg` repo. (`db.mjs` is
 never synced — it holds each region's table/bucket; mirror db.mjs logic changes
 by hand.) The frontend is a single shared site (one deploy serves both regions).
 
-**Outstanding manual mirror (2026-08-09, not yet done — flagged by this session, needs to be
-applied by hand in `~/revshare_sg`):** TH's `db.mjs` now exports `DEFAULT_CURRENCY =
-process.env.REVSHARE_CURRENCY || 'THB'`, and `bulk-runs.mjs` (synced verbatim to SG) reads it
-instead of hardcoding `'THB'` when auto-creating a contract stub. SG's `db.mjs` needs the same
-export, with `'SGD'` as its hardcoded default:
+**Manual mirror — APPLIED (verified 2026-08-10 at `~/revshare_sg/lambda/revshare-api/code/db.mjs:17`).**
+TH's `db.mjs` exports `DEFAULT_CURRENCY = process.env.REVSHARE_CURRENCY || 'THB'`, and
+`bulk-runs.mjs` (synced verbatim to SG) reads it instead of hardcoding `'THB'` when
+auto-creating a contract stub. SG's `db.mjs` carries the matching export with `'SGD'`:
 ```js
 export const DEFAULT_CURRENCY = process.env.REVSHARE_CURRENCY || 'SGD';
 ```
+Nothing to do here — the paragraphs below are the incident record for why this class of
+omission matters, kept because `db.mjs` is still never synced and the next field added to it
+will need the same hand-mirror.
 **What actually happened when this shipped (2026-08-09):** the first cut of this fix used a
 named import (`import { DEFAULT_CURRENCY } from '../db.mjs'`), which is a static ESM binding
 — importing a name the target module doesn't export fails the whole module load. Deploying
@@ -421,9 +423,9 @@ that to SG ahead of the SG `db.mjs` mirror took `revshare-api-sg`'s `/healthz` d
 session by switching to a namespace import (`import * as dbModule from '../db.mjs'; const
 DEFAULT_CURRENCY = dbModule.DEFAULT_CURRENCY || 'THB';` — a plain property read, not a static
 binding, so a missing export degrades to the `'THB'` fallback instead of crashing the module).
-**That fallback is still wrong for Singapore** — new SG contract stubs will carry `'THB'`
-until the mirror above is applied — it's just no longer fatal. Apply the mirror to stop the
-silent-wrong-currency case, not to prevent a crash (that risk is already closed). This is the
+That fallback would have been wrong for Singapore — new SG contract stubs carrying `'THB'` —
+but the mirror is in place, so SG reads its own `'SGD'` and the fallback is now unreachable.
+Both the crash risk and the silent-wrong-currency risk are closed. This is the
 same class of incident that took Singapore down for three hours earlier in this project — a
 `db.mjs`-shaped omission — caught fast this time because deploys were healthz-checked
 immediately.
