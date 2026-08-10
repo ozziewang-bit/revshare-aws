@@ -819,17 +819,126 @@ function contractRowHtml(c) {
 
 // ── Merchant view: add / delete / link ─────────────────────────────────────
 
-async function createContractRow() {
-  const name = (prompt('Merchant name') || '').trim();
-  if (!name) return;
-  const clash = CONTRACTS.find(c => (c.merchantName || '').toLowerCase().trim() === name.toLowerCase());
-  if (clash && !confirm(`"${clash.merchantName}" is already in the list. Add a second row with the same name?\n\nA sheet re-import matches on merchant name, so two rows sharing one name will be merged into one on the next import.`)) return;
-  try {
-    const created = await api('/contracts', { method: 'POST', body: JSON.stringify({ merchantName: name }) });
-    CONTRACTS.push(created);
-    document.getElementById('ct-search').value = name;   // filter to it so it isn't lost in 208 rows
-    paintContracts();
-  } catch (err) { alert('Could not create: ' + err.message); }
+// The new-merchant form is generated from CONTRACT_GRID_COLUMNS — the same list the grid
+// renders — so a column added there appears here without a second field list to keep in step.
+// Two kinds are excluded: `computed` (Units is the sum of the model counts, never typed) and
+// `term-*` (the revenue-share terms have their own editor, reached after the row exists).
+function newMerchantSections() {
+  const sections = [];
+  for (const col of CONTRACT_GRID_COLUMNS) {
+    if (col.type === 'computed' || (col.type && col.type.startsWith('term-'))) continue;
+    const key = col.group || 'id';
+    let s = sections[sections.length - 1];
+    if (!s || s.key !== key) {
+      const meta = CONTRACT_GROUPS.find(x => x.key === key);
+      sections.push(s = { key, label: meta ? meta.label : 'Merchant', cols: [] });
+    }
+    s.cols.push(col);
+  }
+  return sections;
+}
+
+const nmFieldId = key => 'nm-' + key.replace('.', '-');
+
+function nmFieldHtml(col) {
+  const id = nmFieldId(col.key);
+  let input;
+  if (col.type === 'select') {
+    const opts = col.key === 'merchantType' ? MERCHANT_TYPES : AUTO_RENEWAL_OPTIONS;
+    input = `<select id="${id}"><option value=""></option>`
+          + opts.map(o => `<option>${escape(o)}</option>`).join('') + '</select>';
+  } else if (col.type === 'bool') {
+    input = `<input type="checkbox" id="${id}">`;
+  } else {
+    const t = col.type === 'date' ? 'date' : col.type === 'number' ? 'number' : 'text';
+    input = `<input type="${t}" id="${id}"${col.type === 'number' ? ' min="0"' : ''}`
+          + `${col.key === 'merchantName' ? ' required' : ''}${col.type === 'url' ? ' placeholder="https://…"' : ''}>`;
+  }
+  const label = escape(col.label) + (col.suffix ? `<span class="ct-unit">${escape(col.suffix)}</span>` : '');
+  return col.type === 'bool'
+    ? `<label class="nm-f nm-f-bool">${input}<span>${label}</span></label>`
+    : `<label class="nm-f"><span>${label}</span>${input}</label>`;
+}
+
+function createContractRow() {
+  const sections = newMerchantSections();
+  const { card, close } = ctModal(700);
+  card.innerHTML = `
+    <h3 style="margin:0 0 2px;">New merchant</h3>
+    <p class="muted" style="margin:0 0 4px;font-size:12.5px;">
+      Only the merchant name is required — everything else can be filled in later by editing
+      the row. Revenue-share terms are set separately, with <strong>Edit terms</strong>.</p>
+    <form class="nm-form" novalidate>
+      ${sections.map(s => `
+        <div class="nm-sec">
+          <h4>${escape(s.label)}</h4>
+          <div class="nm-grid${s.key === 'machines' ? ' nm-grid-5' : ''}">${s.cols.map(nmFieldHtml).join('')}</div>
+        </div>`).join('')}
+      <p class="nm-err" id="nm-err" hidden></p>
+      <div>
+        <button type="submit" class="btn btn-primary">Create merchant</button>
+        <button type="button" id="nm-terms" class="btn">Create &amp; set terms…</button>
+        <button type="button" id="nm-cancel" class="btn">Cancel</button>
+      </div>
+    </form>`;
+  const form = card.querySelector('form');
+  const err = card.querySelector('#nm-err');
+  const fail = msg => { err.textContent = msg; err.hidden = false; };
+  card.querySelector('#nm-cancel').addEventListener('click', close);
+  card.querySelector('#' + nmFieldId('merchantName')).focus();
+
+  // Read the form back through the same column list that built it, so a field can never be
+  // rendered and then silently not collected.
+  function collect() {
+    const body = {};
+    for (const s of sections) for (const col of s.cols) {
+      const node = card.querySelector('#' + nmFieldId(col.key));
+      let v = col.type === 'bool' ? node.checked : node.value.trim();
+      if (col.type === 'number') { if (v === '') continue; v = Number(v); if (!Number.isFinite(v)) continue; }
+      if (v === '' || v === false) continue;          // don't write empties over a fresh row
+      if (col.key.includes('.')) {
+        const [outer, inner] = col.key.split('.');
+        (body[outer] = body[outer] || {})[inner] = v;
+      } else body[col.key] = v;
+    }
+    return body;
+  }
+
+  async function submit(thenEditTerms) {
+    err.hidden = true;
+    const body = collect();
+    const name = body.merchantName;
+    if (!name) return fail('Merchant name is required.');
+    // The grid only renders an http(s) contract link as a link — anything else falls back to
+    // plain text (the javascript: guard). Catch it at entry rather than letting someone type
+    // a link that silently never works.
+    if (body.contractLink && !/^https?:\/\//i.test(body.contractLink)) {
+      return fail('Contract link must start with http:// or https://');
+    }
+    if (body.startDate && body.endDate && body.endDate < body.startDate) {
+      return fail('Contract end is before contract start.');
+    }
+    const clash = CONTRACTS.find(c => !c.archived && (c.merchantName || '').toLowerCase().trim() === name.toLowerCase());
+    if (clash && !confirm(`"${clash.merchantName}" is already in the list. Add a second row with the same name?\n\nA sheet re-import matches on merchant name, so two rows sharing one name will be merged into one on the next import.`)) return;
+
+    const btns = card.querySelectorAll('button');
+    btns.forEach(b => { b.disabled = true; });
+    try {
+      const created = await api('/contracts', { method: 'POST', body: JSON.stringify(body) });
+      CONTRACTS.push(created);
+      close();
+      const search = document.getElementById('ct-search');
+      if (search) search.value = name;      // filter to it so it isn't lost among 248 rows
+      paintContracts();
+      if (thenEditTerms) openTermsEditor(created.contractId);
+    } catch (e) {
+      btns.forEach(b => { b.disabled = false; });
+      fail('Could not create: ' + e.message);
+    }
+  }
+
+  form.addEventListener('submit', ev => { ev.preventDefault(); submit(false); });
+  card.querySelector('#nm-terms').addEventListener('click', () => submit(true));
 }
 
 async function deleteContractRow(contractId) {

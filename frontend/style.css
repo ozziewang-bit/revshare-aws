@@ -913,6 +913,25 @@ table.table tr:last-child td { border-bottom: none; }
 .ct-locked { color: var(--ink-soft); cursor: not-allowed; }
 
 /* Merchant view: link/delete modal */
+/* New-merchant form. It already sits inside a modal card, so it drops the standalone form
+   chrome (border, shadow, 520px cap) and keeps only the field styling. */
+.nm-form { background: none; border: none; box-shadow: none; padding: 0; max-width: none; }
+.nm-sec { margin-top: 16px; }
+.nm-sec h4 { margin: 0 0 8px; font-size: 10.5px; font-weight: 600; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--ink-faint);
+  padding-bottom: 5px; border-bottom: 1px solid var(--border); }
+.nm-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2px 14px; }
+/* The five machine counts are two-digit fields — a half-width column each wastes the row. */
+.nm-grid-5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.nm-form label { margin-bottom: 10px; }
+.nm-f-bool { display: flex; align-items: center; gap: 8px; margin-top: 22px; }
+.nm-f-bool input[type=checkbox] { width: 16px; height: 16px; margin: 0; flex: none; cursor: pointer; }
+.nm-err { margin: 14px 0 0; padding: 8px 11px; border-radius: var(--radius-sm);
+  background: var(--loss-soft); color: var(--loss); font-size: 12.5px; }
+@media (max-width: 640px) {
+  .nm-grid, .nm-grid-5 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
 .ct-modal { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center;
   justify-content: center; background: rgba(10,10,10,.32); }
 .ct-modal-card { background: var(--surface); border: 1px solid var(--border);

@@ -1,7 +1,7 @@
 # revshare-aws — handoff
 
 Last updated: 2026-08-09 (manual merchant archive + Archived tab; merchant-view header-click column sections, status filter).
-Service-worker `CACHE_VERSION` is at `revshare-v111` (bump on every shell change).
+Service-worker `CACHE_VERSION` is at `revshare-v112` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
 end-to-end before touching anything. The codebase is the ultimate source of
@@ -46,7 +46,7 @@ CloudFront (`E1ALROWEFJOG3Q`) is deprecated — the unified site lives on
   column so the header that reopens it never disappears with the data) — a **status filter**
   (All / ◆ Needs terms / ⚠ Contract due or overdue, counts in the option labels; it replaced
   the merchant-type filter and the sort dropdown, both dropped 2026-08-09 as unused),
-  search, inline cell editing, per-row **Archive** (see below), **+ New merchant**, **Upload
+  search, inline cell editing, per-row **Archive** (see below), **+ New merchant** (a full form dialog covering every typeable grid column, generated from `CONTRACT_GRID_COLUMNS` so it cannot drift from the grid; terms are set afterwards), **Upload
   sheet** (imports the `All_Merchant` sheet via `POST /contracts/import` — contract
   fields only, never touches `rule`), and an **Edit terms…** dialog per row for the
   share-terms rule itself (GP%/Electricity/Placement/Others/MG + payout method +
