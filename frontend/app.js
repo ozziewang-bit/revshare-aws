@@ -1057,45 +1057,84 @@ async function openTermsEditor(contractId, onSaved) {
 // column added here without the same change there silently shifts every field after it.
 // `head2` values for columns 1 and 22 are also the two anchors parseAllMerchantSheet checks,
 // which means a template produced here always passes the importer's own layout guard.
+const SHEET_TERMS_GROUP = 'Share terms — NOT imported, set these with "Edit terms" in the app';
+// Spreadsheet column letter for a 0-based index. The sheet is 23 wide, so single letters
+// suffice, but the AA+ case is handled anyway rather than left as a trap for column 26.
+const colLetter = i => (i < 26 ? '' : String.fromCharCode(64 + Math.floor(i / 26))) + String.fromCharCode(65 + (i % 26));
 const TEMPLATE_COLUMNS = [
-  { i: 0,  group: '',              head2: 'No',              from: (c, n) => n },
-  { i: 1,  group: 'Merchant',      head2: 'Merchant',        from: c => c.merchantName ?? null },
-  { i: 2,  group: 'Merchant',      head2: 'Merchant Type',   from: c => c.merchantType ?? null },
-  { i: 3,  group: 'Merchant',      head2: 'name',            from: c => c.counterParty ?? null },
+  { i: 0,  group: '',              head2: 'No',              from: (c, n) => n, imp: 'no',
+    desc: 'Row number. Ignored on upload — renumber freely, or leave blank.' },
+  { i: 1,  group: 'Merchant',      head2: 'Merchant',        from: c => c.merchantName ?? null,
+    desc: 'REQUIRED — the brand name, and the key an upload matches on. An existing name '
+        + 'updates that merchant; a name not already in the app creates a new one. Editing a '
+        + 'name here therefore ADDS a merchant rather than renaming one, and leaves the old '
+        + 'row behind. It should also match the "Merchant label" in the ChargeSpot roster, or '
+        + 'the brand\u2019s machines will not be found when a run is prepared. '
+        + 'A row with this cell empty is skipped entirely.' },
+  { i: 2,  group: 'Merchant',      head2: 'Merchant Type',   from: c => c.merchantType ?? null,
+    desc: 'Category. One of: ' + MERCHANT_TYPES.join(', ') + '.' },
+  { i: 3,  group: 'Merchant',      head2: 'name',            from: c => c.counterParty ?? null,
+    desc: 'Counter party — the legal entity named on the contract. Free text; may differ from '
+        + 'the brand name.' },
   // The stored value when there is one — including a real 0, which `unitsTotal(c) || null`
   // would have turned into a blank and written back as null on the next upload. Falls back to
   // the model-count sum only when nothing is recorded.
   { i: 4,  group: 'Machines',      head2: 'Installed\nunits',
-    from: c => (c.installedUnits ?? (unitsTotal(c) || null)) },
-  { i: 5,  group: 'Machines',      head2: 'S5',              from: c => (c.units || {}).S5 ?? null },
-  { i: 6,  group: 'Machines',      head2: 'S8',              from: c => (c.units || {}).S8 ?? null },
-  { i: 7,  group: 'Machines',      head2: 'M10',             from: c => (c.units || {}).M10 ?? null },
+    from: c => (c.installedUnits ?? (unitsTotal(c) || null)),
+    desc: 'Total machines installed. Should equal S5 + S8 + M10 + LL20 + LL40. Stored as '
+        + 'typed — the app displays the sum of the model counts, so a mismatch here shows up '
+        + 'as a disagreement between this column and those five.' },
+  { i: 5,  group: 'Machines',      head2: 'S5',              from: c => (c.units || {}).S5 ?? null,
+    desc: 'Number of S5 machines. Whole number, or blank for none.' },
+  { i: 6,  group: 'Machines',      head2: 'S8',              from: c => (c.units || {}).S8 ?? null,
+    desc: 'Number of S8 machines. Whole number, or blank for none.' },
+  { i: 7,  group: 'Machines',      head2: 'M10',             from: c => (c.units || {}).M10 ?? null,
+    desc: 'Number of M10 machines. Whole number, or blank for none.' },
   // The sheet spells the two large models LL20/LL40; normalizeContractRow maps them back.
-  { i: 8,  group: 'Machines',      head2: 'LL20',            from: c => (c.units || {}).L20 ?? null },
-  { i: 9,  group: 'Machines',      head2: 'LL40',            from: c => (c.units || {}).L40 ?? null },
-  { i: 10, group: 'Contract',      head2: 'Start',           from: c => c.startDate ?? null },
-  { i: 11, group: 'Contract',      head2: 'End',             from: c => c.endDate ?? null },
-  { i: 12, group: 'Contract',      head2: 'period',          from: c => c.terminationNoticeDays ?? null },
+  { i: 8,  group: 'Machines',      head2: 'LL20',            from: c => (c.units || {}).L20 ?? null,
+    desc: 'Number of L20 machines. The sheet spells it LL20; the app stores it as L20.' },
+  { i: 9,  group: 'Machines',      head2: 'LL40',            from: c => (c.units || {}).L40 ?? null,
+    desc: 'Number of L40 machines. The sheet spells it LL40; the app stores it as L40.' },
+  { i: 10, group: 'Contract',      head2: 'Start',           from: c => c.startDate ?? null,
+    desc: 'Contract start date. Write YYYY-MM-DD, or use a real Excel date cell — both are '
+        + 'read correctly. Text in any other format is likely to be misread.' },
+  { i: 11, group: 'Contract',      head2: 'End',             from: c => c.endDate ?? null,
+    desc: 'Contract end date, same format as Start. Drives the "Contract due or overdue" '
+        + 'filter in the app, together with Notice period and Auto-renewal.' },
+  { i: 12, group: 'Contract',      head2: 'period',          from: c => c.terminationNoticeDays ?? null,
+    desc: 'Termination notice period, in DAYS (a number, not a date). With Auto-renewal = No, '
+        + 'the app flags the merchant once the end date is this many days away. Leave blank if '
+        + 'no notice period is agreed — the merchant is then only flagged once already overdue.' },
   // Dead as of 2026-08-13. The column keeps its slot because the importer reads by INDEX —
   // removing the entry would shift every field after it — but nothing reads or writes it.
-  { i: 13, group: '',              head2: 'the contract',    from: () => null },
-  { i: 14, group: 'Contract',      head2: 'Status',          from: c => c.autoRenewal ?? null },
-  { i: 15, group: '',              head2: 'Included',        from: () => null },
+  { i: 13, group: '',              head2: 'the contract',    from: () => null, imp: 'no — unused',
+    desc: 'NOT USED. Kept only so the columns after it stay in position. Anything typed here '
+        + 'is ignored.' },
+  { i: 14, group: 'Contract',      head2: 'Status',          from: c => c.autoRenewal ?? null,
+    desc: 'Auto-renewal. Yes or No ("No (Need to contact)" is also accepted and stored as No). '
+        + 'Only a No contract is ever flagged as due or overdue — one that renews by itself '
+        + 'needs no action.' },
+  { i: 15, group: '',              head2: 'Included',        from: () => null, imp: 'no — unused',
+    desc: 'NOT USED. Kept only so the columns after it stay in position.' },
   // Columns 16-20 are read into `sheetTerms`, which buildImportPlan strips before writing —
   // revenue-share terms live on the row and are edited with "Edit terms". Left blank and
   // labelled, so nobody fills them in expecting an import to apply them.
-  { i: 16, group: 'Share terms — NOT imported, set these with "Edit terms" in the app',
-                                   head2: 'Mode',            from: () => null },
-  { i: 17, group: 'Share terms — NOT imported, set these with "Edit terms" in the app',
-                                   head2: 'Before VAT',      from: () => null },
-  { i: 18, group: 'Share terms — NOT imported, set these with "Edit terms" in the app',
-                                   head2: '(THB/month)',     from: () => null },
-  { i: 19, group: 'Share terms — NOT imported, set these with "Edit terms" in the app',
-                                   head2: 'Electricity',     from: () => null },
-  { i: 20, group: 'Share terms — NOT imported, set these with "Edit terms" in the app',
-                                   head2: 'Garantee',        from: () => null },
-  { i: 21, group: '',              head2: null,              from: () => null },
-  { i: 22, group: 'Contract',      head2: 'Link Contract',   from: c => c.contractLink ?? null },
+  { i: 16, group: SHEET_TERMS_GROUP, head2: 'Mode',          from: () => null, imp: 'no',
+    desc: 'NOT IMPORTED. Revenue-share terms are set in the app with "Edit terms" on the '
+        + 'merchant row — they are a rule, not a number, and an upload never changes them.' },
+  { i: 17, group: SHEET_TERMS_GROUP, head2: 'Before VAT',    from: () => null, imp: 'no',
+    desc: 'NOT IMPORTED. See Mode.' },
+  { i: 18, group: SHEET_TERMS_GROUP, head2: '(THB/month)',   from: () => null, imp: 'no',
+    desc: 'NOT IMPORTED. See Mode.' },
+  { i: 19, group: SHEET_TERMS_GROUP, head2: 'Electricity',   from: () => null, imp: 'no',
+    desc: 'NOT IMPORTED. See Mode.' },
+  { i: 20, group: SHEET_TERMS_GROUP, head2: 'Garantee',      from: () => null, imp: 'no',
+    desc: 'NOT IMPORTED. See Mode.' },
+  { i: 21, group: '',              head2: null,              from: () => null, imp: 'no — unused',
+    desc: 'NOT USED. Kept only so the column after it stays in position.' },
+  { i: 22, group: 'Contract',      head2: 'Link Contract',   from: c => c.contractLink ?? null,
+    desc: 'Link to the signed contract file. Must start with http:// or https:// — the app '
+        + 'shows anything else as plain text rather than a clickable link.' },
 ];
 
 // Downloads the current merchant list in the exact shape `Upload sheet` expects, so the file
@@ -1130,8 +1169,39 @@ function downloadMerchantTemplate() {
     ...rows.map((c, n) => TEMPLATE_COLUMNS.map(col => col.from(c, n + 1))),
   ];
   const ws = XLSX.utils.aoa_to_sheet(aoa);
-  ws['!cols'] = TEMPLATE_COLUMNS.map(c => ({ wch: c.i === 1 ? 28 : c.i === 3 ? 34 : c.i === 22 ? 40 : 12 }));
+  ws['!cols'] = TEMPLATE_COLUMNS.map(c => ({ wch: c.i === 1 ? 44 : c.i === 3 ? 34 : c.i === 22 ? 40 : 12 }));
+  // The same description twice, in the two places people actually look: hovering the header
+  // cell, and a sheet they can read end to end. Both come from `desc`, so they cannot disagree.
+  for (const col of TEMPLATE_COLUMNS) {
+    if (!col.desc) continue;
+    const ref = XLSX.utils.encode_cell({ r: 1, c: col.i });      // row 2 = the header row
+    const cell = ws[ref] || (ws[ref] = { t: 's', v: '' });
+    cell.c = [{ a: 'RevShare', t: col.desc }];
+    cell.c.hidden = true;                                        // marker, not a popped-open note
+  }
+
   const wb = XLSX.utils.book_new();
+  // First, so the workbook opens on the instructions rather than on 249 rows of data.
+  // `All_Merchant` is found by name, not position, so extra sheets are invisible to the import.
+  const guide = XLSX.utils.aoa_to_sheet([
+    ['Merchant list — field guide'],
+    [],
+    ['Upload this file with "Upload sheet" on the Merchant view.'],
+    ['Only the All_Merchant sheet is read. This sheet, and anything else you add, is ignored.'],
+    ['Merchants in the app but missing from this file are LEFT ALONE — an upload never deletes.'],
+    ['Revenue-share terms are never imported. Set them per merchant with "Edit terms".'],
+    ['Row 3 is a worked example. It is skipped on upload, so it is safe to leave in place.'],
+    [],
+    ['Column', 'Header', 'Imported?', 'What it is'],
+    ...TEMPLATE_COLUMNS.map(c => [
+      colLetter(c.i),
+      c.head2 ? String(c.head2).replace(/\n/g, ' ') : '(unlabelled)',
+      c.imp || 'yes',
+      c.desc,
+    ]),
+  ]);
+  guide['!cols'] = [{ wch: 8 }, { wch: 18 }, { wch: 12 }, { wch: 110 }];
+  XLSX.utils.book_append_sheet(wb, guide, 'Field guide');
   XLSX.utils.book_append_sheet(wb, ws, 'All_Merchant');
   const out = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
   const url = URL.createObjectURL(new Blob([out], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
