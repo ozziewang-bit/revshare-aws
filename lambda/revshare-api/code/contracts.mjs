@@ -23,7 +23,14 @@ const num = v => {
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
 };
-const bool = v => v === true || String(v).trim().toLowerCase() === 'true';
+// A blank cell means "not recorded", not "false". Mapping it to `false` made every import
+// rewrite the flag on rows the sheet says nothing about — a download/edit/upload round trip
+// churned 40 rows to no effect — and let a sparse duplicate row contribute a `false` the
+// intra-batch merge could not tell from a real one. An explicit FALSE still reads as false.
+const bool = v => {
+  if (v == null || v === '') return null;
+  return v === true || String(v).trim().toLowerCase() === 'true';
+};
 
 // The sheet writes auto-renewal as "Yes" or "No (Need to contact)". The app treats this as
 // a plain yes/no — the parenthetical is an instruction, not a third state — so collapse it

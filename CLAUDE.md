@@ -1,7 +1,7 @@
 # revshare-aws — handoff
 
 Last updated: 2026-08-10 (merchant-sheet re-import applied — 251 contracts; sparse-duplicate merge bug found and fixed; infra/import-merchant-sheet.mjs added).
-Service-worker `CACHE_VERSION` is at `revshare-v114` (bump on every shell change).
+Service-worker `CACHE_VERSION` is at `revshare-v115` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
 end-to-end before touching anything. The codebase is the ultimate source of
@@ -205,9 +205,26 @@ carrying only the counter party — so those blanks erased the populated row's `
 before being caught and repaired. The merge now copies a later row's field only when it carries
 a value (blank = `null`/`undefined`/`''`, and for `units` an object with no entries). `IMPACT`,
 whose two lines are both fully populated, still resolves later-row-wins as before. Two tests in
-`contracts.test.mjs` pin both halves. **Caveat:** `declineToRenew` comes from `bool()`, which
-maps a blank cell to `false` rather than `null`, so a sparse row still contributes `false`
-there — separating those needs a normalizer change, not a merge change.
+`contracts.test.mjs` pin both halves. The `declineToRenew` half of this was closed on
+2026-08-13: `bool()` now returns `null` for a blank cell and `false` only for an explicit
+false, so a sparse row contributes nothing there either.
+
+**Merchant-sheet template download (2026-08-13):** the Merchant view's **Download sheet**
+button writes the current (non-archived) merchant list as `.xlsx` in the exact shape **Upload
+sheet** reads — sheet `All_Merchant`, two header rows, data from row 3, the same 23 fixed
+column positions. `TEMPLATE_COLUMNS` in `frontend/app.js` is the writer's half of that
+contract and must stay in lockstep with `normalizeContractRow`'s `at(i)` reads in
+`lambda/revshare-api/code/contracts.mjs` — the importer reads by POSITION, not header name, so
+a column added on one side and not the other silently shifts every field after it. The two
+header-row-2 anchors it emits (col 1 `Merchant`, col 22 `Link Contract`) are the ones
+`parseAllMerchantSheet` checks, so a downloaded file always passes the importer's own layout
+guard. Columns 16-20 (share terms) are emitted blank and labelled "NOT imported" — they land
+in `sheetTerms`, which `buildImportPlan` strips; terms live on the row and are set with **Edit
+terms**. **Verified lossless:** generating the file from all 249 live rows and feeding it back
+through `parseAllMerchantSheet` + `normalizeContractRow` + `buildImportPlan` plans 0 creates
+and 0 changed rows. Getting there required the `bool()` fix above and writing the *stored*
+`installedUnits` rather than recomputing it (`unitsTotal(c) || null` turned a real 0 into a
+blank). If either regresses, that round trip is the test to re-run.
 
 **Business rule (load-bearing):** KA "Placement (monthly)" is charged **per
 machine / per store** (`flat_per_machine`), NOT a lump per merchant. MG is also

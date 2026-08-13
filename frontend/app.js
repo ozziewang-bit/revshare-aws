@@ -1051,6 +1051,80 @@ async function openTermsEditor(contractId, onSaved) {
 // `All_Merchant` has a two-row header (row 1 groups, row 2 sub-headers); data starts
 // at row 3. Merged group cells make header-keyed parsing unreliable, so read by index
 // and let the backend normalizer do every coercion.
+// ── Merchant-sheet template ────────────────────────────────────────────────
+// The download and the import are two halves of one contract, so this table is written to
+// mirror `normalizeContractRow`'s `at(i)` reads in lambda/revshare-api/code/contracts.mjs
+// exactly. Index IS the meaning — the importer reads by position, not by header name, so a
+// column added here without the same change there silently shifts every field after it.
+// `head2` values for columns 1 and 22 are also the two anchors parseAllMerchantSheet checks,
+// which means a template produced here always passes the importer's own layout guard.
+const TEMPLATE_COLUMNS = [
+  { i: 0,  group: '',              head2: 'No',              from: (c, n) => n },
+  { i: 1,  group: 'Merchant',      head2: 'Merchant',        from: c => c.merchantName ?? null },
+  { i: 2,  group: 'Merchant',      head2: 'Merchant Type',   from: c => c.merchantType ?? null },
+  { i: 3,  group: 'Merchant',      head2: 'name',            from: c => c.counterParty ?? null },
+  // The stored value when there is one — including a real 0, which `unitsTotal(c) || null`
+  // would have turned into a blank and written back as null on the next upload. Falls back to
+  // the model-count sum only when nothing is recorded.
+  { i: 4,  group: 'Machines',      head2: 'Installed\nunits',
+    from: c => (c.installedUnits ?? (unitsTotal(c) || null)) },
+  { i: 5,  group: 'Machines',      head2: 'S5',              from: c => (c.units || {}).S5 ?? null },
+  { i: 6,  group: 'Machines',      head2: 'S8',              from: c => (c.units || {}).S8 ?? null },
+  { i: 7,  group: 'Machines',      head2: 'M10',             from: c => (c.units || {}).M10 ?? null },
+  // The sheet spells the two large models LL20/LL40; normalizeContractRow maps them back.
+  { i: 8,  group: 'Machines',      head2: 'LL20',            from: c => (c.units || {}).L20 ?? null },
+  { i: 9,  group: 'Machines',      head2: 'LL40',            from: c => (c.units || {}).L40 ?? null },
+  { i: 10, group: 'Contract',      head2: 'Start',           from: c => c.startDate ?? null },
+  { i: 11, group: 'Contract',      head2: 'End',             from: c => c.endDate ?? null },
+  { i: 12, group: 'Contract',      head2: 'period',          from: c => c.terminationNoticeDays ?? null },
+  // null, not false, when nothing is recorded — `bool()` treats a blank cell as "not
+  // recorded", so writing false here would turn every unset flag into an explicit one.
+  { i: 13, group: 'Contract',      head2: 'the contract',
+    from: c => (c.declineToRenew == null ? null : c.declineToRenew === true) },
+  { i: 14, group: 'Contract',      head2: 'Status',          from: c => c.autoRenewal ?? null },
+  { i: 15, group: '',              head2: 'Included',        from: () => null },
+  // Columns 16-20 are read into `sheetTerms`, which buildImportPlan strips before writing —
+  // revenue-share terms live on the row and are edited with "Edit terms". Left blank and
+  // labelled, so nobody fills them in expecting an import to apply them.
+  { i: 16, group: 'Share terms — NOT imported, set these with "Edit terms" in the app',
+                                   head2: 'Mode',            from: () => null },
+  { i: 17, group: 'Share terms — NOT imported, set these with "Edit terms" in the app',
+                                   head2: 'Before VAT',      from: () => null },
+  { i: 18, group: 'Share terms — NOT imported, set these with "Edit terms" in the app',
+                                   head2: '(THB/month)',     from: () => null },
+  { i: 19, group: 'Share terms — NOT imported, set these with "Edit terms" in the app',
+                                   head2: 'Electricity',     from: () => null },
+  { i: 20, group: 'Share terms — NOT imported, set these with "Edit terms" in the app',
+                                   head2: 'Garantee',        from: () => null },
+  { i: 21, group: '',              head2: null,              from: () => null },
+  { i: 22, group: 'Contract',      head2: 'Link Contract',   from: c => c.contractLink ?? null },
+];
+
+// Downloads the current merchant list in the exact shape `Upload sheet` expects, so the file
+// round-trips: download, edit in Excel, upload. Archived merchants are left out — they are
+// not part of the working list, and re-uploading one would only rewrite the row it already has.
+function downloadMerchantTemplate() {
+  const rows = CONTRACTS.filter(c => !c.archived)
+    .slice()
+    .sort((a, b) => (a.merchantName || '').localeCompare(b.merchantName || ''));
+  const aoa = [
+    TEMPLATE_COLUMNS.map(c => c.group || null),
+    TEMPLATE_COLUMNS.map(c => c.head2),
+    ...rows.map((c, n) => TEMPLATE_COLUMNS.map(col => col.from(c, n + 1))),
+  ];
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!cols'] = TEMPLATE_COLUMNS.map(c => ({ wch: c.i === 1 ? 28 : c.i === 3 ? 34 : c.i === 22 ? 40 : 12 }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'All_Merchant');
+  const out = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+  const url = URL.createObjectURL(new Blob([out], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `merchant-list-${new Date().toISOString().slice(0, 10)}.xlsx`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 async function parseAllMerchantSheet(file) {
   const wb = await readExcel(file);
   const ws = wb.Sheets['All_Merchant'];
@@ -1093,6 +1167,7 @@ async function renderContractsScreen() {
       </select>
       ${can('manageMerchants') ? '<button type="button" id="ct-new" class="btn btn-primary">+ New merchant</button>' : ''}
       ${can('manageMerchants') ? '<button type="button" id="ct-file-choose" class="btn">Upload sheet</button><input type="file" id="ct-file" accept=".xlsx" style="display:none">' : ''}
+      <button type="button" id="ct-template" class="btn" title="Download the current merchant list as .xlsx, in the exact format Upload sheet reads — edit it and upload it back">Download sheet</button>
       <span class="muted" id="ct-count"></span>
     </div>
     <div class="ct-scroll"><table class="ct-table"><thead>${contractHeadHtml()}</thead>
@@ -1119,6 +1194,7 @@ async function renderContractsScreen() {
     if (td && td.dataset.key) startCellEdit(td);
   });
   el.querySelector('#ct-new')?.addEventListener('click', createContractRow);
+  el.querySelector('#ct-template')?.addEventListener('click', downloadMerchantTemplate);
   el.querySelector('#ct-file-choose')?.addEventListener('click', () => el.querySelector('#ct-file').click());
   el.querySelector('#ct-file')?.addEventListener('change', async ev => {
     const file = ev.target.files[0]; if (!file) return;

@@ -67,7 +67,14 @@ test('normalizeContractRow accepts Excel serial dates', () => {
 test('normalizeContractRow coerces truthy/falsy declineToRenew', () => {
   assert.equal(normalizeContractRow(row({ 13: true })).declineToRenew, true);
   assert.equal(normalizeContractRow(row({ 13: 'TRUE' })).declineToRenew, true);
-  assert.equal(normalizeContractRow(row({ 13: null })).declineToRenew, false);
+  assert.equal(normalizeContractRow(row({ 13: false })).declineToRenew, false);
+  assert.equal(normalizeContractRow(row({ 13: 'x' })).declineToRenew, false);
+  // A blank cell is "not recorded", not false. It used to return false, which made every
+  // import rewrite the flag on rows the sheet is silent about (40 of them on a
+  // download/edit/upload round trip) and let a sparse duplicate row contribute a false the
+  // intra-batch merge could not distinguish from a real one.
+  assert.equal(normalizeContractRow(row({ 13: null })).declineToRenew, null);
+  assert.equal(normalizeContractRow(row({ 13: '' })).declineToRenew, null);
 });
 
 test('normalizeContractRow ignores the three dead columns', () => {
