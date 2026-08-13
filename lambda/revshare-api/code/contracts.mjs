@@ -59,10 +59,18 @@ function toDate(v) {
   return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
 }
 
+// The template download writes a filled-in sample row so the expected format is visible
+// where you type, rather than on a sheet nobody opens. Data starts at row 3 and every row
+// with a name is imported, so there is no header trick that would hide it — the sample is
+// skipped by name instead. Without this, uploading a template you forgot to clean leaves a
+// junk merchant in production. Keep in step with EXAMPLE_ROW in frontend/app.js.
+const EXAMPLE_ROW_NAME = /^example row\b/i;
+
 export function normalizeContractRow(cells) {
   const at = i => (Array.isArray(cells) ? cells[i] : undefined);
   const merchantName = str(at(1));
   if (!merchantName) return null;   // blank name => not a merchant row
+  if (EXAMPLE_ROW_NAME.test(merchantName)) return null;
 
   const units = {};
   for (const [i, model] of [[5, 'S5'], [6, 'S8'], [7, 'M10'], [8, 'L20'], [9, 'L40']]) {

@@ -1103,6 +1103,25 @@ const TEMPLATE_COLUMNS = [
 // Downloads the current merchant list in the exact shape `Upload sheet` expects, so the file
 // round-trips: download, edit in Excel, upload. Archived merchants are left out — they are
 // not part of the working list, and re-uploading one would only rewrite the row it already has.
+// A filled-in sample, first in the sheet so the expected format is visible where you type.
+// Its name matches EXAMPLE_ROW_NAME in lambda/revshare-api/code/contracts.mjs, which makes
+// the importer skip it — leaving it in place on upload is harmless, not a junk merchant.
+// Keep the two in step. Shown as a contract row, not a machine one: the values are ordinary
+// (3 units = 1×S5 + 2×S8, so the Installed units column visibly agrees with the model counts).
+const EXAMPLE_ROW = {
+  merchantName: 'EXAMPLE ROW — safe to leave, it is never imported',
+  merchantType: 'Shopping Malls',
+  counterParty: 'Example Holdings Co., Ltd.',
+  installedUnits: 3,
+  units: { S5: 1, S8: 2 },
+  startDate: '2026-01-01',
+  endDate: '2026-12-31',
+  terminationNoticeDays: 30,
+  declineToRenew: false,
+  autoRenewal: 'Yes',
+  contractLink: 'https://drive.google.com/file/d/EXAMPLE/view',
+};
+
 function downloadMerchantTemplate() {
   const rows = CONTRACTS.filter(c => !c.archived)
     .slice()
@@ -1110,6 +1129,7 @@ function downloadMerchantTemplate() {
   const aoa = [
     TEMPLATE_COLUMNS.map(c => c.group || null),
     TEMPLATE_COLUMNS.map(c => c.head2),
+    TEMPLATE_COLUMNS.map(col => col.from(EXAMPLE_ROW, null)),
     ...rows.map((c, n) => TEMPLATE_COLUMNS.map(col => col.from(c, n + 1))),
   ];
   const ws = XLSX.utils.aoa_to_sheet(aoa);

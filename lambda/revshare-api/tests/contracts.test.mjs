@@ -304,3 +304,23 @@ test('buildImportPlan: a later populated duplicate still wins every field', () =
   assert.equal(c.installedUnits, 1);
   assert.deepEqual(c.units, { L40: 1 });
 });
+
+// The template download puts a filled-in sample row at the top of the sheet so the format is
+// visible where you type. Data starts at row 3 and every named row is imported, so there is
+// no header trick to hide it — it is skipped by name, and leaving it in place is harmless.
+test('normalizeContractRow skips the template example row', () => {
+  assert.equal(normalizeContractRow(row({ 1: 'EXAMPLE ROW — safe to leave, it is never imported' })), null);
+  assert.equal(normalizeContractRow(row({ 1: 'example row' })), null);
+  assert.equal(normalizeContractRow(row({ 1: '  EXAMPLE ROW - anything after  ' })), null);
+  // \b keeps the match to the whole first word, so a real merchant is never swallowed.
+  assert.equal(normalizeContractRow(row({ 1: 'Example Holdings' })).merchantName, 'Example Holdings');
+  assert.equal(normalizeContractRow(row({ 1: 'Examplerow Co' })).merchantName, 'Examplerow Co');
+});
+
+test('buildImportPlan ignores the example row entirely', () => {
+  const rows = [normalizeContractRow(row({ 1: 'EXAMPLE ROW — delete me' })), mk('Real Merchant')]
+    .filter(Boolean);
+  const plan = buildImportPlan(rows, [], [], {});
+  assert.equal(plan.creates.length, 1);
+  assert.equal(plan.creates[0].merchantName, 'Real Merchant');
+});

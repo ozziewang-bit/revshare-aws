@@ -1,7 +1,7 @@
 # revshare-aws — handoff
 
 Last updated: 2026-08-13 (merchant-sheet template download, verified lossless round trip; blank-cell bool fix; whole-page scroll with locked column header).
-Service-worker `CACHE_VERSION` is at `revshare-v115` (bump on every shell change).
+Service-worker `CACHE_VERSION` is at `revshare-v116` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
 end-to-end before touching anything. The codebase is the ultimate source of
@@ -220,7 +220,7 @@ header-row-2 anchors it emits (col 1 `Merchant`, col 22 `Link Contract`) are the
 `parseAllMerchantSheet` checks, so a downloaded file always passes the importer's own layout
 guard. Columns 16-20 (share terms) are emitted blank and labelled "NOT imported" — they land
 in `sheetTerms`, which `buildImportPlan` strips; terms live on the row and are set with **Edit
-terms**. **Verified lossless:** generating the file from all 249 live rows and feeding it back
+terms**. The sheet opens with a filled-in **example row** showing the expected format where you type. Data starts at row 3 and every named row is imported, so there is no header trick that could hide it — it is skipped by name instead: `EXAMPLE_ROW_NAME` (`/^example row\b/i`) in `normalizeContractRow` drops it exactly like a blank name, so leaving it in place on upload is harmless rather than a junk merchant. `EXAMPLE_ROW` in `frontend/app.js` must keep matching it. **Verified lossless:** generating the file from all 249 live rows and feeding it back
 through `parseAllMerchantSheet` + `normalizeContractRow` + `buildImportPlan` plans 0 creates
 and 0 changed rows. Getting there required the `bool()` fix above and writing the *stored*
 `installedUnits` rather than recomputing it (`unitsTotal(c) || null` turned a real 0 into a
