@@ -11,7 +11,7 @@
 // is the actual defense against a shifted column layout.
 //   A=_dead(No/#NAME?) B=merchantName C=merchantType D=counterParty E=installedUnits
 //   F-J=S5,S8,M10,LL20,LL40  K=startDate L=endDate M=terminationNoticeDays
-//   N=declineToRenew O=autoRenewal P=_dead(COC Clause) Q=shareMode R=revSharePct
+//   N=_dead(declineToRenew) O=autoRenewal P=_dead(COC Clause) Q=shareMode R=revSharePct
 //   S=fixedRental T=electricity U=minGuarantee V=_dead(unlabeled) W=contractLink
 
 const str = v => {
@@ -23,15 +23,6 @@ const num = v => {
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
 };
-// A blank cell means "not recorded", not "false". Mapping it to `false` made every import
-// rewrite the flag on rows the sheet says nothing about — a download/edit/upload round trip
-// churned 40 rows to no effect — and let a sparse duplicate row contribute a `false` the
-// intra-batch merge could not tell from a real one. An explicit FALSE still reads as false.
-const bool = v => {
-  if (v == null || v === '') return null;
-  return v === true || String(v).trim().toLowerCase() === 'true';
-};
-
 // The sheet writes auto-renewal as "Yes" or "No (Need to contact)". The app treats this as
 // a plain yes/no — the parenthetical is an instruction, not a third state — so collapse it
 // to 'Yes' / 'No' on the way in. Anything unrecognised is preserved verbatim rather than
@@ -87,7 +78,6 @@ export function normalizeContractRow(cells) {
     startDate: toDate(at(10)),
     endDate: toDate(at(11)),
     terminationNoticeDays: num(at(12)),
-    declineToRenew: bool(at(13)),
     autoRenewal: autoRenewal(at(14)),
     contractLink: str(at(22)),
     // Preview only. Never written to a partner rule — see the plan's Global Constraints.
@@ -153,9 +143,6 @@ export function buildImportPlan(rows, existingContracts, partners, links = {}) {
       // populated row's dates, unit counts and auto-renewal (it did, on the 2026-08-10
       // import). Blank is null/undefined/'', and for `units` an object with no entries,
       // since normalizeContractRow emits {} for a row with no model counts.
-      // Caveat: `declineToRenew` comes from `bool()`, which maps a blank cell to `false`
-      // rather than null, so a sparse row still contributes false there. Distinguishing the
-      // two needs a change in the normalizer, not here.
       for (const [f, v] of Object.entries(contractFields)) {
         if (v === null || v === undefined || v === '') continue;
         if (f === 'units' && Object.keys(v).length === 0) continue;

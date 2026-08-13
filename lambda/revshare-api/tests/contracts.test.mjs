@@ -27,7 +27,6 @@ test('normalizeContractRow maps a full row', () => {
   assert.equal(c.startDate, '2025-08-21');
   assert.equal(c.endDate, '2026-08-20');
   assert.equal(c.terminationNoticeDays, 30);
-  assert.equal(c.declineToRenew, false);
   assert.equal(c.autoRenewal, 'No');   // sheet's "No (Need to contact)" collapses to a plain No
   assert.equal(c.contractLink, 'https://drive.google.com/drive/folders/1dz');
 });
@@ -64,17 +63,12 @@ test('normalizeContractRow accepts Excel serial dates', () => {
   assert.equal(c.startDate, '2025-08-21');
 });
 
-test('normalizeContractRow coerces truthy/falsy declineToRenew', () => {
-  assert.equal(normalizeContractRow(row({ 13: true })).declineToRenew, true);
-  assert.equal(normalizeContractRow(row({ 13: 'TRUE' })).declineToRenew, true);
-  assert.equal(normalizeContractRow(row({ 13: false })).declineToRenew, false);
-  assert.equal(normalizeContractRow(row({ 13: 'x' })).declineToRenew, false);
-  // A blank cell is "not recorded", not false. It used to return false, which made every
-  // import rewrite the flag on rows the sheet is silent about (40 of them on a
-  // download/edit/upload round trip) and let a sparse duplicate row contribute a false the
-  // intra-batch merge could not distinguish from a real one.
-  assert.equal(normalizeContractRow(row({ 13: null })).declineToRenew, null);
-  assert.equal(normalizeContractRow(row({ 13: '' })).declineToRenew, null);
+// Column 13 ("the contract" / decline-to-renew) was dropped on 2026-08-13 as unused — one of
+// 249 live contracts had it set. It keeps its slot in the sheet layout, because the importer
+// reads by index, but nothing reads or writes it now.
+test('normalizeContractRow ignores the dropped decline column', () => {
+  assert.equal('declineToRenew' in normalizeContractRow(row({ 13: true })), false);
+  assert.equal('declineToRenew' in normalizeContractRow(row({ 13: false })), false);
 });
 
 test('normalizeContractRow ignores the three dead columns', () => {
@@ -132,7 +126,7 @@ test('normalizeContractRow returns null for an unparseable date string', () => {
 const mk = (name, over = {}) => ({
   merchantName: name, merchantType: null, counterParty: null, installedUnits: null,
   units: {}, startDate: null, endDate: null, terminationNoticeDays: null,
-  declineToRenew: false, autoRenewal: null, contractLink: null,
+  autoRenewal: null, contractLink: null,
   sheetTerms: { shareMode: 'hybrid', revSharePct: 0.5, fixedRental: 0, electricity: 0, minGuarantee: 0 },
   ...over,
 });

@@ -1,7 +1,7 @@
 # revshare-aws — handoff
 
 Last updated: 2026-08-13 (merchant-sheet template download, verified lossless round trip; blank-cell bool fix; whole-page scroll with locked column header).
-Service-worker `CACHE_VERSION` is at `revshare-v116` (bump on every shell change).
+Service-worker `CACHE_VERSION` is at `revshare-v117` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
 end-to-end before touching anything. The codebase is the ultimate source of
@@ -206,8 +206,8 @@ before being caught and repaired. The merge now copies a later row's field only 
 a value (blank = `null`/`undefined`/`''`, and for `units` an object with no entries). `IMPACT`,
 whose two lines are both fully populated, still resolves later-row-wins as before. Two tests in
 `contracts.test.mjs` pin both halves. The `declineToRenew` half of this was closed on
-2026-08-13: `bool()` now returns `null` for a blank cell and `false` only for an explicit
-false, so a sparse row contributes nothing there either.
+2026-08-13 by dropping that column entirely (see below), which also removed `bool()` — it had
+no other caller.
 
 **Merchant-sheet template download (2026-08-13):** the Merchant view's **Download sheet**
 button writes the current (non-archived) merchant list as `.xlsx` in the exact shape **Upload
@@ -225,6 +225,15 @@ through `parseAllMerchantSheet` + `normalizeContractRow` + `buildImportPlan` pla
 and 0 changed rows. Getting there required the `bool()` fix above and writing the *stored*
 `installedUnits` rather than recomputing it (`unitsTotal(c) || null` turned a real 0 into a
 blank). If either regresses, that round trip is the test to re-run.
+
+**Decline-to-renew column dropped (2026-08-13):** the grid's `Decline` column
+(`declineToRenew`, sheet column N) is gone — from the Merchant view grid, the **+ New
+merchant** form, `normalizeContractRow`, and `WRITABLE`. It was set on **1 of 249** live
+contracts (PAKKLONG MARKET, whose contract had already ended). **The stored field was NOT
+deleted from DynamoDB** — nothing reads it, but the value survives on every row, so restoring
+the column is a UI change rather than a data-recovery job. Column N **keeps its slot** in the
+template and in the sheet layout: the importer reads by INDEX, so removing the position would
+shift every field after it. It is now a fourth dead column alongside A, P and V.
 
 **Business rule (load-bearing):** KA "Placement (monthly)" is charged **per
 machine / per store** (`flat_per_machine`), NOT a lump per merchant. MG is also

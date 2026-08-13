@@ -5,7 +5,7 @@ import { normalizeContractRow, buildImportPlan } from '../contracts.mjs';
 // share terms live on the partner's rule, never on the contract row.
 const WRITABLE = [
   'merchantName', 'merchantType', 'counterParty', 'partnerId', 'installedUnits',
-  'units', 'startDate', 'endDate', 'terminationNoticeDays', 'declineToRenew',
+  'units', 'startDate', 'endDate', 'terminationNoticeDays',
   'autoRenewal', 'contractLink', 'notes',
   // Contact details are entered in the app, not imported — the source workbook has no
   // contact columns, so the importer never sets these and a re-import never clears them.

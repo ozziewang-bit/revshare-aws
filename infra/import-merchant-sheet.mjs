@@ -148,7 +148,7 @@ console.log('guard          : rule/aggregationMode/noPayout/currency/archived pr
 // Which sheet-owned fields actually move, so a "206 updated" number is never mistaken for
 // "206 rows changed".
 const FIELDS = ['merchantType', 'counterParty', 'installedUnits', 'units', 'startDate', 'endDate',
-                'terminationNoticeDays', 'declineToRenew', 'autoRenewal', 'contractLink'];
+                'terminationNoticeDays', 'autoRenewal', 'contractLink'];
 const changedBy = {};
 let changedRows = 0;
 for (const u of plan.updates) {

@@ -524,7 +524,6 @@ const CONTRACT_GRID_COLUMNS = [
   { key: 'startDate',             label: 'Start',         type: 'date',   width: 108 , group: 'contract' },
   { key: 'endDate',               label: 'End',           type: 'date',   width: 108 , group: 'contract' },
   { key: 'terminationNoticeDays', label: 'Notice',        type: 'number', width: 84  , group: 'contract', suffix: ' days' },
-  { key: 'declineToRenew',        label: 'Decline',       type: 'bool',   width: 62  , group: 'contract' },
   { key: 'autoRenewal',           label: 'Auto-renewal',  type: 'select', width: 135 , group: 'contract' },
   { key: 'contractLink',          label: 'Contract',      type: 'url',    width: 80  , group: 'contract' },
   { key: 'term.method',      label: 'Mode',         type: 'term-mode',    width: 130, group: 'terms' },
@@ -1077,10 +1076,9 @@ const TEMPLATE_COLUMNS = [
   { i: 10, group: 'Contract',      head2: 'Start',           from: c => c.startDate ?? null },
   { i: 11, group: 'Contract',      head2: 'End',             from: c => c.endDate ?? null },
   { i: 12, group: 'Contract',      head2: 'period',          from: c => c.terminationNoticeDays ?? null },
-  // null, not false, when nothing is recorded — `bool()` treats a blank cell as "not
-  // recorded", so writing false here would turn every unset flag into an explicit one.
-  { i: 13, group: 'Contract',      head2: 'the contract',
-    from: c => (c.declineToRenew == null ? null : c.declineToRenew === true) },
+  // Dead as of 2026-08-13. The column keeps its slot because the importer reads by INDEX —
+  // removing the entry would shift every field after it — but nothing reads or writes it.
+  { i: 13, group: '',              head2: 'the contract',    from: () => null },
   { i: 14, group: 'Contract',      head2: 'Status',          from: c => c.autoRenewal ?? null },
   { i: 15, group: '',              head2: 'Included',        from: () => null },
   // Columns 16-20 are read into `sheetTerms`, which buildImportPlan strips before writing —
@@ -1117,7 +1115,6 @@ const EXAMPLE_ROW = {
   startDate: '2026-01-01',
   endDate: '2026-12-31',
   terminationNoticeDays: 30,
-  declineToRenew: false,
   autoRenewal: 'Yes',
   contractLink: 'https://drive.google.com/file/d/EXAMPLE/view',
 };
