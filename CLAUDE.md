@@ -1,6 +1,6 @@
 # revshare-aws — handoff
 
-Last updated: 2026-08-13 (merchant-sheet template download, verified lossless round trip; blank-cell bool fix; whole-page scroll with locked column header).
+Last updated: 2026-08-24 (bulk-run prepare timeout fixed: unpaginated DynamoDB queries were duplicating the store registry; CORS on gateway error responses).
 Service-worker `CACHE_VERSION` is at `revshare-v118` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
@@ -272,10 +272,63 @@ CSV already handle per_store correctly; this was a config issue, not a code bug.
 default to the lower-paying `whole` branch, which is exactly how 7-Eleven's original
 under-payment happened.
 
-Tests: `npm test` → **126/126** pass (incl. `payout.test.mjs` — `ruleHasValue` /
+Tests: `npm test` → **143/143** pass (incl. `ddb-util.test.mjs` — Query pagination +
+BatchWriteItem chunking, §1c; `payout.test.mjs` — `merchantRowChanged` / `ruleHasValue` /
 `contractNeedsTerms` / label resolution; `bulk-runs.test.mjs` — roster-to-contract
 resolution + order-less fixed-fee; `contracts.test.mjs` — sheet-row normalisation, name
 matching, and import-plan diffing, all contract-fields-only/no-rule-touch).
+
+## 1c. The prepare timeout + registry duplication (2026-08-24) — READ BEFORE TOUCHING db.mjs
+
+`POST /bulk-runs/prepare` timed out on every attempt from **2026-07-27** onward, and the
+browser showed only **"Failed to fetch"**. Three defects in a chain, all now fixed:
+
+1. **No pagination.** Every list function in `db.mjs` read `out.Items` from a single
+   `QueryCommand`. A DynamoDB Query returns at most **1MB** per call and signals more via
+   `LastEvaluatedKey`. `listMerchants()` therefore returned **2,289 of 6,142** `MERCHANT`
+   rows and silently dropped the rest. This was never a theoretical limit — it had been
+   live since the table passed 1MB.
+2. **So the roster duplicated the registry.** `applyMerchantRoster` built `merchantByName`
+   from that truncated list, so ~3,800 existing stores looked new: each got a fresh `ulid()`
+   and a **duplicate row**. Every prepare ever run left its fingerprint in `createdAt`:
+   1,844 rows on 2026-05-29, 1,197 on 2026-06-08, 741 on 2026-07-27, **2,595 on 2026-08-20**.
+   The registry reached **6,661 rows for 2,431 distinct store names**.
+3. **~4,000 individual `PutItem`s.** One write per roster row, unconditionally, at 256MB
+   (≈1/6 vCPU, so request signing serialises on CPU): 25s in May, past the 30s Lambda
+   timeout as the roster grew to 4,088 rows. **A killed Lambda still commits what it already
+   wrote**, so each failed attempt added another batch of duplicates — the failure fed itself.
+
+**Why it looked like a network error:** API Gateway's `DEFAULT_5XX` gateway response carried
+no `Access-Control-Allow-Origin`, so the browser blocked the 504 body and `fetch` rejected
+with a bare `TypeError`. `DEFAULT_4XX`/`DEFAULT_5XX` now carry CORS headers (deployment
+`h7i8fg`) — a REST API needs an explicit **stage deployment** for a gateway-response change
+to take effect. Note this is a **REST** API: the integration is hard-capped at **29s**, so
+raising the Lambda timeout past it would have achieved nothing.
+
+**Rules that follow from this:**
+- **Never call `ddb.send(new QueryCommand(...))` directly for a list.** Use the `query()`
+  helper in `db.mjs`, which wraps `queryAll` from `ddb-util.mjs`. Adding a row family means
+  adding its list function the same way. `listContracts` (338 rows) still fits in one page
+  today — that is luck, not safety, and silently truncating it would stop paying merchants.
+- **`BatchWriteItem` rejects a whole batch containing two requests for the same key.**
+  Same-name roster rows resolve to the same `merchantId`, so batches go through
+  `chunkUnique`, which collapses repeats last-value-wins — exactly what the old
+  one-PutItem-per-row code did by overwriting.
+- **`BatchWriteItem` returns `UnprocessedItems` instead of failing** when DynamoDB declines
+  part of a batch. `putMerchantsBatch` retries with backoff; dropping them loses rows silently.
+- **It needs its own IAM action.** `dynamodb:BatchWriteItem` is not implied by `PutItem`.
+  Added to `revshare-api-role`, `revshare-api-sg-role`, and `infra/role-policy.json` — the
+  first deploy without it 500'd (and that error was visible only because of the CORS fix).
+
+Lambda memory is now **1769MB** (1 full vCPU), up from 256MB.
+
+**Still outstanding:** the **~4,230 excess registry rows** are untouched. 432 duplicate groups
+are byte-identical; 825 differ (`externalId` in 523, `partnerId` in 366, `contractId` in 63,
+`machineModel` in 5). The 2026-05-29 originals generally carry `externalId` and the later
+clones are blank, but in **28 groups** the oldest row is blank where a newer sibling has one,
+so a plain keep-oldest delete loses data. Agreed rule, not yet written: keep the oldest row's
+`merchantId`; take `notes`/`partnerId`/`externalId` as first-non-empty; take
+`contractId`/`machineModel` from the newest row; let the next prepare self-correct the rest.
 
 ## 2. Live URLs and resources
 
@@ -293,8 +346,9 @@ Account `<YOUR_AWS_ACCOUNT_ID>`, region `ap-northeast-1`. IAM user `<your-iam-us
 |---|---|
 | `lambda/revshare-api/code/engine.mjs` | Pure calculation engine. No AWS SDK. Tested via `node:test`. |
 | `lambda/revshare-api/code/csv.mjs` | CSV parser + validation. |
-| `lambda/revshare-api/code/db.mjs` | DynamoDB + S3 wrappers for every row family: Partner, Merchant (store registry), Contract, Run, BulkRun, machine-model Config. Also exports `DEFAULT_CURRENCY` (2026-08-09) — the region's default currency for auto-created contract stubs, `process.env.REVSHARE_CURRENCY` overridable, `'THB'` here. This file is **never synced between regions**, so the Singapore `db.mjs` must define its own `DEFAULT_CURRENCY` (default `'SGD'`) by hand — see §5/§8. `bulk-runs.mjs` reads it via a namespace import (`import * as dbModule from '../db.mjs'`), not a named one — a named import of a symbol the target `db.mjs` doesn't export is a static ESM error that fails the whole module load, which is exactly what took SG down for ~2 minutes during this fix before the import was changed. Until SG's `db.mjs` gets the mirror, SG silently falls back to `'THB'` (wrong, but non-fatal) rather than crashing. |
-| `lambda/revshare-api/code/payout.mjs` | Pure payout-decision module (2026-08-07). No AWS imports. Exports `ruleHasValue` (does a rule tree pay anything?), `contractNeedsTerms` (also requires a valid `aggregationMode` as of 2026-08-09, to agree with `payoutDecision`), `indexContractsByName`/`resolveLabel` (name-based roster resolution). |
+| `lambda/revshare-api/code/db.mjs` | DynamoDB + S3 wrappers for every row family: Partner, Merchant (store registry), Contract, Run, BulkRun, machine-model Config. Also exports `DEFAULT_CURRENCY` (2026-08-09) — the region's default currency for auto-created contract stubs, `process.env.REVSHARE_CURRENCY` overridable, `'THB'` here. Every list function paginates via `ddb-util.mjs`'s `queryAll` as of 2026-08-24 — do not add one that doesn't (§1c). Also exports `putMerchantsBatch` (BatchWriteItem + `UnprocessedItems` retry) and `merchantItem`, the item builder it shares with `putMerchant`. This file is **never synced between regions**, so the Singapore `db.mjs` must define its own `DEFAULT_CURRENCY` (default `'SGD'`) by hand — see §5/§8. `bulk-runs.mjs` reads it via a namespace import (`import * as dbModule from '../db.mjs'`), not a named one — a named import of a symbol the target `db.mjs` doesn't export is a static ESM error that fails the whole module load, which is exactly what took SG down for ~2 minutes during this fix before the import was changed. Until SG's `db.mjs` gets the mirror, SG silently falls back to `'THB'` (wrong, but non-fatal) rather than crashing. |
+| `lambda/revshare-api/code/ddb-util.mjs` | Pure DynamoDB helpers (2026-08-24), no AWS imports — the caller injects `send`. `queryAll` follows `LastEvaluatedKey` (every list in `db.mjs` goes through it; see §1c); `chunkUnique` builds duplicate-free `BatchWriteItem` batches. |
+| `lambda/revshare-api/code/payout.mjs` | Pure payout-decision module (2026-08-07). No AWS imports. Exports `merchantRowChanged` (2026-08-24 — is a roster row worth writing back? see §1c), `ruleHasValue` (does a rule tree pay anything?), `contractNeedsTerms` (also requires a valid `aggregationMode` as of 2026-08-09, to agree with `payoutDecision`), `indexContractsByName`/`resolveLabel` (name-based roster resolution). |
 | `lambda/revshare-api/code/routes/` | partners.mjs, runs.mjs |
 | `lambda/revshare-api/code/index.mjs` | Lambda entry: auth gate + route dispatch. |
 | `lambda/revshare-api/code/routes/merchants.mjs` | Store-registry (`MERCHANT`) CRUD routes. |
@@ -302,7 +356,7 @@ Account `<YOUR_AWS_ACCOUNT_ID>`, region `ap-northeast-1`. IAM user `<your-iam-us
 | `lambda/revshare-api/code/routes/bulk-runs.mjs` | Bulk run routes. Exports `buildRosterRows` (roster-authoritative row seeding, keyed by `contractId`; its `if (!m.contractId) continue` guard is defence in depth, not a live path — `applyMerchantRoster` always assigns a `contractId` first), `applyMerchantRoster` (resolves roster labels to `CONTRACT` rows, auto-creating a `noPayout: true` stub for any unmatched label; currency comes from `db.mjs`'s `DEFAULT_CURRENCY`, not a literal), `payoutDecision` (why a contract is/isn't paid; names the merchant in its warning when a sample name is available), `groupOrders` (legacy, order-only grouping, unused in the live route). `createBulkRunRoute` also builds a **`skipped`** list (2026-08-09) — brands that matched roster/order rows but weren't paid — with `skippedCount`/`skippedRevenue`/`totalOrderRevenue` on the run, so revenue never disappears from every total silently; see §1b and Finding 1 of the 2026-08-09 review. `paidBrandCount`/`rosterBrandCount` replace the old overloaded `merchantBrandCount` on the run payload (the `/bulk-runs/prepare` response still uses `merchantBrandCount` for its own, unambiguous meaning: distinct contracts in the roster). |
 | `lambda/revshare-api/code/contracts.mjs` | Contract sheet-row normalisation, name matching (`matchContracts`), import diffing (`buildImportPlan`). Contract fields only — never touches `rule`. |
 | `lambda/revshare-api/code/routes/contracts.mjs` | Contract (`CONTRACT`) CRUD + import routes. `WRITABLE` includes `rule`/`aggregationMode`/`noPayout`/`currency` for direct PUT edits — `CONTRACT` is the payout entity now (§5). |
-| `lambda/revshare-api/tests/` | `engine.test.mjs`, `csv.test.mjs`, `contracts.test.mjs`, `payout.test.mjs`, `bulk-runs.test.mjs`, others — `npm test` → 126 total. |
+| `lambda/revshare-api/tests/` | `engine.test.mjs`, `csv.test.mjs`, `contracts.test.mjs`, `payout.test.mjs`, `bulk-runs.test.mjs`, `ddb-util.test.mjs`, others — `npm test` → 143 total. |
 | `frontend/index.html` | SPA shell + pre-paint auth gate. |
 | `frontend/style.css` | All styles (tokenized). |
 | `frontend/app.js` | All app JS: auth, screens, Merchant view grid + terms editor, run flow. |
@@ -342,7 +396,7 @@ Run all tests:
 ```bash
 npm test    # from repo root
 ```
-126/126 should pass.
+143/143 should pass.
 
 ## 5. Data model
 
@@ -537,8 +591,12 @@ REVSHARE_CLOUDFRONT_DIST_ID=EXXXXXX ./infra/deploy-frontend.sh
 - **Duplicate store names concentrate revenue on one row — verified 2026-08-09, unfixed.**
   `buildRosterRows` indexes roster rows by `nameLower` with last-write-wins, so **every order
   for a duplicated store name lands on a single row and its siblings stay at 0 revenue**. The
-  live registry has **1,043 duplicate name groups covering 2,831 of 4,066 store rows**, and
-  **14 names span more than one `contractId`** — for those, revenue moves between brands.
+  live registry had **1,043 duplicate name groups covering 2,831 of 4,066 store rows** when
+  this was written; as of 2026-08-24 it is **1,257 groups over 6,661 rows**, and **63 names
+  span more than one `contractId`** — for those, revenue moves between brands. Most of that
+  growth is not genuine: it is the registry duplication of §1c, so the pending dedupe should
+  shrink these numbers rather than being blocked by them. Re-measure after it runs; the
+  underlying last-write-wins defect is separate and survives the dedupe.
   Under `whole` aggregation the partner total is unaffected. Under **`per_store` it is not**:
   it changes `max(GP, MG)` store by store, and 7-Eleven is `per_store` with 2,162 stores.
   Total revenue is conserved, so the run page's reconciliation banner shows OK and **will not
