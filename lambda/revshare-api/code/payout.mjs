@@ -50,3 +50,21 @@ export function resolveLabel(index, label) {
   const k = key(label);
   return k ? (index.get(k) || null) : null;
 }
+
+// Fields of a store-registry row that the roster actually owns. Everything else on the item
+// (pk/sk/nameLower/createdAt/updatedAt) is bookkeeping and must not, on its own, force a write.
+const ROSTER_OWNED_FIELDS = ['name', 'contractId', 'partnerId', 'machineModel', 'externalId', 'notes'];
+
+// null / undefined / '' all mean "not set" here — putMerchant has always normalised absent
+// values inconsistently across these fields, so comparing them raw would report a change on
+// every run and defeat the whole point of this check.
+const same = (a, b) => (a ?? '') === (b ?? '');
+
+// Should this roster row be written back to the registry? prepare used to PutItem all ~4,000
+// rows unconditionally, which at 256MB exceeded the 30s Lambda timeout (and API Gateway's 29s
+// ceiling) — the browser saw that as a bare "Failed to fetch". A roster barely changes month to
+// month, so writing only what actually differs takes the steady-state case to near zero writes.
+export function merchantRowChanged(existing, next) {
+  if (!existing) return true;
+  return ROSTER_OWNED_FIELDS.some(f => !same(existing[f], next[f]));
+}

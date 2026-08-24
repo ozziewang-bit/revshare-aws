@@ -1,9 +1,10 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import {
-  DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand, DeleteCommand
+  DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand, DeleteCommand, BatchWriteCommand
 } from '@aws-sdk/lib-dynamodb';
 import { S3Client, GetObjectCommand, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { ulid } from 'ulid';
+import { queryAll, chunkUnique } from './ddb-util.mjs';
 
 const REGION = process.env.AWS_REGION || 'ap-northeast-1';
 const TABLE  = process.env.REVSHARE_TABLE || 'RevsharePartner';
@@ -16,15 +17,20 @@ const RUNS_BUCKET = process.env.REVSHARE_RUNS_BUCKET || 'revshare-runs-812751451
 export const DEFAULT_CURRENCY = process.env.REVSHARE_CURRENCY || 'THB';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }));
+
+// Every list function below MUST use this, never a bare ddb.send(new QueryCommand(...)):
+// a single Query returns at most 1MB and silently drops the rest. See paginate.mjs for what
+// that cost us. If you add a row family, list it through here the same way.
+const query = params => queryAll(p => ddb.send(new QueryCommand(p)), params);
 const s3 = new S3Client({ region: REGION });
 
 export async function listPartners() {
-  const out = await ddb.send(new QueryCommand({
+  const items = await query({
     TableName: TABLE,
     KeyConditionExpression: 'pk = :p AND begins_with(sk, :s)',
     ExpressionAttributeValues: { ':p': 'PARTNER', ':s': 'META#' },
-  }));
-  return (out.Items || []).filter(p => !p.archived);
+  });
+  return items.filter(p => !p.archived);
 }
 
 export async function getPartner(partnerId) {
@@ -55,13 +61,12 @@ export async function putRun(run) {
 }
 
 export async function listRuns(partnerId) {
-  const out = await ddb.send(new QueryCommand({
+  return query({
     TableName: TABLE,
     KeyConditionExpression: 'pk = :p',
     ExpressionAttributeValues: { ':p': `RUN#${partnerId}` },
     ScanIndexForward: false
-  }));
-  return out.Items || [];
+  });
 }
 
 export async function getRun(partnerId, runId) {
@@ -77,12 +82,11 @@ export { ulid };
 // ── Merchants ─────────────────────────────────────────────────────────────
 
 export async function listMerchants() {
-  const out = await ddb.send(new QueryCommand({
+  return query({
     TableName: TABLE,
     KeyConditionExpression: 'pk = :p',
     ExpressionAttributeValues: { ':p': 'MERCHANT' },
-  }));
-  return out.Items || [];
+  });
 }
 
 export async function getMerchant(merchantId) {
@@ -93,9 +97,9 @@ export async function getMerchant(merchantId) {
   return out.Item || null;
 }
 
-export async function putMerchant(merchant) {
+export function merchantItem(merchant) {
   const now = new Date().toISOString();
-  const item = {
+  return {
     pk: 'MERCHANT',
     sk: `MERCHANT#${merchant.merchantId}`,
     ...merchant,
@@ -103,8 +107,38 @@ export async function putMerchant(merchant) {
     updatedAt: now,
     createdAt: merchant.createdAt || now
   };
+}
+
+export async function putMerchant(merchant) {
+  const item = merchantItem(merchant);
   await ddb.send(new PutCommand({ TableName: TABLE, Item: item }));
   return item;
+}
+
+// Bulk upsert for the roster path. One PutItem per store meant ~4,000 signed round trips on a
+// 256MB Lambda, which is how /bulk-runs/prepare came to exceed its 30s timeout; BatchWriteItem
+// takes 25 per call. DynamoDB may decline part of a batch under load and hands those back in
+// UnprocessedItems rather than failing the call — they must be retried or rows go missing
+// silently, which is the same class of bug as the unpaginated Query above.
+export async function putMerchantsBatch(merchants, { concurrency = 8 } = {}) {
+  const items = merchants.map(merchantItem);
+  const chunks = chunkUnique(items, i => i.sk, 25);
+
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(concurrency, chunks.length) }, async () => {
+    while (next < chunks.length) {
+      let pending = chunks[next++].map(Item => ({ PutRequest: { Item } }));
+      for (let attempt = 0; pending.length; attempt++) {
+        const out = await ddb.send(new BatchWriteCommand({ RequestItems: { [TABLE]: pending } }));
+        pending = out.UnprocessedItems?.[TABLE] || [];
+        if (pending.length) {
+          if (attempt >= 7) throw new Error(`BatchWriteItem: ${pending.length} items unprocessed after ${attempt + 1} attempts`);
+          await new Promise(r => setTimeout(r, 50 * 2 ** attempt));
+        }
+      }
+    }
+  }));
+  return items;
 }
 
 export async function deleteMerchant(merchantId) {
@@ -117,12 +151,11 @@ export async function deleteMerchant(merchantId) {
 // ── Contracts ─────────────────────────────────────────────────────────────
 
 export async function listContracts() {
-  const out = await ddb.send(new QueryCommand({
+  return query({
     TableName: TABLE,
     KeyConditionExpression: 'pk = :p',
     ExpressionAttributeValues: { ':p': 'CONTRACT' },
-  }));
-  return out.Items || [];
+  });
 }
 
 export async function getContract(contractId) {
@@ -193,13 +226,12 @@ export async function putBulkRun(bulkRun) {
 }
 
 export async function listBulkRuns() {
-  const out = await ddb.send(new QueryCommand({
+  return query({
     TableName: TABLE,
     KeyConditionExpression: 'pk = :p',
     ExpressionAttributeValues: { ':p': 'BULKRUN' },
     ScanIndexForward: false
-  }));
-  return out.Items || [];
+  });
 }
 
 export async function getBulkRun(runId) {
@@ -236,12 +268,12 @@ export async function deleteBulkRun(runId) {
 // ── Machine Models ────────────────────────────────────────────────────────
 
 export async function listMachineModels() {
-  const out = await ddb.send(new QueryCommand({
+  const items = await query({
     TableName: TABLE,
     KeyConditionExpression: 'pk = :p AND begins_with(sk, :s)',
     ExpressionAttributeValues: { ':p': 'CONFIG', ':s': 'MODEL#' },
-  }));
-  return (out.Items || [])
+  });
+  return items
     .map(({ code, displayName }) => ({ code, displayName }))
     .sort((a, b) => a.code.localeCompare(b.code));
 }

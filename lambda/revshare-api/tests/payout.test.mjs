@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { ruleHasValue, contractNeedsTerms, indexContractsByName, resolveLabel } from '../code/payout.mjs';
+import { ruleHasValue, contractNeedsTerms, indexContractsByName, resolveLabel, merchantRowChanged } from '../code/payout.mjs';
 
 const pct = p => ({ type: 'percent', rows: [{ model: 'ALL', percent: p }] });
 const mg  = a => ({ type: 'flat_per_machine', rows: [{ model: 'S8', amount: a }] });
@@ -103,4 +103,44 @@ test('indexContractsByName: skips null/undefined holes without throwing', () => 
   ]);
   assert.equal(resolveLabel(idx, 'A').contractId, 'c1');
   assert.equal(resolveLabel(idx, 'B').contractId, 'c2');
+});
+
+// ── Roster write-skipping ──────────────────────────────────────────────────
+// prepare used to PutItem every roster row unconditionally — ~4,000 writes, which at 256MB
+// blew past the 30s Lambda timeout (and API Gateway's 29s ceiling) from 2026-07-27 onward.
+// Almost nothing changes month to month, so only changed rows are written now.
+test('merchantRowChanged: identical row is not rewritten', () => {
+  const ex = { merchantId: 'm1', name: 'Store A', contractId: 'c1', partnerId: null,
+               machineModel: 'S8', externalId: 'X1', notes: '', nameLower: 'store a',
+               createdAt: '2026-01-01', updatedAt: '2026-01-01' };
+  const next = { merchantId: 'm1', name: 'Store A', contractId: 'c1', partnerId: null,
+                 machineModel: 'S8', externalId: 'X1', notes: '' };
+  assert.equal(merchantRowChanged(ex, next), false);
+});
+
+test('merchantRowChanged: bookkeeping fields alone never trigger a write', () => {
+  const ex = { name: 'A', contractId: 'c1', partnerId: null, machineModel: 'S8',
+               externalId: null, notes: '', updatedAt: '2026-01-01', pk: 'MERCHANT', sk: 'MERCHANT#m1' };
+  const next = { name: 'A', contractId: 'c1', partnerId: null, machineModel: 'S8',
+                 externalId: null, notes: '', updatedAt: '2026-08-20' };
+  assert.equal(merchantRowChanged(ex, next), false);
+});
+
+for (const [field, value] of [['name', 'Store B'], ['contractId', 'c2'],
+                              ['machineModel', 'S5'], ['externalId', 'X2'], ['notes', 'hi']]) {
+  test(`merchantRowChanged: a changed ${field} is written`, () => {
+    const ex = { name: 'Store A', contractId: 'c1', partnerId: null, machineModel: 'S8',
+                 externalId: 'X1', notes: '' };
+    assert.equal(merchantRowChanged(ex, { ...ex, [field]: value }), true);
+  });
+}
+
+test('merchantRowChanged: a brand new row is always written', () => {
+  assert.equal(merchantRowChanged(null, { name: 'New', contractId: 'c1' }), true);
+});
+
+test('merchantRowChanged: null and empty string are the same absent value', () => {
+  const ex = { name: 'A', contractId: 'c1', partnerId: null, machineModel: null, externalId: null, notes: '' };
+  const next = { name: 'A', contractId: 'c1', partnerId: null, machineModel: '', externalId: undefined, notes: '' };
+  assert.equal(merchantRowChanged(ex, next), false);
 });

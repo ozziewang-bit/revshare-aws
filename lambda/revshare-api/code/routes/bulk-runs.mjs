@@ -1,7 +1,7 @@
-import { listMerchants, putMerchant, putBulkRun, listBulkRuns, getBulkRun, deleteBulkRun, listMachineModels, ulid, listContracts, getContract, putContract } from '../db.mjs';
+import { listMerchants, putMerchantsBatch, putBulkRun, listBulkRuns, getBulkRun, deleteBulkRun, listMachineModels, ulid, listContracts, getContract, putContract } from '../db.mjs';
 import * as dbModule from '../db.mjs';
 import { evaluateRun } from '../engine.mjs';
-import { ruleHasValue, contractNeedsTerms, indexContractsByName, resolveLabel } from '../payout.mjs';
+import { ruleHasValue, contractNeedsTerms, indexContractsByName, resolveLabel, merchantRowChanged } from '../payout.mjs';
 
 // A *named* import of DEFAULT_CURRENCY (`import { DEFAULT_CURRENCY } from '../db.mjs'`) is a
 // static ESM binding: if the target db.mjs doesn't export that name, the whole module fails
@@ -88,22 +88,31 @@ export async function applyMerchantRoster(merchants) {
   });
   index = indexContractsByName(contracts);
 
+  // Resolve every roster row first, writing nothing: this loop is pure bookkeeping, so it
+  // costs no round trips. Only rows that actually differ from the registry are written, in
+  // batches, afterwards. It used to be one PutItem per roster row (~4,000 of them) — at 256MB
+  // that took 25-30s and, from 2026-07-27, blew the 30s Lambda timeout on every attempt. A
+  // roster is near-identical month to month, so in the steady state this now writes ~nothing.
   const roster = [];
   const seen = {};
-  await mapPool(validRows, 25, async ({ src, label }) => {
+  const toWrite = [];
+  for (const { src, label } of validRows) {
     const contract = resolveLabel(index, label);
     // Should be unreachable — every label was either already resolvable or added to
     // newLabels and stubbed above, so `index` (rebuilt just before this loop) should resolve
     // it. Guard anyway: a throw here would 500 the whole run instead of costing one row.
-    if (!contract) { unassigned.push(src.name); return; }
-    const ex = merchantByName[(src.name || '').toLowerCase().trim()];
+    if (!contract) { unassigned.push(src.name); continue; }
+    const nameLower = (src.name || '').toLowerCase().trim();
+    const ex = merchantByName[nameLower];
     const merchantId = ex?.merchantId || ulid();
-    const saved = await putMerchant({ merchantId, createdAt: ex?.createdAt, name: src.name,
+    const row = { merchantId, createdAt: ex?.createdAt, name: src.name,
       contractId: contract.contractId, partnerId: ex?.partnerId ?? null,
-      machineModel: src.model || null, externalId: src.externalId || ex?.externalId || null, notes: ex?.notes || '' });
-    roster.push({ merchantId, name: src.name, nameLower: saved.nameLower, contractId: contract.contractId, model: src.model || null });
+      machineModel: src.model || null, externalId: src.externalId || ex?.externalId || null, notes: ex?.notes || '' };
+    if (merchantRowChanged(ex, row)) toWrite.push(row);
+    roster.push({ merchantId, name: src.name, nameLower, contractId: contract.contractId, model: src.model || null });
     seen[contract.contractId] = contract;
-  });
+  }
+  if (toWrite.length) await putMerchantsBatch(toWrite);
 
   const merchantsNeedingTerms = Object.values(seen)
     .filter(contractNeedsTerms)
