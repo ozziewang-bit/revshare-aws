@@ -1,7 +1,7 @@
 # revshare-aws — handoff
 
-Last updated: 2026-08-24 (bulk-run prepare timeout fixed: unpaginated DynamoDB queries were duplicating the store registry; CORS on gateway error responses).
-Service-worker `CACHE_VERSION` is at `revshare-v118` (bump on every shell change).
+Last updated: 2026-08-24 (prepare timeout + registry duplication fixed; three-pass order matching; runs now store their inputs and can be recomputed).
+Service-worker `CACHE_VERSION` is at `revshare-v122` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
 end-to-end before touching anything. The codebase is the ultimate source of
@@ -272,7 +272,7 @@ CSV already handle per_store correctly; this was a config issue, not a code bug.
 default to the lower-paying `whole` branch, which is exactly how 7-Eleven's original
 under-payment happened.
 
-Tests: `npm test` → **143/143** pass (incl. `ddb-util.test.mjs` — Query pagination +
+Tests: `npm test` → **162/162** pass (incl. `ddb-util.test.mjs` — Query pagination +
 BatchWriteItem chunking, §1c; `payout.test.mjs` — `merchantRowChanged` / `ruleHasValue` /
 `contractNeedsTerms` / label resolution; `bulk-runs.test.mjs` — roster-to-contract
 resolution + order-less fixed-fee; `contracts.test.mjs` — sheet-row normalisation, name
@@ -330,6 +330,70 @@ so a plain keep-oldest delete loses data. Agreed rule, not yet written: keep the
 `merchantId`; take `notes`/`partnerId`/`externalId` as first-non-empty; take
 `contractId`/`machineModel` from the newest row; let the next prepare self-correct the rest.
 
+## 1d. Order matching is THREE passes (2026-08-24) — and why
+
+**The order report stamps each order with the merchant's name AT EXPORT TIME, not at rental
+time.** This is the load-bearing fact. A store renamed on the platform changes name underneath
+past periods: the same July orders appear as `รถไฟฟ้ามหานคร สถานีมีนบุรี` in an Aug 8 export
+(matched, paid) and as `รถไฟฟ้ามหานคร สถานีตลาดมีนบุรี` in an Aug 24 one (unmatched, unpaid).
+So **re-exporting a past period can change which stores match**, and nothing catches it: total
+revenue is conserved, the revenue just moves into `unmatched`, and the run page's reconciliation
+banner still shows OK. The order report has **no merchant/store ID column at all** — 42 columns,
+and the only store identifier is the name string.
+
+`buildRosterRows` therefore matches each order in three passes:
+
+1. **Store name** — unchanged, and still the primary join.
+2. **Machine number** — `Rental Machine No.` → the Machine List's `Business ID` → the roster
+   row's `externalId`. Needs the **optional Machine List upload** (step 4 of the wizard); with
+   no `machineIndex` the behaviour is byte-identical to before. Measured on 2026-08 data: 100%
+   of orders carry a machine number, 100% of those machines are in the Machine List, 98.1%
+   resolve to a roster ID. **Name wins when both resolve** — across 7,103 orders the two passes
+   never disagreed (0 conflicts), so pass 2 can only ever recover an order, never move revenue
+   between brands.
+3. **Explicit alias** — `orderAliases` on the `CONTRACT`, set from a run's unmatched list with
+   the **Assign→** / **+ Add merchant** buttons. See below.
+
+**Aliases add a store, and that is not free.** By the user's 2026-08-24 decision an alias
+**ADDS a store row** to the target contract rather than merging into an existing one — so it
+counts as a store for `per_store` and **as a machine for `flat_per_machine` / per-machine MG**.
+The assign dialog reads the per-machine amount off the actual rule tree and states the cost
+before you confirm. Three rules follow, each pinned by a test:
+- **Pass 3 runs LAST.** When the machine number proves the store is already in the roster,
+  merging into the real row is correct; a second row for the same machine would overpay.
+- **An alias with no matching orders creates NO row** (created lazily on first matching order),
+  or a `flat_per_machine` merchant would collect placement for a machine that never existed.
+- **Archived contracts are excluded** from the alias index, matching `payoutDecision` — an
+  ended contract must not reacquire revenue through an alias set months ago.
+
+## 1e. Runs store their inputs and can be recomputed (2026-08-24)
+
+`putBulkRun` writes a **second** S3 object, `runs/<runId>.inputs.json` (parsed roster, orders,
+machine list), kept separate from the payload so the run-detail page never downloads several MB
+it does not render. `deleteBulkRun` removes both. Before this, a run's payload held only
+aggregates, so "how would this run look under corrected matching?" could only be answered by
+asking the user to re-upload files that existed solely in their Downloads folder and a browser
+tab. **Runs created before 2026-08-24 have no inputs and cannot be recomputed** — that is a fact
+about the data, not a bug; both the route and the CLI say so explicitly.
+
+- `computeBulkRun` is split out of `createBulkRunRoute`: the HTTP route is a thin wrapper, so
+  there is exactly one definition of what a run means and a CLI re-run cannot drift from one.
+- `applyMerchantRoster(merchants, { persist: false })` resolves identically (new labels get
+  **in-memory** stubs) but writes nothing. Without it, previewing a re-run would mutate the
+  registry while claiming to write nothing. Verified live: 6,677 `MERCHANT` / 341 `CONTRACT`
+  rows before and after.
+- `POST /bulk-runs/:id/recompute` (`runCalcs`) rebuilds from stored inputs and **REPLACES** the
+  run, stamping `recomputedFrom`/`recomputedAt`. Replacing rather than versioning is the user's
+  explicit decision. **409 on an archived run** — archiving is the lock that makes a payout you
+  have acted on immutable — and 409 with a clear message for runs predating stored inputs.
+- `infra/rerun-bulk-run.mjs <runId> [--apply] [--replace]` does the same from the CLI, **dry run
+  by default**, printing a before/after table, per-merchant payout deltas, what each pass
+  recovered, and a reconciliation check.
+
+A run also records **`unmatchedDetail`** — orders and revenue per unmatched name. The flat
+`unmatched` name list is kept because the CSV download and every stored run depend on it; runs
+predating this render in the same table with `—` in the numeric columns.
+
 ## 2. Live URLs and resources
 
 - **Site:** https://d2t76jfby056ul.cloudfront.net
@@ -347,6 +411,7 @@ Account `<YOUR_AWS_ACCOUNT_ID>`, region `ap-northeast-1`. IAM user `<your-iam-us
 | `lambda/revshare-api/code/engine.mjs` | Pure calculation engine. No AWS SDK. Tested via `node:test`. |
 | `lambda/revshare-api/code/csv.mjs` | CSV parser + validation. |
 | `lambda/revshare-api/code/db.mjs` | DynamoDB + S3 wrappers for every row family: Partner, Merchant (store registry), Contract, Run, BulkRun, machine-model Config. Also exports `DEFAULT_CURRENCY` (2026-08-09) — the region's default currency for auto-created contract stubs, `process.env.REVSHARE_CURRENCY` overridable, `'THB'` here. Every list function paginates via `ddb-util.mjs`'s `queryAll` as of 2026-08-24 — do not add one that doesn't (§1c). Also exports `putMerchantsBatch` (BatchWriteItem + `UnprocessedItems` retry) and `merchantItem`, the item builder it shares with `putMerchant`. This file is **never synced between regions**, so the Singapore `db.mjs` must define its own `DEFAULT_CURRENCY` (default `'SGD'`) by hand — see §5/§8. `bulk-runs.mjs` reads it via a namespace import (`import * as dbModule from '../db.mjs'`), not a named one — a named import of a symbol the target `db.mjs` doesn't export is a static ESM error that fails the whole module load, which is exactly what took SG down for ~2 minutes during this fix before the import was changed. Until SG's `db.mjs` gets the mirror, SG silently falls back to `'THB'` (wrong, but non-fatal) rather than crashing. |
+| `infra/rerun-bulk-run.mjs` | Recompute a bulk run from its stored inputs (2026-08-24) — no browser token, no re-upload. Dry run by default; `--apply` writes a new run, `--replace` also deletes the original. Calls the same `computeBulkRun` the HTTP route uses, with `persist: false` on a dry run so a preview cannot mutate the registry. Sets `AWS_REGION` before importing `db.mjs` (which otherwise falls back to the wrong region) — hence its dynamic imports. |
 | `lambda/revshare-api/code/ddb-util.mjs` | Pure DynamoDB helpers (2026-08-24), no AWS imports — the caller injects `send`. `queryAll` follows `LastEvaluatedKey` (every list in `db.mjs` goes through it; see §1c); `chunkUnique` builds duplicate-free `BatchWriteItem` batches. |
 | `lambda/revshare-api/code/payout.mjs` | Pure payout-decision module (2026-08-07). No AWS imports. Exports `merchantRowChanged` (2026-08-24 — is a roster row worth writing back? see §1c), `ruleHasValue` (does a rule tree pay anything?), `contractNeedsTerms` (also requires a valid `aggregationMode` as of 2026-08-09, to agree with `payoutDecision`), `indexContractsByName`/`resolveLabel` (name-based roster resolution). |
 | `lambda/revshare-api/code/routes/` | partners.mjs, runs.mjs |
@@ -356,7 +421,7 @@ Account `<YOUR_AWS_ACCOUNT_ID>`, region `ap-northeast-1`. IAM user `<your-iam-us
 | `lambda/revshare-api/code/routes/bulk-runs.mjs` | Bulk run routes. Exports `buildRosterRows` (roster-authoritative row seeding, keyed by `contractId`; its `if (!m.contractId) continue` guard is defence in depth, not a live path — `applyMerchantRoster` always assigns a `contractId` first), `applyMerchantRoster` (resolves roster labels to `CONTRACT` rows, auto-creating a `noPayout: true` stub for any unmatched label; currency comes from `db.mjs`'s `DEFAULT_CURRENCY`, not a literal), `payoutDecision` (why a contract is/isn't paid; names the merchant in its warning when a sample name is available), `groupOrders` (legacy, order-only grouping, unused in the live route). `createBulkRunRoute` also builds a **`skipped`** list (2026-08-09) — brands that matched roster/order rows but weren't paid — with `skippedCount`/`skippedRevenue`/`totalOrderRevenue` on the run, so revenue never disappears from every total silently; see §1b and Finding 1 of the 2026-08-09 review. `paidBrandCount`/`rosterBrandCount` replace the old overloaded `merchantBrandCount` on the run payload (the `/bulk-runs/prepare` response still uses `merchantBrandCount` for its own, unambiguous meaning: distinct contracts in the roster). |
 | `lambda/revshare-api/code/contracts.mjs` | Contract sheet-row normalisation, name matching (`matchContracts`), import diffing (`buildImportPlan`). Contract fields only — never touches `rule`. |
 | `lambda/revshare-api/code/routes/contracts.mjs` | Contract (`CONTRACT`) CRUD + import routes. `WRITABLE` includes `rule`/`aggregationMode`/`noPayout`/`currency` for direct PUT edits — `CONTRACT` is the payout entity now (§5). |
-| `lambda/revshare-api/tests/` | `engine.test.mjs`, `csv.test.mjs`, `contracts.test.mjs`, `payout.test.mjs`, `bulk-runs.test.mjs`, `ddb-util.test.mjs`, others — `npm test` → 143 total. |
+| `lambda/revshare-api/tests/` | `engine.test.mjs`, `csv.test.mjs`, `contracts.test.mjs`, `payout.test.mjs`, `bulk-runs.test.mjs`, `ddb-util.test.mjs`, others — `npm test` → 162 total. |
 | `frontend/index.html` | SPA shell + pre-paint auth gate. |
 | `frontend/style.css` | All styles (tokenized). |
 | `frontend/app.js` | All app JS: auth, screens, Merchant view grid + terms editor, run flow. |
@@ -396,7 +461,7 @@ Run all tests:
 ```bash
 npm test    # from repo root
 ```
-143/143 should pass.
+162/162 should pass.
 
 ## 5. Data model
 
@@ -457,6 +522,7 @@ migrated `CONTRACT` rule can be checked against its `PARTNER` source.
 | GET | `/bulk-runs/:id` | Get full bulk run (from S3). |
 | POST | `/bulk-runs/:id/archive` | Lock run (sets `archived: true`). Requires `runCalcs`. Locked runs block DELETE (409). |
 | POST | `/bulk-runs/:id/unarchive` | Remove lock. Requires `admin`. |
+| POST | `/bulk-runs/:id/recompute` | Rebuild a run from its stored inputs and replace it (§1e). Requires `runCalcs`. 409 if archived, or if the run predates stored inputs. |
 | DELETE | `/bulk-runs/:id` | Delete run. Returns 409 if archived. Requires `deleteRuns`. |
 | GET | `/contracts` | List all contracts |
 | POST | `/contracts` | Create contract. Requires `manageMerchants`. |
