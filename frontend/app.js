@@ -1696,6 +1696,17 @@ function renderNewBulkRunForm() {
           </div>
           <div class="upload-hint" style="margin-top:6px;">Required columns: <code style="font-size:11px;">Order No, Rental Merchant, Discount Amount, Payment Amount, Net Amount, Payment Status</code></div>
           <div id="wiz-ord-status" style="margin-top:10px;"></div>
+
+          <div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--line);">
+            <span style="font-size:12.5px;color:var(--ink-soft);">Machine List (.xlsx) — <em>optional</em></span>
+            <p class="upload-hint" style="margin:4px 0 8px;">The order report identifies a store only by name, so a store renamed in one export and not the other is paid to nobody. Upload this and any such order is recovered by machine number instead. Needs <code style="font-size:11px;">Machine No</code> and <code style="font-size:11px;">Business ID</code>.</p>
+            <input type="file" id="wiz-mach-file" accept=".xlsx" style="display:none">
+            <div id="wiz-mach-zone" class="upload-zone" style="cursor:pointer;padding:14px;">
+              <button type="button" id="wiz-mach-choose" class="btn">Choose file</button>
+              <div id="wiz-mach-name" class="upload-hint"></div>
+            </div>
+            <div id="wiz-mach-status" style="margin-top:8px;"></div>
+          </div>
           `}
         </div>
       </div>`;
@@ -1762,6 +1773,24 @@ function renderNewBulkRunForm() {
       });
       document.getElementById('wiz-ord-choose')?.addEventListener('click', () => document.getElementById('wiz-ord-file').click());
       document.getElementById('wiz-ord-zone')?.addEventListener('click', e => { if (e.target.id !== 'wiz-ord-choose') document.getElementById('wiz-ord-file').click(); });
+      document.getElementById('wiz-mach-choose')?.addEventListener('click', () => document.getElementById('wiz-mach-file').click());
+      document.getElementById('wiz-mach-zone')?.addEventListener('click', e => { if (e.target.id !== 'wiz-mach-choose') document.getElementById('wiz-mach-file').click(); });
+      document.getElementById('wiz-mach-file')?.addEventListener('change', async e => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const nameEl = document.getElementById('wiz-mach-name');
+        if (nameEl) nameEl.textContent = file.name;
+        const status = document.getElementById('wiz-mach-status');
+        status.innerHTML = 'Parsing machine list…';
+        try {
+          wiz.machines = await parseMachineList(file);
+          status.innerHTML = `<span style="color:#2b8a3e;">✓ ${wiz.machines.length} machines — renamed stores will be matched by machine number.</span>`;
+        } catch (err) {
+          wiz.machines = [];
+          status.innerHTML = `<p style="color:#f03e3e;">Error: ${escape(err.message)}</p>`;
+        }
+      });
+
       document.getElementById('wiz-ord-file')?.addEventListener('change', async e => {
         const file = e.target.files[0];
         if (!file) return;
@@ -1779,7 +1808,7 @@ function renderNewBulkRunForm() {
             try {
               const run = await api('/bulk-runs', {
                 method: 'POST',
-                body: JSON.stringify({ periodStart: wiz.periodStart, periodEnd: wiz.periodEnd, merchants: wiz.merchants, orders: wiz.orders })
+                body: JSON.stringify({ periodStart: wiz.periodStart, periodEnd: wiz.periodEnd, merchants: wiz.merchants, orders: wiz.orders, machines: wiz.machines || [] })
               });
               renderBulkRunDetail(run.runId);
             } catch (err) {
@@ -1848,8 +1877,34 @@ async function parseOrderReport(file) {
   return rows
     // Include every rental except unpaid ones (refunded rentals stay in).
     .filter(r => String(r['Payment Status'] || '').trim().toLowerCase() !== 'unpaid')
-    .map(r => ({ merchantName: String(r['Rental Merchant'] || '').trim(), netAmount: Number(r['Net Amount'] || 0) }))
+    .map(r => ({ merchantName: String(r['Rental Merchant'] || '').trim(),
+                 netAmount: Number(r['Net Amount'] || 0),
+                 machineNo: String(pick(r, 'Rental Machine No.') ?? '').trim() }))
     .filter(r => r.merchantName);
+}
+
+// Header lookup that tolerates the export's irregular spacing — the order report's machine
+// column is literally "Rental  Machine  No." with double spaces, and that is exactly the kind
+// of thing that changes between exports without warning.
+function pick(row, header) {
+  if (row[header] != null) return row[header];
+  const want = header.toLowerCase().replace(/\s+/g, ' ').trim();
+  for (const k of Object.keys(row)) {
+    if (k.toLowerCase().replace(/\s+/g, ' ').trim() === want) return row[k];
+  }
+  return null;
+}
+
+// Machine List (optional): machine number -> the Business ID the platform says owns it. This
+// is the ONLY file linking an order to a merchant identity — the order report carries no
+// merchant/store ID, only the name string, which is why a rename breaks the payout.
+async function parseMachineList(file) {
+  const wb = await readExcel(file);
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  return XLSX.utils.sheet_to_json(ws, { defval: null })
+    .map(r => ({ machineNo: String(pick(r, 'Machine No') ?? '').trim(),
+                 businessId: String(pick(r, 'Business ID') ?? '').trim() }))
+    .filter(r => r.machineNo && r.businessId);
 }
 
 // "2026-05-01" -> "2026_05"
@@ -2105,6 +2160,45 @@ async function renderBulkRunDetail(runId) {
           <tfoot><tr><td>Total</td><td></td><td></td><td>${skippedRevenue.toFixed(2)}</td><td></td></tr></tfoot>
         </table>
       </div>` : ''}
+    ${run.matchedByMachine?.length ? `
+      <div style="margin:14px 0;padding:12px 16px;background:#fff9db;border:1px solid #ffe066;border-radius:8px;">
+        <strong style="color:#e67700;">↔ ${run.matchedByMachine.length} store(s) matched by machine number, not by name</strong>
+        <p style="margin:6px 0 8px;font-size:13px;color:var(--ink-soft);">
+          These stores are named differently in the order report and the merchant list. Their revenue
+          <strong>was paid</strong> — recovered via the Machine List — but the two exports disagree, so
+          the name is worth correcting at source.
+        </p>
+        <table style="font-size:13px;width:100%;">
+          <thead><tr><th style="text-align:left;">Order report name</th><th style="text-align:left;">Merchant list name</th><th style="text-align:right;">Orders</th><th style="text-align:right;">Revenue</th></tr></thead>
+          <tbody>${run.matchedByMachine.map(m => `<tr>
+            <td>${escape(m.orderName || '')}</td>
+            <td>${escape(m.rosterName || '')}</td>
+            <td style="text-align:right;">${Number(m.orders || 0).toLocaleString('en-US')}</td>
+            <td style="text-align:right;">${fmt2(Number(m.revenue || 0))}</td>
+          </tr>`).join('')}</tbody>
+        </table>
+      </div>` : ''}
+
+    ${run.matchedByAlias?.length ? `
+      <div style="margin:14px 0;padding:12px 16px;background:#e7f5ff;border:1px solid #74c0fc;border-radius:8px;">
+        <strong style="color:#1971c2;">→ ${run.matchedByAlias.length} name(s) paid by manual assignment</strong>
+        <p style="margin:6px 0 8px;font-size:13px;color:var(--ink-soft);">
+          These order-report names are not in the merchant list, so they were assigned to a merchant by hand.
+          Each one is counted as an additional store of that merchant.
+        </p>
+        <table style="font-size:13px;width:100%;">
+          <thead><tr><th style="text-align:left;">Order report name</th><th style="text-align:left;">Paid to</th><th style="text-align:right;">Orders</th><th style="text-align:right;">Revenue</th></tr></thead>
+          <tbody>${run.matchedByAlias.map(m => {
+            const paid = (run.results || []).find(r => r.contractId === m.contractId);
+            return `<tr>
+              <td>${escape(m.name || '')}</td>
+              <td>${escape(paid?.merchantName || m.contractId || '')}</td>
+              <td style="text-align:right;">${Number(m.orders || 0).toLocaleString('en-US')}</td>
+              <td style="text-align:right;">${fmt2(Number(m.revenue || 0))}</td>
+            </tr>`; }).join('')}</tbody>
+        </table>
+      </div>` : ''}
+
     ${run.unmatched?.length ? `
       <div style="margin-top:24px;padding:16px;background:#fff5f5;border-radius:8px;border:1px solid #ffa8a8;">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
@@ -2112,8 +2206,27 @@ async function renderBulkRunDetail(runId) {
           <button id="dl-unmatched" class="btn-ghost" style="color:var(--accent);">↓ Download list (CSV)</button>
         </div>
         <p style="color:#868e96;font-size:13px;">These names were in the order report but not found in the merchant registry. Add them under the correct merchant and re-run.</p>
-        <ul style="font-size:13px;">${run.unmatched.map(n => `<li>${escape(n)}</li>`).join('')}</ul>
+        <!-- Runs from before 2026-08-24 stored names only, with no per-store split. They still
+             need the Assign / Add buttons, so both shapes are normalised into one table rather
+             than a second, button-less branch. -->
+        <table style="font-size:13px;width:100%;margin-top:6px;">
+          <thead><tr><th style="text-align:left;">Merchant name in order report</th><th style="text-align:right;">Orders</th><th style="text-align:right;">Revenue</th><th></th></tr></thead>
+          <tbody>${(run.unmatchedDetail?.length
+              ? run.unmatchedDetail
+              : (run.unmatched || []).map(n => ({ name: n, orders: null, revenue: null }))
+            ).map(u => `<tr>
+            <td>${escape(u.name || '')}</td>
+            <td style="text-align:right;">${u.orders == null ? '<span class="muted">—</span>' : Number(u.orders).toLocaleString('en-US')}</td>
+            <td style="text-align:right;">${u.revenue == null ? '<span class="muted">—</span>' : fmt2(Number(u.revenue))}</td>
+            <td style="text-align:right;white-space:nowrap;">
+              ${can('manageMerchants') ? `
+                <button type="button" class="btn-ghost um-assign" data-name="${escape(u.name || '')}" style="font-size:12px;padding:2px 8px;">Assign→</button>
+                <button type="button" class="btn-ghost um-add" data-name="${escape(u.name || '')}" style="font-size:12px;padding:2px 8px;">+ Add merchant</button>` : ''}
+            </td>
+          </tr>`).join('')}</tbody>
+        </table>
       </div>` : ''}
+
     ${hasOrderTotal ? `
       <div style="margin-top:24px;padding:12px 16px;border-radius:8px;font-size:13px;${reconciles ? 'background:#ebfbee;border:1px solid #8ce99a;color:#2b8a3e;' : 'background:#fff5f5;border:1px solid #ffa8a8;color:#c92a2a;'}">
         <strong>${reconciles ? '✓ Reconciles' : '✗ Does NOT reconcile'}:</strong>
@@ -2127,6 +2240,7 @@ async function renderBulkRunDetail(runId) {
     downloadRevshareZip(run);
   });
   el.querySelector('#dl-unmatched')?.addEventListener('click', () => downloadUnmatchedCsv(run));
+  bindUnmatchedActions(el, run);
 
   el.querySelector('#br-archive')?.addEventListener('click', async () => {
     if (!confirm('Archive this run? It will be locked and cannot be deleted until unarchived.')) return;
@@ -2386,3 +2500,149 @@ boot();
   setInterval(check, 60000);
   document.addEventListener('visibilitychange', () => { if (document.hidden) { if (pending) location.reload(); } else check(); });
 })();
+
+
+// ── Fixing unmatched merchants from a run ─────────────────────────────────
+// An unmatched name is a store the order report knows about but the merchant list does not,
+// so no amount of re-uploading fixes it — the roster is authoritative and simply lacks the
+// name. These two actions write an ORDER ALIAS onto a contract, which is the matcher's third
+// pass: the name is then paid to that merchant, this run and every future one.
+//
+// Per the 2026-08-24 decision an alias ADDS a store row to the merchant rather than merging
+// into an existing one, so it also counts as a machine wherever the rule pays per machine.
+// That is why the dialog spells out the per-machine cost before you confirm.
+async function ensureContractCache() {
+  if (CONTRACTS.length && MACHINE_MODELS_CACHE.length) return;
+  const [contracts, machineModels] = await Promise.all([api('/contracts'), api('/machine-models')]);
+  CONTRACTS = contracts;
+  MACHINE_MODELS_CACHE = machineModels;
+}
+
+// What does one more machine cost under this rule? Walks the tree for the per-machine terms,
+// because those are the ones an added store row silently increases.
+function perMachineTerms(node, out = []) {
+  if (!node || typeof node !== 'object') return out;
+  if (node.type === 'flat_per_machine') {
+    for (const r of node.rows || []) if (Number(r.amount) > 0) out.push({ model: r.model, amount: Number(r.amount) });
+  }
+  (node.children || []).forEach(c => perMachineTerms(c, out));
+  return out;
+}
+
+function bindUnmatchedActions(el, run) {
+  el.querySelectorAll('.um-assign').forEach(b =>
+    b.addEventListener('click', () => openAssignDialog(b.dataset.name, run)));
+  el.querySelectorAll('.um-add').forEach(b =>
+    b.addEventListener('click', () => addMerchantForUnmatched(b.dataset.name, run)));
+}
+
+async function openAssignDialog(orderName, run) {
+  try { await ensureContractCache(); }
+  catch (e) { alert(`Could not load merchants: ${e.message}`); return; }
+
+  const live = CONTRACTS.filter(c => !c.archived)
+    .sort((a, b) => (a.merchantName || '').localeCompare(b.merchantName || ''));
+  const models = (MACHINE_MODELS_CACHE.length ? MACHINE_MODELS_CACHE.map(m => m.code) : ['S5','S8','S10','T8','T10','T20','T35','L20','L40','M10']);
+  const { card, close } = ctModal(560);
+  card.innerHTML = `
+    <h3 style="margin:0 0 4px;">Assign to a merchant</h3>
+    <p class="muted" style="margin:0 0 14px;font-size:12.5px;">
+      Orders named <strong>${escape(orderName)}</strong> will be paid to the merchant you pick,
+      in this run and in future runs.
+    </p>
+    <label style="font-size:12.5px;color:var(--ink-soft);">Merchant
+      <select id="um-contract" class="input" style="display:block;margin-top:4px;width:100%;">
+        ${live.map(c => `<option value="${escape(c.contractId)}">${escape(c.merchantName || '(unnamed)')}</option>`).join('')}
+      </select>
+    </label>
+    <label style="font-size:12.5px;color:var(--ink-soft);display:block;margin-top:12px;">Machine model
+      <select id="um-model" class="input" style="display:block;margin-top:4px;width:160px;">
+        ${models.map(m => `<option value="${m}"${m === 'S8' ? ' selected' : ''}>${m}</option>`).join('')}
+      </select>
+    </label>
+    <div id="um-impact" style="margin-top:14px;"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:18px;">
+      <button type="button" id="um-cancel" class="btn-ghost">Cancel</button>
+      <button type="button" id="um-save" class="btn-primary">Assign</button>
+    </div>`;
+
+  const impact = () => {
+    const c = CONTRACTS.find(x => x.contractId === card.querySelector('#um-contract').value);
+    const model = card.querySelector('#um-model').value;
+    const box = card.querySelector('#um-impact');
+    const terms = perMachineTerms(c?.rule).filter(t => t.model === model || t.model === 'ALL');
+    box.innerHTML = terms.length
+      ? `<div style="padding:10px 12px;background:#fff9db;border:1px solid #ffe066;border-radius:8px;font-size:12.5px;">
+           <strong>This adds a store to ${escape(c.merchantName)}.</strong> Its rule pays per machine
+           (${terms.map(t => `${escape(t.model)}: ${fmt2(t.amount)}`).join(', ')}), so the payout increases by that
+           amount on top of any revenue share.
+         </div>`
+      : `<p class="muted" style="font-size:12.5px;margin:0;">Adds a store to this merchant. Its rule has no
+           per-machine term, so only the revenue moves.</p>`;
+  };
+  card.querySelector('#um-contract').addEventListener('change', impact);
+  card.querySelector('#um-model').addEventListener('change', impact);
+  impact();
+
+  card.querySelector('#um-cancel').addEventListener('click', close);
+  card.querySelector('#um-save').addEventListener('click', async () => {
+    const btn = card.querySelector('#um-save');
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      await addAliasToContract(card.querySelector('#um-contract').value, orderName, card.querySelector('#um-model').value);
+      close();
+      await offerRecompute(run);
+    } catch (e) {
+      btn.disabled = false; btn.textContent = 'Assign';
+      alert(`Could not assign: ${e.message}`);
+    }
+  });
+}
+
+async function addAliasToContract(contractId, orderName, machineModel) {
+  const c = CONTRACTS.find(x => x.contractId === contractId);
+  const existing = (c?.orderAliases || []).filter(a => (a.name || '').toLowerCase().trim() !== orderName.toLowerCase().trim());
+  const orderAliases = [...existing, { name: orderName, machineModel, addedAt: new Date().toISOString() }];
+  const updated = await api(`/contracts/${encodeURIComponent(contractId)}`, { method: 'PUT', body: JSON.stringify({ orderAliases }) });
+  const i = CONTRACTS.findIndex(x => x.contractId === contractId);
+  if (i >= 0) CONTRACTS[i] = updated;
+  return updated;
+}
+
+async function addMerchantForUnmatched(orderName, run) {
+  try { await ensureContractCache(); }
+  catch (e) { alert(`Could not load merchants: ${e.message}`); return; }
+  const name = prompt('New merchant name', orderName);
+  if (!name || !name.trim()) return;
+  const clash = CONTRACTS.find(c => !c.archived && (c.merchantName || '').toLowerCase().trim() === name.toLowerCase().trim());
+  if (clash && !confirm(`"${name.trim()}" already exists. Assign the orders to it instead?`)) return;
+  try {
+    let contract = clash;
+    if (!contract) {
+      // No terms yet: nobody has agreed a rate, so it will surface in the run wizard's
+      // "needs terms" step rather than being paid a number no one chose.
+      contract = await api('/contracts', { method: 'POST', body: JSON.stringify({
+        merchantName: name.trim(), units: {}, notes: '', rule: null,
+        aggregationMode: 'per_store', noPayout: false }) });
+      CONTRACTS.push(contract);
+    }
+    await addAliasToContract(contract.contractId, orderName, 'S8');
+    alert(`Created "${contract.merchantName}" and assigned "${orderName}" to it.\n\nSet its revenue-share terms in Merchant view — until then it has no terms and will not be paid.`);
+    await offerRecompute(run);
+  } catch (e) {
+    alert(`Could not add merchant: ${e.message}`);
+  }
+}
+
+// Assignments only show up in a run once it is recomputed from its stored inputs. Runs created
+// before 2026-08-24 have no stored inputs and cannot be; the backend says so and we relay it.
+async function offerRecompute(run) {
+  if (!confirm('Assignment saved.\n\nRecompute this run now so it reflects the change?')) return;
+  try {
+    const fresh = await api(`/bulk-runs/${encodeURIComponent(run.runId)}/recompute`, { method: 'POST' });
+    alert('Run recomputed.');
+    renderBulkRunDetail(fresh.runId);
+  } catch (e) {
+    alert(`Could not recompute: ${e.message}\n\nThe assignment is saved and will apply to the next run.`);
+  }
+}

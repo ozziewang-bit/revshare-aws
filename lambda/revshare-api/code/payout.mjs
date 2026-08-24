@@ -68,3 +68,24 @@ export function merchantRowChanged(existing, next) {
   if (!existing) return true;
   return ROSTER_OWNED_FIELDS.some(f => !same(existing[f], next[f]));
 }
+
+// Order-name aliases, set from a run's unmatched list ("assign to this merchant"). They are the
+// third and last matching pass, after store name and machine number — an explicit human
+// mapping for stores the two exports cannot reconcile between themselves.
+//
+// Stored on the CONTRACT because that is the payout entity: the alias decides who gets paid,
+// so it belongs with the rule rather than in a side table. Archived contracts are excluded for
+// the same reason payoutDecision skips them — an ended contract must not silently reacquire
+// revenue through an alias someone set months ago.
+export function indexOrderAliases(contracts) {
+  const idx = new Map();
+  for (const c of contracts || []) {
+    if (!c || c.archived) continue;
+    for (const a of c.orderAliases || []) {
+      const k = key(a?.name);
+      if (!k || idx.has(k)) continue;              // first contract wins, deterministically
+      idx.set(k, { contractId: c.contractId, machineModel: a.machineModel || 'S8' });
+    }
+  }
+  return idx;
+}

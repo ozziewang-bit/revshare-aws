@@ -16,6 +16,10 @@ const WRITABLE = [
   // Manual archive, set when a contract ends. `archivedAt` is stamped server-side, not
   // taken from the client.
   'archived',
+  // Order-report names assigned to this merchant from a run's unmatched list. Third and last
+  // matching pass — see indexOrderAliases in payout.mjs. Each matching alias ADDS a store row
+  // to this contract, so it counts as a machine for flat_per_machine / per-machine MG.
+  'orderAliases',
 ];
 
 function pick(body) {

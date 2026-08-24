@@ -19,8 +19,8 @@ export const DEFAULT_CURRENCY = process.env.REVSHARE_CURRENCY || 'THB';
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }));
 
 // Every list function below MUST use this, never a bare ddb.send(new QueryCommand(...)):
-// a single Query returns at most 1MB and silently drops the rest. See paginate.mjs for what
-// that cost us. If you add a row family, list it through here the same way.
+// a single Query returns at most 1MB and silently drops the rest. See ddb-util.mjs for what
+// that cost us (§1c). If you add a row family, list it through here the same way.
 const query = params => queryAll(p => ddb.send(new QueryCommand(p)), params);
 const s3 = new S3Client({ region: REGION });
 
@@ -189,8 +189,23 @@ export async function deleteContract(contractId) {
 
 // ── Bulk Runs ─────────────────────────────────────────────────────────────
 
-export async function putBulkRun(bulkRun) {
+// `inputs` (2026-08-24) is the run's source data — parsed roster, orders and machine list. It
+// is written as a SEPARATE S3 object so the run-detail page, which fetches the payload on every
+// view, never pays to download several MB it does not render. Without this a run could not be
+// recomputed at all: the payload holds only aggregates, so answering "how would this run look
+// under corrected matching?" meant asking the user to re-upload files that only existed in
+// their Downloads folder and a browser tab.
+export async function putBulkRun(bulkRun, inputs) {
   const s3Key = `runs/${bulkRun.runId}.json`;
+  const inputsKey = inputs ? `runs/${bulkRun.runId}.inputs.json` : null;
+  if (inputs) {
+    await s3.send(new PutObjectCommand({
+      Bucket: RUNS_BUCKET,
+      Key: inputsKey,
+      Body: JSON.stringify(inputs),
+      ContentType: 'application/json'
+    }));
+  }
   // Full payload goes to S3 — bulk runs can exceed DynamoDB's 400 KB item limit.
   await s3.send(new PutObjectCommand({
     Bucket: RUNS_BUCKET,
@@ -203,6 +218,7 @@ export async function putBulkRun(bulkRun) {
     pk: 'BULKRUN',
     sk: `BULKRUN#${bulkRun.runId}`,
     s3Key,
+    inputsKey,
     runId: bulkRun.runId,
     periodStart: bulkRun.periodStart,
     periodEnd: bulkRun.periodEnd,
@@ -248,15 +264,32 @@ export async function getBulkRun(runId) {
   return item;   // legacy run stored inline in DynamoDB (pre-S3)
 }
 
+// Read back what a run was computed from. null for runs created before 2026-08-24, which
+// have no stored inputs and therefore cannot be recomputed.
+export async function getBulkRunInputs(runId) {
+  const out = await ddb.send(new GetCommand({
+    TableName: TABLE,
+    Key: { pk: 'BULKRUN', sk: `BULKRUN#${runId}` }
+  }));
+  const key = out.Item?.inputsKey;
+  if (!key) return null;
+  try {
+    const obj = await s3.send(new GetObjectCommand({ Bucket: RUNS_BUCKET, Key: key }));
+    return JSON.parse(await obj.Body.transformToString());
+  } catch { return null; }
+}
+
 export async function deleteBulkRun(runId) {
   const out = await ddb.send(new GetCommand({
     TableName: TABLE,
     Key: { pk: 'BULKRUN', sk: `BULKRUN#${runId}` }
   }));
   const item = out.Item;
-  if (item?.s3Key) {
+  // Both objects, or deleting a run leaves its inputs orphaned in the bucket forever.
+  for (const key of [item?.s3Key, item?.inputsKey]) {
+    if (!key) continue;
     try {
-      await s3.send(new DeleteObjectCommand({ Bucket: RUNS_BUCKET, Key: item.s3Key }));
+      await s3.send(new DeleteObjectCommand({ Bucket: RUNS_BUCKET, Key: key }));
     } catch { /* tolerate an already-missing S3 object */ }
   }
   await ddb.send(new DeleteCommand({

@@ -26,6 +26,7 @@ export function requiredPermission(method, path) {
   if (path === '/bulk-runs' || path === '/bulk-runs/prepare') return 'runCalcs';
   if (/^\/bulk-runs\/[^/]+\/unarchive$/.test(path)) return 'admin';
   if (/^\/bulk-runs\/[^/]+\/archive$/.test(path)) return 'runCalcs';
+  if (/^\/bulk-runs\/[^/]+\/recompute$/.test(path)) return 'runCalcs';
   if (path.startsWith('/bulk-runs/')) return 'deleteRuns';   // DELETE only mutating sub-route
   if (path.startsWith('/merchants')) return 'manageMerchants';
   if (path.startsWith('/contracts')) return 'manageMerchants';

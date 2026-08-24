@@ -1,7 +1,7 @@
-import { listMerchants, putMerchantsBatch, putBulkRun, listBulkRuns, getBulkRun, deleteBulkRun, listMachineModels, ulid, listContracts, getContract, putContract } from '../db.mjs';
+import { listMerchants, putMerchantsBatch, putBulkRun, listBulkRuns, getBulkRun, getBulkRunInputs, deleteBulkRun, listMachineModels, ulid, listContracts, getContract, putContract } from '../db.mjs';
 import * as dbModule from '../db.mjs';
 import { evaluateRun } from '../engine.mjs';
-import { ruleHasValue, contractNeedsTerms, indexContractsByName, resolveLabel, merchantRowChanged } from '../payout.mjs';
+import { ruleHasValue, contractNeedsTerms, indexContractsByName, resolveLabel, merchantRowChanged, indexOrderAliases } from '../payout.mjs';
 
 // A *named* import of DEFAULT_CURRENCY (`import { DEFAULT_CURRENCY } from '../db.mjs'`) is a
 // static ESM binding: if the target db.mjs doesn't export that name, the whole module fails
@@ -25,11 +25,29 @@ async function mapPool(items, limit, fn) {
   return results;
 }
 
-// Roster-authoritative grouping: one row per roster machine (0/0), orders overlaid by
-// merchant name; orders with no roster merchant are unmatched (not paid).
-export function buildRosterRows(roster, orders) {
+// Roster-authoritative grouping: one row per roster machine (0/0), orders overlaid onto it;
+// orders that resolve to no roster row are unmatched (not paid).
+//
+// Orders are matched in TWO passes (2026-08-24):
+//   1. by store name — the order report identifies a store only by its name string;
+//   2. for whatever is left, by machine number -> Business ID -> the roster row's externalId,
+//      using the optional Machine List (`machineIndex`);
+//   3. finally by explicit alias (`aliasIndex`), assigned by a human from a run's unmatched
+//      list. An alias ADDS a store row to the target contract — it does not merge into an
+//      existing one — so it counts as a machine for flat_per_machine and per-machine MG.
+//      That is deliberate (a merchant's own decision, 2026-08-24), but it is why pass 3 runs
+//      LAST: when the machine number proves the store is already in the roster, merging into
+//      the real row is right and inventing a second row for the same machine would overpay.
+// Pass 2 exists because the platform can rename a store in one export and not the other:
+// "รถไฟฟ้ามหานคร สถานีมีนบุรี" in the merchant list is "รถไฟฟ้ามหานคร สถานีตลาดมีนบุรี" in the
+// order report — the same store, same Business ID, tagged BTS, whose revenue was paid to
+// nobody. Name wins when both agree because it is the join that has always been used and
+// needs no extra upload; on the 2026-08 data the two never disagreed (0 of 7,103 orders).
+// Without a machineIndex this behaves exactly as it did before.
+export function buildRosterRows(roster, orders, machineIndex, aliasIndex) {
   const groups = {};                 // contractId -> [ {merchantId, merchantName, model, rentals, revenue} ]
-  const byName = {};                 // nameLower -> row (for order overlay)
+  const byName = {};                 // nameLower -> row (pass 1)
+  const byExternalId = {};           // roster ID / Business ID -> row (pass 2)
   for (const m of roster) {
     // Defence in depth, not a live path: applyMerchantRoster auto-creates a noPayout stub
     // CONTRACT for every roster label (see below), so in production no roster row reaches
@@ -43,22 +61,90 @@ export function buildRosterRows(roster, orders) {
     const row = { merchantId: m.merchantId, merchantName: m.name, model: m.model || 'S8', rentals: 0, revenue: 0 };
     (groups[m.contractId] = groups[m.contractId] || []).push(row);
     byName[(m.nameLower || m.name || '').toLowerCase().trim()] = row;
+    const ext = String(m.externalId ?? '').trim();
+    if (ext) byExternalId[ext] = row;
   }
-  const unmatchedSet = new Set();
+  // Per-name totals, not just a name list: a run that reports "165 orders / 5,590 unmatched"
+  // and a bare list of names cannot answer "how much is THIS store losing?" after the fact,
+  // and the raw orders are gone once the request ends.
+  const unmatchedByName = new Map();
   let unmatchedOrderCount = 0, unmatchedRevenue = 0;
-  for (const { merchantName, netAmount } of orders) {
-    const row = byName[(merchantName || '').toLowerCase().trim()];
-    if (!row) { unmatchedSet.add(merchantName); unmatchedOrderCount++; unmatchedRevenue += Number(netAmount) || 0; continue; }
+  const recovered = new Map();       // order-report name -> what pass 2 resolved it to
+  const aliased = new Map();         // order-report name -> what pass 3 (explicit alias) hit
+  for (const order of orders) {
+    const { merchantName, netAmount } = order;
+    let row = byName[(merchantName || '').toLowerCase().trim()];
+    if (!row && machineIndex) {
+      const businessId = machineIndex[String(order.machineNo ?? '').trim()];
+      const hit = businessId ? byExternalId[String(businessId).trim()] : null;
+      if (hit) {
+        row = hit;
+        // Surface every rename rather than absorbing it: a store matched only by machine
+        // means the two exports disagree about its name, which someone should fix at source.
+        const rec = recovered.get(merchantName)
+          || { orderName: merchantName, rosterName: hit.merchantName, orders: 0, revenue: 0 };
+        rec.orders++; rec.revenue += Number(netAmount) || 0;
+        recovered.set(merchantName, rec);
+      }
+    }
+    if (!row && aliasIndex) {
+      const alias = aliasIndex.get((merchantName || '').toLowerCase().trim());
+      if (alias) {
+        // The contract may have no roster stores at all — that is exactly the case for a
+        // merchant created from the unmatched list, which exists only as an alias target.
+        const group = groups[alias.contractId] = groups[alias.contractId] || [];
+        // Created lazily, on first matching order: an alias with no orders must NOT mint a
+        // 0/0 store row, or a flat_per_machine merchant would be paid placement for a machine
+        // that never existed, purely because a name was assigned once.
+        const id = `alias:${alias.contractId}:${(merchantName || '').toLowerCase().trim()}`;
+        row = group.find(r => r.merchantId === id);
+        if (!row) {
+          row = { merchantId: id, merchantName, model: alias.machineModel || 'S8', rentals: 0, revenue: 0 };
+          group.push(row);
+        }
+        const rec = aliased.get(merchantName)
+          || { name: merchantName, contractId: alias.contractId, orders: 0, revenue: 0 };
+        rec.orders++; rec.revenue += Number(netAmount) || 0;
+        aliased.set(merchantName, rec);
+      }
+    }
+    if (!row) {
+      const u = unmatchedByName.get(merchantName) || { name: merchantName, orders: 0, revenue: 0 };
+      u.orders++; u.revenue += Number(netAmount) || 0;
+      unmatchedByName.set(merchantName, u);
+      unmatchedOrderCount++; unmatchedRevenue += Number(netAmount) || 0;
+      continue;
+    }
     row.rentals++; row.revenue += Number(netAmount) || 0;
   }
-  return { groups, unmatched: [...unmatchedSet], unmatchedOrderCount, unmatchedRevenue };
+  // `unmatched` (names only) is kept as-is: the CSV download and every already-stored run
+  // depend on that shape.
+  return { groups, unmatched: [...unmatchedByName.keys()], unmatchedOrderCount, unmatchedRevenue,
+           unmatchedDetail: [...unmatchedByName.values()].sort((a, b) => b.revenue - a.revenue),
+           matchedByMachine: [...recovered.values()],
+           matchedByAlias: [...aliased.values()] };
+}
+
+// Machine List (optional upload) -> { machineNo: businessId }. Pass 2's lookup table.
+export function indexMachines(machines) {
+  const idx = {};
+  for (const m of machines || []) {
+    const no = String(m?.machineNo ?? '').trim();
+    const biz = String(m?.businessId ?? '').trim();
+    if (no && biz) idx[no] = biz;
+  }
+  return idx;
 }
 
 // A roster row's `Merchant label` is the brand. Resolve it to a Merchant-view row; create
 // one if the brand is new, so a roster upload still onboards merchants. Labels that match
 // nothing are impossible here (we create them) — the unmatched case is the reverse: a
 // store-registry row whose brand has no contract, handled in buildRosterRows.
-export async function applyMerchantRoster(merchants) {
+// `persist: false` resolves the roster exactly as normal but writes NOTHING — no contract
+// stubs, no store rows. That is what makes infra/rerun-bulk-run.mjs's dry run honest: without
+// it, merely previewing a re-run would mutate the registry. New labels still get an in-memory
+// stub so resolution (and therefore the computed run) is identical either way.
+export async function applyMerchantRoster(merchants, { persist = true } = {}) {
   const [contracts, existingMerchants] = await Promise.all([listContracts(), listMerchants()]);
   let index = indexContractsByName(contracts);
   const merchantByName = {};
@@ -76,14 +162,14 @@ export async function applyMerchantRoster(merchants) {
   }
 
   await mapPool([...newLabels.values()], 20, async label => {
-    const created = await putContract({ contractId: ulid(), merchantName: label, partnerId: null,
+    const stub = { contractId: ulid(), merchantName: label, partnerId: null,
       units: {}, notes: '', rule: null, aggregationMode: 'per_store',
       // A roster label with no merchant-view row is a brand operating in the field that the
       // merchant sheet does not list. Record it so it is visible, but flagged not-paid: the
       // user decided (2026-08-07) that brands absent from the sheet are not paid. Flip the
       // flag in the Merchant view to start paying one.
-      noPayout: true, currency: DEFAULT_CURRENCY });
-    contracts.push(created);
+      noPayout: true, currency: DEFAULT_CURRENCY };
+    contracts.push(persist ? await putContract(stub) : stub);
     newMerchants.push(label);
   });
   index = indexContractsByName(contracts);
@@ -109,16 +195,18 @@ export async function applyMerchantRoster(merchants) {
       contractId: contract.contractId, partnerId: ex?.partnerId ?? null,
       machineModel: src.model || null, externalId: src.externalId || ex?.externalId || null, notes: ex?.notes || '' };
     if (merchantRowChanged(ex, row)) toWrite.push(row);
-    roster.push({ merchantId, name: src.name, nameLower, contractId: contract.contractId, model: src.model || null });
+    roster.push({ merchantId, name: src.name, nameLower, contractId: contract.contractId,
+      model: src.model || null, externalId: row.externalId });
     seen[contract.contractId] = contract;
   }
-  if (toWrite.length) await putMerchantsBatch(toWrite);
+  if (toWrite.length && persist) await putMerchantsBatch(toWrite);
 
   const merchantsNeedingTerms = Object.values(seen)
     .filter(contractNeedsTerms)
     .map(c => ({ contractId: c.contractId, name: c.merchantName }));
 
-  return { roster, merchantsNeedingTerms, unassigned, newMerchants };
+  // Built here because this is where the full contract list is already loaded.
+  return { roster, merchantsNeedingTerms, unassigned, newMerchants, aliasIndex: indexOrderAliases(contracts) };
 }
 
 export function groupOrders(orders, merchantMap) {
@@ -183,18 +271,21 @@ export function payoutDecision(contract, contractId, sampleMerchantName) {
   return { pay: true };
 }
 
-export async function createBulkRunRoute(event) {
-  const body = JSON.parse(event.body || '{}');
-  const { orders = [], merchants = [], periodStart, periodEnd } = body;
-  if (!periodStart || !periodEnd) return resp(400, { error: 'missing_fields', required: ['periodStart','periodEnd'] });
-  if (!merchants.length) return resp(400, { error: 'no_merchants' });
-
+// The whole calculation, independent of HTTP. Split out of createBulkRunRoute (2026-08-24) so
+// a run can also be recomputed from its stored inputs by infra/rerun-bulk-run.mjs — without a
+// browser token and without re-uploading anything. The route below is now a thin wrapper, so
+// there is exactly one implementation of what a run means.
+export async function computeBulkRun({ runId, orders = [], merchants = [], machines = [], periodStart, periodEnd, persist = true }) {
   // Re-apply roster (idempotent) so the registry is current and we have resolved ids.
-  const { roster, unassigned } = await applyMerchantRoster(merchants);
+  const { roster, unassigned, aliasIndex } = await applyMerchantRoster(merchants, { persist });
   const machineModelsList = await listMachineModels();
   const allowedModels = new Set(machineModelsList.map(m => m.code));
 
-  const { groups, unmatched, unmatchedOrderCount, unmatchedRevenue } = buildRosterRows(roster, orders);
+  // `machines` is the optional Machine List upload; without it pass 2 simply does not run.
+  const machineIndex = machines.length ? indexMachines(machines) : null;
+  const { groups, unmatched, unmatchedOrderCount, unmatchedRevenue, unmatchedDetail,
+          matchedByMachine, matchedByAlias } =
+    buildRosterRows(roster, orders, machineIndex, aliasIndex);
 
   const results = [];
   const skipped = [];
@@ -266,7 +357,7 @@ export async function createBulkRunRoute(event) {
   // or didn't (`unmatched`) — so paid + skipped + unmatched must equal this by construction.
   // Stored so the frontend can show the reconciliation explicitly instead of asserting it.
   const totalOrderRevenue = orders.reduce((s, o) => s + (Number(o.netAmount) || 0), 0);
-  const runId = ulid();
+  runId = runId || ulid();
   const bulkRun = {
     runId, periodStart, periodEnd,
     uploadedAt: new Date().toISOString(),
@@ -283,6 +374,16 @@ export async function createBulkRunRoute(event) {
     unmatchedCount: unmatched.length,
     unmatchedOrderCount,
     unmatchedRevenue,
+    // Per-name orders/revenue, so an unmatched store can be sized after the fact — the raw
+    // orders do not survive the request.
+    unmatchedDetail,
+    // Stores whose order-report name no longer matches their merchant-list name, recovered by
+    // machine number. Shown on the run so the underlying rename gets fixed at source.
+    matchedByMachine,
+    // Stores paid because someone assigned their order-report name to a merchant from a run's
+    // unmatched list. Each one added a store row to that merchant.
+    matchedByAlias,
+    machineCount: machineIndex ? Object.keys(machineIndex).length : 0,
     skippedCount: skipped.length,
     skippedRevenue,
     totalOrderRevenue,
@@ -296,7 +397,18 @@ export async function createBulkRunRoute(event) {
     archived: false, archivedAt: null, archivedBy: null,
   };
 
-  await putBulkRun(bulkRun);
+  return bulkRun;
+}
+
+export async function createBulkRunRoute(event) {
+  const body = JSON.parse(event.body || '{}');
+  const { orders = [], merchants = [], machines = [], periodStart, periodEnd } = body;
+  if (!periodStart || !periodEnd) return resp(400, { error: 'missing_fields', required: ['periodStart','periodEnd'] });
+  if (!merchants.length) return resp(400, { error: 'no_merchants' });
+
+  const bulkRun = await computeBulkRun({ orders, merchants, machines, periodStart, periodEnd });
+  // Store the inputs alongside the run so it can be recomputed later without a re-upload.
+  await putBulkRun(bulkRun, { merchants, orders, machines, periodStart, periodEnd });
   return resp(201, bulkRun);
 }
 
@@ -340,4 +452,33 @@ export async function deleteBulkRunRoute(event) {
 
 function resp(statusCode, body) {
   return { statusCode, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) };
+}
+
+// POST /bulk-runs/:id/recompute — rebuild a run from its stored inputs and REPLACE it.
+//
+// Replacing rather than versioning is a deliberate user decision (2026-08-24): the point is to
+// fix an unmatched merchant and see the run correct itself, not to accumulate near-identical
+// runs. The frozen-snapshot rule (CLAUDE.md §5) is preserved where it matters — the result is
+// still a self-consistent snapshot with its own ruleSnapshots, and an ARCHIVED run is refused
+// (409), so locking a payout you have acted on is the one click that makes it immutable.
+export async function recomputeBulkRunRoute(runId) {
+  const old = await getBulkRun(runId);
+  if (!old) return resp(404, { error: 'not_found' });
+  if (old.archived) return resp(409, { error: 'archived', message: 'This run is locked. Unarchive it first.' });
+
+  const inputs = await getBulkRunInputs(runId);
+  if (!inputs) {
+    return resp(409, { error: 'no_stored_inputs',
+      message: 'This run predates stored inputs (2026-08-24), so it cannot be recomputed. Re-run it from the wizard.' });
+  }
+
+  const fresh = await computeBulkRun({
+    merchants: inputs.merchants, orders: inputs.orders, machines: inputs.machines,
+    periodStart: inputs.periodStart ?? old.periodStart, periodEnd: inputs.periodEnd ?? old.periodEnd,
+  });
+  fresh.recomputedFrom = runId;
+  fresh.recomputedAt = new Date().toISOString();
+  await putBulkRun(fresh, inputs);
+  await deleteBulkRun(runId);
+  return resp(200, fresh);
 }

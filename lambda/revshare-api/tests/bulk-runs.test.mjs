@@ -146,3 +146,146 @@ test('payoutDecision: noPayout wins over a 0% rule — no warning', () => {
   assert.equal(d.pay, false);
   assert.equal(d.warning, undefined);
 });
+
+// ── Two-pass order matching (2026-08-24) ───────────────────────────────────
+// The order report identifies a store only by its NAME, so when the platform renames a store
+// in one export and not the other the join breaks and the revenue is paid to nobody. Real
+// case: "รถไฟฟ้ามหานคร สถานีมีนบุรี" in the merchant list vs "รถไฟฟ้ามหานคร สถานีตลาดมีนบุรี"
+// in the order report — same store, same Business ID, tagged BTS, 180 THB unmatched.
+// The order report DOES carry a machine number, and the Machine List maps machine -> Business
+// ID, so pass 2 resolves the leftovers by machine when that file is supplied.
+const rosterIds = [
+  { merchantId: 'mA', name: 'Store A', nameLower: 'store a', contractId: 'c1', model: 'S8', externalId: 'BIZ-A' },
+  { merchantId: 'mB', name: 'Renamed Store', nameLower: 'renamed store', contractId: 'c2', model: 'S8', externalId: 'BIZ-B' },
+];
+const machineIndex = { '1001': 'BIZ-A', '2002': 'BIZ-B' };
+
+test('pass 1 still matches by name, and takes precedence over the machine index', () => {
+  const { groups, unmatched } = buildRosterRows(rosterIds,
+    [{ merchantName: 'Store A', netAmount: 100, machineNo: '2002' }], machineIndex);
+  assert.deepEqual(unmatched, []);
+  assert.equal(groups['c1'][0].revenue, 100);      // name won; the machine hint did not move it
+  assert.equal(groups['c2'][0].revenue, 0);
+});
+
+test('pass 2 recovers an order whose store was renamed, via machine -> Business ID', () => {
+  const { groups, unmatched, unmatchedRevenue } = buildRosterRows(rosterIds,
+    [{ merchantName: 'Store Renamed In The Other Export', netAmount: 180, machineNo: '2002' }], machineIndex);
+  assert.deepEqual(unmatched, []);
+  assert.equal(unmatchedRevenue, 0);
+  assert.equal(groups['c2'][0].revenue, 180);
+  assert.equal(groups['c2'][0].rentals, 1);
+});
+
+test('pass 2 reports what it recovered, so a rename is visible and not silently absorbed', () => {
+  const { matchedByMachine } = buildRosterRows(rosterIds,
+    [{ merchantName: 'Wrong Name', netAmount: 180, machineNo: '2002' }], machineIndex);
+  assert.deepEqual(matchedByMachine, [{ orderName: 'Wrong Name', rosterName: 'Renamed Store', orders: 1, revenue: 180 }]);
+});
+
+test('an unknown machine stays unmatched rather than being guessed at', () => {
+  const { unmatched, unmatchedRevenue, matchedByMachine } = buildRosterRows(rosterIds,
+    [{ merchantName: 'Ghost', netAmount: 9, machineNo: '9999' }], machineIndex);
+  assert.deepEqual(unmatched, ['Ghost']);
+  assert.equal(unmatchedRevenue, 9);
+  assert.deepEqual(matchedByMachine, []);
+});
+
+test('with no machine index supplied the behaviour is exactly as before', () => {
+  const { unmatched, unmatchedRevenue, matchedByMachine } = buildRosterRows(rosterIds,
+    [{ merchantName: 'Wrong Name', netAmount: 180, machineNo: '2002' }]);
+  assert.deepEqual(unmatched, ['Wrong Name']);
+  assert.equal(unmatchedRevenue, 180);
+  assert.deepEqual(matchedByMachine, []);
+});
+
+test('a machine whose Business ID is not in the roster does not match', () => {
+  const { unmatched } = buildRosterRows(rosterIds,
+    [{ merchantName: 'Ghost', netAmount: 9, machineNo: '3003' }], { '3003': 'BIZ-UNKNOWN' });
+  assert.deepEqual(unmatched, ['Ghost']);
+});
+
+// ── Per-store unmatched detail (2026-08-24) ────────────────────────────────
+// A run used to record `unmatched` as a flat list of names plus one revenue total. When the
+// July run showed 165 unmatched orders worth 5,590 THB there was no way to tell how much
+// belonged to any one store — so "how much is this BTS store losing?" was unanswerable from
+// stored data. Keep the per-name breakdown.
+test('unmatchedDetail reports orders and revenue per unmatched store name', () => {
+  const { unmatchedDetail } = buildRosterRows(roster, [
+    { merchantName: 'Ghost Store', netAmount: 10 },
+    { merchantName: 'Ghost Store', netAmount: 15 },
+    { merchantName: 'Other Ghost', netAmount: 40 },
+    { merchantName: 'Store A', netAmount: 99 },
+  ]);
+  assert.deepEqual(unmatchedDetail, [
+    { name: 'Other Ghost', orders: 1, revenue: 40 },
+    { name: 'Ghost Store', orders: 2, revenue: 25 },
+  ]);
+});
+
+test('unmatchedDetail totals agree with the flat unmatched figures', () => {
+  const orders = [
+    { merchantName: 'G1', netAmount: 10 }, { merchantName: 'G2', netAmount: 15 },
+    { merchantName: 'G1', netAmount: 5 },
+  ];
+  const r = buildRosterRows(roster, orders);
+  assert.equal(r.unmatchedDetail.reduce((a, u) => a + u.orders, 0), r.unmatchedOrderCount);
+  assert.equal(r.unmatchedDetail.reduce((a, u) => a + u.revenue, 0), r.unmatchedRevenue);
+  assert.deepEqual(r.unmatchedDetail.map(u => u.name).sort(), [...r.unmatched].sort());
+});
+
+test('unmatchedDetail is empty when everything matches', () => {
+  assert.deepEqual(buildRosterRows(roster, [{ merchantName: 'Store A', netAmount: 1 }]).unmatchedDetail, []);
+});
+
+// ── Pass 3: explicit aliases ───────────────────────────────────────────────
+const aliasIndex = new Map([['orphan store', { contractId: 'c2', machineModel: 'S5' }]]);
+
+test('an assigned name becomes a NEW store row of that merchant', () => {
+  const { groups, unmatched } = buildRosterRows(rosterIds,
+    [{ merchantName: 'Orphan Store', netAmount: 50 }, { merchantName: 'Orphan Store', netAmount: 30 }],
+    null, aliasIndex);
+  assert.deepEqual(unmatched, []);
+  const added = groups['c2'].find(r => r.merchantName === 'Orphan Store');
+  assert.ok(added, 'a store row was added to the assigned contract');
+  assert.equal(added.model, 'S5');
+  assert.equal(added.rentals, 2);
+  assert.equal(added.revenue, 80);
+  assert.equal(groups['c2'].length, 2, 'it is an ADDITIONAL store, not merged into an existing one');
+});
+
+test('an alias with no matching orders creates no store row at all', () => {
+  // Otherwise a merchant on flat_per_machine would be paid placement for a machine that
+  // produced nothing, purely because a name was once assigned.
+  const { groups } = buildRosterRows(rosterIds, [{ merchantName: 'Store A', netAmount: 1 }], null, aliasIndex);
+  assert.equal(groups['c2'].length, 1);
+});
+
+test('the machine-number pass wins over an alias, so a store is never counted twice', () => {
+  // If the machine proves the store is already in the roster, merge into it rather than
+  // inventing a second store row for the same physical machine.
+  const idx = new Map([['renamed store elsewhere', { contractId: 'c1', machineModel: 'S5' }]]);
+  const { groups } = buildRosterRows(rosterIds,
+    [{ merchantName: 'Renamed Store Elsewhere', netAmount: 180, machineNo: '2002' }],
+    { '2002': 'BIZ-B' }, idx);
+  assert.equal(groups['c2'][0].revenue, 180, 'merged into the real store via machine number');
+  assert.equal(groups['c1'].length, 1, 'no synthetic row was added to the aliased contract');
+});
+
+test('aliases are reported so the run shows what was assigned', () => {
+  const { matchedByAlias } = buildRosterRows(rosterIds,
+    [{ merchantName: 'Orphan Store', netAmount: 50 }], null, aliasIndex);
+  assert.deepEqual(matchedByAlias, [{ name: 'Orphan Store', contractId: 'c2', orders: 1, revenue: 50 }]);
+});
+
+test('an alias works for a contract with no roster stores at all (the "+ Add merchant" case)', () => {
+  // A merchant created from the unmatched list has no stores in the roster, so its group does
+  // not exist yet. Without this the assignment would silently do nothing.
+  const idx = new Map([['brand new place', { contractId: 'cNEW', machineModel: 'T10' }]]);
+  const { groups, unmatched } = buildRosterRows(rosterIds,
+    [{ merchantName: 'Brand New Place', netAmount: 70 }], null, idx);
+  assert.deepEqual(unmatched, []);
+  assert.equal(groups['cNEW'].length, 1);
+  assert.equal(groups['cNEW'][0].revenue, 70);
+  assert.equal(groups['cNEW'][0].model, 'T10');
+});

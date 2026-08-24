@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { ruleHasValue, contractNeedsTerms, indexContractsByName, resolveLabel, merchantRowChanged } from '../code/payout.mjs';
+import { ruleHasValue, contractNeedsTerms, indexContractsByName, resolveLabel, merchantRowChanged, indexOrderAliases } from '../code/payout.mjs';
 
 const pct = p => ({ type: 'percent', rows: [{ model: 'ALL', percent: p }] });
 const mg  = a => ({ type: 'flat_per_machine', rows: [{ model: 'S8', amount: a }] });
@@ -143,4 +143,37 @@ test('merchantRowChanged: null and empty string are the same absent value', () =
   const ex = { name: 'A', contractId: 'c1', partnerId: null, machineModel: null, externalId: null, notes: '' };
   const next = { name: 'A', contractId: 'c1', partnerId: null, machineModel: '', externalId: undefined, notes: '' };
   assert.equal(merchantRowChanged(ex, next), false);
+});
+
+// ── Order aliases (2026-08-24) ─────────────────────────────────────────────
+// An unmatched order name can be assigned to a merchant from the run page. The mapping lives
+// on the CONTRACT (the payout entity) so it is visible and editable in Merchant view.
+test('indexOrderAliases maps a normalised order name to its contract', () => {
+  const idx = indexOrderAliases([
+    { contractId: 'c1', merchantName: 'BTS', orderAliases: [{ name: '  Station X  ', machineModel: 'S8' }] },
+    { contractId: 'c2', merchantName: 'Other' },
+  ]);
+  assert.deepEqual(idx.get('station x'), { contractId: 'c1', machineModel: 'S8' });
+  assert.equal(idx.size, 1);
+});
+
+test('indexOrderAliases defaults a missing machine model to S8', () => {
+  const idx = indexOrderAliases([{ contractId: 'c1', orderAliases: [{ name: 'X' }] }]);
+  assert.equal(idx.get('x').machineModel, 'S8');
+});
+
+test('indexOrderAliases ignores blank names and archived contracts', () => {
+  const idx = indexOrderAliases([
+    { contractId: 'c1', orderAliases: [{ name: '' }, { name: '   ' }] },
+    { contractId: 'c2', archived: true, orderAliases: [{ name: 'Gone' }] },
+  ]);
+  assert.equal(idx.size, 0);
+});
+
+test('indexOrderAliases: first contract wins a duplicated alias, deterministically', () => {
+  const idx = indexOrderAliases([
+    { contractId: 'c1', orderAliases: [{ name: 'Dup' }] },
+    { contractId: 'c2', orderAliases: [{ name: 'dup' }] },
+  ]);
+  assert.equal(idx.get('dup').contractId, 'c1');
 });

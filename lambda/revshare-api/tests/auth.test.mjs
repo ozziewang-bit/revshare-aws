@@ -49,3 +49,9 @@ test('requiredPermission: contract writes need manageMerchants', () => {
   assert.equal(requiredPermission('DELETE', '/contracts/abc'), 'manageMerchants');
   assert.equal(requiredPermission('POST', '/contracts/import'), 'manageMerchants');
 });
+
+// Recompute rebuilds and REPLACES a run, so it is a run operation (runCalcs), not a delete.
+// It must be matched before the /bulk-runs/ catch-all, which would demand deleteRuns.
+test('POST /bulk-runs/:id/recompute requires runCalcs', () => {
+  assert.equal(requiredPermission('POST', '/bulk-runs/01ABC/recompute'), 'runCalcs');
+});
