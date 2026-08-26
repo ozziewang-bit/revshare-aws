@@ -1,7 +1,7 @@
 # revshare-aws — handoff
 
-Last updated: 2026-08-24 (prepare timeout + registry duplication fixed; three-pass order matching; runs now store their inputs and can be recomputed).
-Service-worker `CACHE_VERSION` is at `revshare-v122` (bump on every shell change).
+Last updated: 2026-08-26 (Singapore seeded: 554 contracts from the rev-share record; LL20/LL40/S10-A are real models; deploy preflight guards the SG db.mjs mirror).
+Service-worker `CACHE_VERSION` is at `revshare-v124` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
 end-to-end before touching anything. The codebase is the ultimate source of
@@ -272,7 +272,7 @@ CSV already handle per_store correctly; this was a config issue, not a code bug.
 default to the lower-paying `whole` branch, which is exactly how 7-Eleven's original
 under-payment happened.
 
-Tests: `npm test` → **162/162** pass (incl. `ddb-util.test.mjs` — Query pagination +
+Tests: `npm test` → **169/169** pass (incl. `ddb-util.test.mjs` — Query pagination +
 BatchWriteItem chunking, §1c; `payout.test.mjs` — `merchantRowChanged` / `ruleHasValue` /
 `contractNeedsTerms` / label resolution; `bulk-runs.test.mjs` — roster-to-contract
 resolution + order-less fixed-fee; `contracts.test.mjs` — sheet-row normalisation, name
@@ -394,6 +394,43 @@ A run also records **`unmatchedDetail`** — orders and revenue per unmatched na
 `unmatched` name list is kept because the CSV download and every stored run depend on it; runs
 predating this render in the same table with `—` in the numeric columns.
 
+## 1f. Singapore (2026-08-26) — seeded from a TERMS sheet, not a roster
+
+SG's table was empty until 2026-08-26. Its source, `Inforich ChargeSPOT Rev Share Record`, is a
+**terms record, not a roster**, so the TH importer cannot read it — that one reads `All_Merchant`
+by column POSITION. Sheets: `Key Account Payment` (19 brand-level rows), `Small Merchants Lists`
+(1,223 stores, terms as free text), `Copy` (the same stores plus `merchant type.`).
+
+`infra/import-sg-revshare.mjs` created **554 contracts**; `infra/backfill-sg-contract-fields.mjs`
+then filled `merchantType` / per-model `units` / `installedUnits` on 540 of them. Both dry-run by
+default. What to know before touching SG data:
+
+- **Grouping is a judgement call.** Stores share a contract when `merchant type.` names a BRAND
+  (`7 Eleven` 488 stores, `Cheers` 123, `Maxim` 32, `RE&S Group` 20, …) and stand alone when it
+  is a category (`F&B` 248, `Retail` 105, `Health Care` 72, `默认` 30). The brand list is
+  `BRAND_TYPES` in the import script; the dry run prints the whole grouping.
+- **456 contracts are `noPayout`** — 451 had `-` in the sheet, 1 is a one-off payment, 4 key
+  accounts carry neither fee nor RS%. `noPayout` rather than "unset" is deliberate: unset would
+  block every SG run at the wizard's terms step, and a merchant without terms is a normal state
+  (user, 2026-08-24).
+- **3 multi-year escalators have no rule.** `1st year: S$410+5% … 2nd year: S$440+10% …` cannot
+  be expressed — the model has no contract-year concept. Raw text is in their notes.
+- **The sheet's `S10` column means `S10-A`** (user decision). SG runs no plain S10, so reading it
+  literally would have paid Cheers nothing on its S10-A machines.
+- **7-Eleven's rental fee sits under `S5` only.** Its notes carry a ⚠ saying so. Real exposure is
+  **12 S10-A machines against 439 S5**, not the whole brand — confirm the rate and fix in Merchant view.
+- **No roster yet.** These names come from the terms sheet, so they are not guaranteed to match the
+  `Merchant label` values SG's platform export uses. Until a Businessmen list confirms them, a run
+  may fail to resolve some and mint `noPayout` stubs. The unmatched-list Assign / + Add merchant
+  buttons (§1d) are the intended cleanup path.
+- Columns left blank on purpose: counter party, contacts, contract dates, notice, auto-renewal,
+  contract link. The workbook's `PIC` is an internal owner, not a merchant contact, and
+  `entry time.` is store registration, not a contract start.
+
+**Grid unit columns are per-region now.** They are built from the region's Device Types
+(`buildContractGridColumns` / `refreshContractGridColumns` in `app.js`), not a hardcoded
+`S5/S8/M10/L20/L40` — that list matched neither region.
+
 ## 2. Live URLs and resources
 
 - **Site:** https://d2t76jfby056ul.cloudfront.net
@@ -411,6 +448,9 @@ Account `<YOUR_AWS_ACCOUNT_ID>`, region `ap-northeast-1`. IAM user `<your-iam-us
 | `lambda/revshare-api/code/engine.mjs` | Pure calculation engine. No AWS SDK. Tested via `node:test`. |
 | `lambda/revshare-api/code/csv.mjs` | CSV parser + validation. |
 | `lambda/revshare-api/code/db.mjs` | DynamoDB + S3 wrappers for every row family: Partner, Merchant (store registry), Contract, Run, BulkRun, machine-model Config. Also exports `DEFAULT_CURRENCY` (2026-08-09) — the region's default currency for auto-created contract stubs, `process.env.REVSHARE_CURRENCY` overridable, `'THB'` here. Every list function paginates via `ddb-util.mjs`'s `queryAll` as of 2026-08-24 — do not add one that doesn't (§1c). Also exports `putMerchantsBatch` (BatchWriteItem + `UnprocessedItems` retry) and `merchantItem`, the item builder it shares with `putMerchant`. This file is **never synced between regions**, so the Singapore `db.mjs` must define its own `DEFAULT_CURRENCY` (default `'SGD'`) by hand — see §5/§8. `bulk-runs.mjs` reads it via a namespace import (`import * as dbModule from '../db.mjs'`), not a named one — a named import of a symbol the target `db.mjs` doesn't export is a static ESM error that fails the whole module load, which is exactly what took SG down for ~2 minutes during this fix before the import was changed. Until SG's `db.mjs` gets the mirror, SG silently falls back to `'THB'` (wrong, but non-fatal) rather than crashing. |
+| `infra/import-sg-revshare.mjs` | Load SG's rev-share workbook into `RevsharePartnerSG` as contracts + terms (2026-08-26, §1f). Dry run by default. Holds `BRAND_TYPES` (which `merchant type.` values group stores) and `parseTerms` (the free-text term shapes). |
+| `infra/backfill-sg-contract-fields.mjs` | Fill `merchantType` / `units` / `installedUnits` on SG contracts from the same workbook (2026-08-26). Dry run by default; never touches rule/aggregationMode/noPayout/currency. |
+| `infra/check-db-exports.mjs` | Deploy preflight (2026-08-26): every name the synced code imports from `db.mjs` must exist in BOTH regions' `db.mjs`. `deploy-lambda-all.sh` aborts if not. See §8. |
 | `infra/rerun-bulk-run.mjs` | Recompute a bulk run from its stored inputs (2026-08-24) — no browser token, no re-upload. Dry run by default; `--apply` writes a new run, `--replace` also deletes the original. Calls the same `computeBulkRun` the HTTP route uses, with `persist: false` on a dry run so a preview cannot mutate the registry. Sets `AWS_REGION` before importing `db.mjs` (which otherwise falls back to the wrong region) — hence its dynamic imports. |
 | `lambda/revshare-api/code/ddb-util.mjs` | Pure DynamoDB helpers (2026-08-24), no AWS imports — the caller injects `send`. `queryAll` follows `LastEvaluatedKey` (every list in `db.mjs` goes through it; see §1c); `chunkUnique` builds duplicate-free `BatchWriteItem` batches. |
 | `lambda/revshare-api/code/payout.mjs` | Pure payout-decision module (2026-08-07). No AWS imports. Exports `merchantRowChanged` (2026-08-24 — is a roster row worth writing back? see §1c), `ruleHasValue` (does a rule tree pay anything?), `contractNeedsTerms` (also requires a valid `aggregationMode` as of 2026-08-09, to agree with `payoutDecision`), `indexContractsByName`/`resolveLabel` (name-based roster resolution). |
@@ -421,7 +461,7 @@ Account `<YOUR_AWS_ACCOUNT_ID>`, region `ap-northeast-1`. IAM user `<your-iam-us
 | `lambda/revshare-api/code/routes/bulk-runs.mjs` | Bulk run routes. Exports `buildRosterRows` (roster-authoritative row seeding, keyed by `contractId`; its `if (!m.contractId) continue` guard is defence in depth, not a live path — `applyMerchantRoster` always assigns a `contractId` first), `applyMerchantRoster` (resolves roster labels to `CONTRACT` rows, auto-creating a `noPayout: true` stub for any unmatched label; currency comes from `db.mjs`'s `DEFAULT_CURRENCY`, not a literal), `payoutDecision` (why a contract is/isn't paid; names the merchant in its warning when a sample name is available), `groupOrders` (legacy, order-only grouping, unused in the live route). `createBulkRunRoute` also builds a **`skipped`** list (2026-08-09) — brands that matched roster/order rows but weren't paid — with `skippedCount`/`skippedRevenue`/`totalOrderRevenue` on the run, so revenue never disappears from every total silently; see §1b and Finding 1 of the 2026-08-09 review. `paidBrandCount`/`rosterBrandCount` replace the old overloaded `merchantBrandCount` on the run payload (the `/bulk-runs/prepare` response still uses `merchantBrandCount` for its own, unambiguous meaning: distinct contracts in the roster). |
 | `lambda/revshare-api/code/contracts.mjs` | Contract sheet-row normalisation, name matching (`matchContracts`), import diffing (`buildImportPlan`). Contract fields only — never touches `rule`. |
 | `lambda/revshare-api/code/routes/contracts.mjs` | Contract (`CONTRACT`) CRUD + import routes. `WRITABLE` includes `rule`/`aggregationMode`/`noPayout`/`currency` for direct PUT edits — `CONTRACT` is the payout entity now (§5). |
-| `lambda/revshare-api/tests/` | `engine.test.mjs`, `csv.test.mjs`, `contracts.test.mjs`, `payout.test.mjs`, `bulk-runs.test.mjs`, `ddb-util.test.mjs`, others — `npm test` → 162 total. |
+| `lambda/revshare-api/tests/` | `engine.test.mjs`, `csv.test.mjs`, `contracts.test.mjs`, `payout.test.mjs`, `bulk-runs.test.mjs`, `ddb-util.test.mjs`, `device-models.test.mjs`, others — `npm test` → 169 total. |
 | `frontend/index.html` | SPA shell + pre-paint auth gate. |
 | `frontend/style.css` | All styles (tokenized). |
 | `frontend/app.js` | All app JS: auth, screens, Merchant view grid + terms editor, run flow. |
@@ -461,7 +501,7 @@ Run all tests:
 ```bash
 npm test    # from repo root
 ```
-162/162 should pass.
+169/169 should pass.
 
 ## 5. Data model
 
@@ -554,6 +594,14 @@ Backend (Lambda code) — Thailand only:
 ```bash
 ./infra/deploy-lambda.sh
 ```
+
+**Deploy preflight (2026-08-26).** `deploy-lambda-all.sh` now runs `infra/check-db-exports.mjs`
+before deploying and **aborts** unless every name the synced code imports from `db.mjs` exists in
+BOTH regions' `db.mjs`, then health-checks both afterwards. A named ESM import of a missing export
+fails the whole module load, so this exact omission has taken SG down three times — most recently
+on 2026-08-26, when `db.mjs` had been mirrored before `getBulkRunInputs` existed and never
+re-mirrored (~2 min outage). A module that fails to load still deploys "successfully", which is
+why the health check matters as much as the preflight.
 
 Backend — **BOTH regions in one command** (revshare-aws is the source of truth;
 syncs shared code TH→SG except `db.mjs`, then deploys `revshare-api` + `revshare-api-sg`):
@@ -689,16 +737,14 @@ REVSHARE_CLOUDFRONT_DIST_ID=EXXXXXX ./infra/deploy-frontend.sh
   real artwork when the brand identity is set.
 - **No automated tests on the routes or frontend** — engine has 31 tests
   but the HTTP layer is verified by manual smoke testing only.
-- **`M10` is a valid machine model in the engine but missing from two allow-lists.**
-  `engine.mjs`'s `MACHINE_MODELS` has ten codes, including `M10` (confirmed
-  2026-08-09) — but `frontend/app.js`'s `RS_MODELS` and
-  `lambda/revshare-api/code/routes/merchants.mjs`'s `VALID_MODELS` both list only the
-  other nine and omit it. A merchant row saved with `machineModel: 'M10'` via the
-  `/merchants` route would be rejected by `VALID_MODELS`, and the frontend's
-  device-type parser (`RS_MODELS`) can't recognise `M10` in free text either, even
-  though the Merchant view's own unit-count columns include an `M10` column
-  (`contracts.mjs` column F). Not fixed here — documented so it isn't rediscovered
-  as a surprise.
+- **~~`M10` missing from two allow-lists~~ — FIXED 2026-08-26.** `M10` is now in `RS_MODELS` and
+  `VALID_MODELS` alongside the engine's `MACHINE_MODELS`. Singapore's `LL20`/`LL40`/`S10-A` were
+  added to all three at the same time, as **separate models, not aliases** of `L20`/`L40`/`S10`:
+  `import.mjs` used to end with `.replace('LL','L')`, and the frontend parser matched on
+  `endsWith`, so `…-LL20` silently became `L20`. Per-model terms key off the code, so either fold
+  pays an SG machine at a Thai rate — or nothing. `parseDeviceModel` now picks the LONGEST match;
+  ordering alone would not save it, since `…-LL20` also ends with `L20`. `CONFIG#MODEL` rows for
+  the three exist in `RevsharePartnerSG` only. Pinned by `tests/device-models.test.mjs`.
 - **`Others` still sits inside the WH/HH comparison** (pre-migration note, 2026-08-06 —
   written when `PARTNER` was still the payout entity; the mechanism described is
   unchanged post-migration, just re-read every "partner" below as the `CONTRACT` that
