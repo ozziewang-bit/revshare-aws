@@ -1,6 +1,8 @@
 import { listMerchants, getMerchant, putMerchant, deleteMerchant, ulid } from '../db.mjs';
 
-const VALID_MODELS = new Set(['S5','S8','S10','T8','T10','T20','T35','L20','L40']);
+// Must stay in step with engine.mjs's MACHINE_MODELS. M10 was missing here until 2026-08-26
+// (CLAUDE.md §11): a merchant row saved as M10 was rejected even though the engine allowed it.
+const VALID_MODELS = new Set(['S5','S8','S10','T8','T10','T20','T35','L20','L40','M10','LL20','LL40','S10-A']);
 
 export async function listMerchantsRoute() {
   return resp(200, await listMerchants());

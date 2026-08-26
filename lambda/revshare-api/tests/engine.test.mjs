@@ -2,9 +2,12 @@ import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { MACHINE_MODELS, evaluateRun } from '../code/engine.mjs';
 
-test('MACHINE_MODELS enum contains all ten models', () => {
+test('MACHINE_MODELS enum contains the Thai and Singapore models', () => {
+  // Ten Thai codes plus Singapore's LL20/LL40/S10-A, which are separate models rather than
+  // aliases of L20/L40/S10 (2026-08-26) — per-model terms key off the code, so folding them
+  // together would pay an SG machine at a Thai model's rate or not at all.
   assert.deepEqual([...MACHINE_MODELS].sort(),
-    ['L20','L40','M10','S10','S5','S8','T10','T20','T35','T8']);
+    ['L20','L40','LL20','LL40','M10','S10','S10-A','S5','S8','T10','T20','T35','T8']);
 });
 
 test('evaluateRun respects allowedModels override', () => {

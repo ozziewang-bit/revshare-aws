@@ -37,11 +37,30 @@ else
   git -C "$SG_ROOT" status --short -- lambda/revshare-api/code | sed 's/^/    /'
 fi
 
+# PREFLIGHT: every name the synced code imports from db.mjs must exist in BOTH regions'
+# db.mjs. db.mjs is never synced, so adding a db function to TH alone means the synced module
+# fails to LOAD in SG — a static ESM binding does not degrade — and every SG route 500s.
+# This has taken Singapore down three times; the check costs milliseconds.
+echo "→ Checking db.mjs exports in both regions…"
+node "$ROOT/infra/check-db-exports.mjs" "$TH_CODE" "$SG_CODE" || exit 1
+
 echo "→ Deploying Thailand (revshare-api)…"
 "$ROOT/infra/deploy-lambda.sh"
 
 echo "→ Deploying Singapore (revshare-api-sg)…"
 "$SG_ROOT/infra/deploy-lambda.sh"
+
+# Health-check both immediately. A module that fails to load still deploys "successfully" —
+# the failure only shows on the first request.
+echo "→ Verifying…"
+th_health=$(curl -sS --max-time 20 https://7z269nmx74.execute-api.ap-southeast-7.amazonaws.com/prod/healthz || echo FAILED)
+sg_health=$(curl -sS --max-time 20 https://4qcyojfg79.execute-api.ap-southeast-7.amazonaws.com/prod/healthz || echo FAILED)
+echo "  TH /healthz: $th_health"
+echo "  SG /healthz: $sg_health"
+if [ "$th_health" != '{"ok":true}' ] || [ "$sg_health" != '{"ok":true}' ]; then
+  echo "✗ A region is NOT healthy after deploy — check CloudWatch logs immediately." >&2
+  exit 1
+fi
 
 echo "✓ Both backends deployed — TH: revshare-api · SG: revshare-api-sg"
 echo "  (If SG code changed above, commit it in $SG_ROOT.)"

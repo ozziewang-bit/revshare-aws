@@ -178,7 +178,10 @@ function readExcel(file) {
 }
 
 // ── Merchant-list (Businessmen list) parser ────────────────────────────────
-const RS_MODELS = ['S5','S8','S10','T8','T10','T20','T35','L20','L40'];
+// Keep in step with engine.mjs MACHINE_MODELS and merchants.mjs VALID_MODELS. parseDeviceModel
+// below picks the LONGEST match, which is what keeps Singapore's LL20/LL40/S10-A from being
+// swallowed by L20/L40/S10 — "…-LL20" also endsWith "L20", so order alone would not save us.
+const RS_MODELS = ['S5','S8','S10','T8','T10','T20','T35','L20','L40','M10','LL20','LL40','S10-A'];
 
 function parseDeviceModel(deviceType) {
   const s = String(deviceType || '').toUpperCase();
@@ -955,6 +958,12 @@ async function deleteContractRow(contractId) {
 }
 
 // Shared chrome for the two merchant-view dialogs.
+// Money formatter, shared. This lived as a const INSIDE renderBulkRunDetail, which made it
+// invisible to anything defined at module scope: the assign dialog referenced it, threw
+// ReferenceError while rendering its payout-impact line, and — because that ran before the
+// Cancel/Assign listeners were attached — left both buttons dead with no visible error.
+const fmt2 = v => Number(v || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
 function ctModal(width) {
   const box = document.createElement('div');
   box.className = 'ct-modal';
@@ -2087,7 +2096,6 @@ async function renderBulkRunDetail(runId) {
   // other bucket exists, so these three must sum to the order report's total revenue. Show
   // the check rather than assuming it holds, so a future gap shows up here instead of only
   // in a finance reconciliation weeks later.
-  const fmt2 = v => Number(v || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const skippedRevenue = Number(run.skippedRevenue ?? (run.skipped || []).reduce((s, r) => s + (r.revenue || 0), 0));
   const unmatchedRevenue = Number(run.unmatchedRevenue || 0);
   const reconciledTotal = totalRevenue + skippedRevenue + unmatchedRevenue;
@@ -2566,6 +2574,22 @@ async function openAssignDialog(orderName, run) {
       <button type="button" id="um-save" class="btn-primary">Assign</button>
     </div>`;
 
+  // Wire the controls FIRST. Anything below can throw while rendering; if it does, the dialog
+  // must still be closable and submittable rather than silently inert.
+  card.querySelector('#um-cancel').addEventListener('click', close);
+  card.querySelector('#um-save').addEventListener('click', async () => {
+    const btn = card.querySelector('#um-save');
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      await addAliasToContract(card.querySelector('#um-contract').value, orderName, card.querySelector('#um-model').value);
+      close();
+      await offerRecompute(run);
+    } catch (e) {
+      btn.disabled = false; btn.textContent = 'Assign';
+      alert(`Could not assign: ${e.message}`);
+    }
+  });
+
   const impact = () => {
     const c = CONTRACTS.find(x => x.contractId === card.querySelector('#um-contract').value);
     const model = card.querySelector('#um-model').value;
@@ -2584,19 +2608,6 @@ async function openAssignDialog(orderName, run) {
   card.querySelector('#um-model').addEventListener('change', impact);
   impact();
 
-  card.querySelector('#um-cancel').addEventListener('click', close);
-  card.querySelector('#um-save').addEventListener('click', async () => {
-    const btn = card.querySelector('#um-save');
-    btn.disabled = true; btn.textContent = 'Saving…';
-    try {
-      await addAliasToContract(card.querySelector('#um-contract').value, orderName, card.querySelector('#um-model').value);
-      close();
-      await offerRecompute(run);
-    } catch (e) {
-      btn.disabled = false; btn.textContent = 'Assign';
-      alert(`Could not assign: ${e.message}`);
-    }
-  });
 }
 
 async function addAliasToContract(contractId, orderName, machineModel) {

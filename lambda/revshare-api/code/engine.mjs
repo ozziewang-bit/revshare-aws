@@ -1,4 +1,10 @@
-export const MACHINE_MODELS = new Set(['S5','S8','S10','T8','T10','T20','T35','L20','L40','M10']);
+// Thailand's codes, then Singapore's. SG's LL20/LL40/S10-A are SEPARATE models, not aliases
+// of L20/L40/S10 (decision 2026-08-26): per-model terms key off these codes, so folding them
+// together would pay an SG machine from a Thai model's rate, or nothing at all.
+export const MACHINE_MODELS = new Set([
+  'S5','S8','S10','T8','T10','T20','T35','L20','L40','M10',
+  'LL20','LL40','S10-A',
+]);
 
 // Count machines by model
 function countByModel(rows) {

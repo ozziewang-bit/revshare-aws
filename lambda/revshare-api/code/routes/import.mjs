@@ -4,9 +4,12 @@ const VALID_MODELS = new Set(['S5','S8','S10','T8','T10','T20','T35','L20','L40'
 
 export function parseDeviceType(deviceType) {
   if (!deviceType) return null;
-  const m = String(deviceType).match(/-(S5|S8|S10|T8|T10|T20|T35|LL?20|LL?40)$/i);
+  // Longest-first: S10-A must win over S10, and LL20/LL40 over L20/L40. This used to end with
+  // `.replace('LL','L')`, folding Singapore's LL20/LL40 into Thailand's L20/L40 — they are
+  // separate models as of 2026-08-26, so that fold is gone.
+  const m = String(deviceType).match(/-(S10-A|S5|S8|S10|T8|T10|T20|T35|LL20|LL40|L20|L40|M10)$/i);
   if (!m) return null;
-  return m[1].toUpperCase().replace('LL', 'L');
+  return m[1].toUpperCase();
 }
 
 // Rule shape: comparable terms (GP / Placement / Others) + optional per-device-type MG

@@ -4,8 +4,12 @@ import { compileRule, parseDeviceType } from '../code/routes/import.mjs';
 
 test('parseDeviceType: S5', () => assert.equal(parseDeviceType('Advertising Player-S5'), 'S5'));
 test('parseDeviceType: S8', () => assert.equal(parseDeviceType('ChargeSpot Station-S8'), 'S8'));
-test('parseDeviceType: LL20 normalised to L20', () => assert.equal(parseDeviceType('Advertising Player-LL20'), 'L20'));
-test('parseDeviceType: LL40 normalised to L40', () => assert.equal(parseDeviceType('Advertising Player-LL40'), 'L40'));
+// These two used to assert the opposite — that LL20/LL40 were folded into L20/L40. Singapore's
+// codes became models in their own right on 2026-08-26, so the fold was removed and these now
+// pin the new contract. See tests/device-models.test.mjs for the full set.
+test('parseDeviceType: LL20 stays LL20', () => assert.equal(parseDeviceType('Advertising Player-LL20'), 'LL20'));
+test('parseDeviceType: LL40 stays LL40', () => assert.equal(parseDeviceType('Advertising Player-LL40'), 'LL40'));
+test('parseDeviceType: S10-A wins over S10', () => assert.equal(parseDeviceType('Advertising Player-S10-A'), 'S10-A'));
 test('parseDeviceType: null input', () => assert.equal(parseDeviceType(null), null));
 test('parseDeviceType: unrecognised string', () => assert.equal(parseDeviceType('Unknown-X9'), null));
 
