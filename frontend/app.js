@@ -511,27 +511,40 @@ let CONTRACTS = [];
 // cached module-scope — the per-model popover must not re-fetch on every open.
 let MACHINE_MODELS_CACHE = [];
 
-const CONTRACT_GRID_COLUMNS = [
-  { key: 'merchantName',          label: 'Merchant',      type: 'text',   width: 165 , group: 'id' },
-  { key: 'merchantType',          label: 'Type',          type: 'select', width: 120 , group: 'id' },
-  { key: 'counterParty',          label: 'Counter party', type: 'text',   width: 175 , group: 'id' },
-  { key: 'contactName',           label: 'Contact',       type: 'text',   width: 125 , group: 'contact' },
-  { key: 'contactPhone',          label: 'Phone',         type: 'text',   width: 110 , group: 'contact' },
-  { key: 'contactEmail',          label: 'Email',         type: 'text',   width: 160 , group: 'contact' },
-  { key: 'installedUnits',        label: 'Units',         type: 'computed', width: 55 , group: 'machines' },
-  { key: 'units.S5',              label: 'S5',            type: 'number', width: 46  , group: 'machines' },
-  { key: 'units.S8',              label: 'S8',            type: 'number', width: 46  , group: 'machines' },
-  { key: 'units.M10',             label: 'M10',           type: 'number', width: 50  , group: 'machines' },
-  { key: 'units.L20',             label: 'L20',           type: 'number', width: 46  , group: 'machines' },
-  { key: 'units.L40',             label: 'L40',           type: 'number', width: 46  , group: 'machines' },
-  { key: 'startDate',             label: 'Start',         type: 'date',   width: 108 , group: 'contract' },
-  { key: 'endDate',               label: 'End',           type: 'date',   width: 108 , group: 'contract' },
-  { key: 'terminationNoticeDays', label: 'Notice',        type: 'number', width: 84  , group: 'contract', suffix: ' days' },
-  { key: 'autoRenewal',           label: 'Auto-renewal',  type: 'select', width: 135 , group: 'contract' },
-  { key: 'contractLink',          label: 'Contract',      type: 'url',    width: 80  , group: 'contract' },
-  { key: 'term.method',      label: 'Mode',         type: 'term-mode',    width: 130, group: 'terms' },
-  { key: 'term.summary',     label: 'Rev terms',    type: 'term-summary', width: 230, group: 'terms' },
-];
+// The per-model unit columns are built from the REGION's configured machine models, not a
+// fixed list. They used to be hardcoded to S5/S8/M10/L20/L40, which matched neither region:
+// Thailand's S10/T8/T10/T20/T35 had no column, and Singapore's S10-A/LL20/LL40 had none
+// either — so SG merchants showed blank unit counts even when the data was there. Device
+// Types is the source of truth; add a model there and its column appears.
+const UNIT_MODELS_FALLBACK = ['S5', 'S8', 'M10', 'L20', 'L40'];
+function buildContractGridColumns(models) {
+  const codes = (models && models.length ? models : UNIT_MODELS_FALLBACK);
+  return [
+    { key: 'merchantName',          label: 'Merchant',      type: 'text',   width: 165 , group: 'id' },
+    { key: 'merchantType',          label: 'Type',          type: 'select', width: 120 , group: 'id' },
+    { key: 'counterParty',          label: 'Counter party', type: 'text',   width: 175 , group: 'id' },
+    { key: 'contactName',           label: 'Contact',       type: 'text',   width: 125 , group: 'contact' },
+    { key: 'contactPhone',          label: 'Phone',         type: 'text',   width: 110 , group: 'contact' },
+    { key: 'contactEmail',          label: 'Email',         type: 'text',   width: 160 , group: 'contact' },
+    { key: 'installedUnits',        label: 'Units',         type: 'computed', width: 55 , group: 'machines' },
+    ...codes.map(code => ({ key: `units.${code}`, label: code, type: 'number',
+                            width: Math.max(46, 20 + code.length * 9), group: 'machines' })),
+    { key: 'startDate',             label: 'Start',         type: 'date',   width: 108 , group: 'contract' },
+    { key: 'endDate',               label: 'End',           type: 'date',   width: 108 , group: 'contract' },
+    { key: 'terminationNoticeDays', label: 'Notice',        type: 'number', width: 84  , group: 'contract', suffix: ' days' },
+    { key: 'autoRenewal',           label: 'Auto-renewal',  type: 'select', width: 135 , group: 'contract' },
+    { key: 'contractLink',          label: 'Contract',      type: 'url',    width: 80  , group: 'contract' },
+    { key: 'term.method',      label: 'Mode',         type: 'term-mode',    width: 130, group: 'terms' },
+    { key: 'term.summary',     label: 'Rev terms',    type: 'term-summary', width: 230, group: 'terms' },
+  ];
+}
+let CONTRACT_GRID_COLUMNS = buildContractGridColumns();
+
+// Call once the region's machine models are known, so the unit columns match what this region
+// actually deploys. Safe to call repeatedly.
+function refreshContractGridColumns() {
+  CONTRACT_GRID_COLUMNS = buildContractGridColumns(MACHINE_MODELS_CACHE.map(m => m.code));
+}
 
 // 23 columns is ~2400px — more than a laptop can show at once even full-width. Rather than
 // hiding data behind a horizontal scrollbar, let the user switch whole groups off. `id` has
@@ -1252,6 +1265,7 @@ async function renderContractsScreen() {
   ]);
   CONTRACTS = contracts;
   MACHINE_MODELS_CACHE = machineModels;
+  refreshContractGridColumns();
   el.innerHTML = `
     <h1>Merchant view</h1>
     <div class="ct-toolbar">
@@ -1847,6 +1861,7 @@ function renderNewBulkRunForm() {
       const [contracts, machineModels] = await Promise.all([api('/contracts'), api('/machine-models')]);
       CONTRACTS = contracts;
       MACHINE_MODELS_CACHE = machineModels;
+      refreshContractGridColumns();
     } catch (e) {
       slot.innerHTML = `<p style="color:#f03e3e;">Could not load merchant data: ${escape(e.message)}</p>`;
       return;
@@ -2524,6 +2539,7 @@ async function ensureContractCache() {
   const [contracts, machineModels] = await Promise.all([api('/contracts'), api('/machine-models')]);
   CONTRACTS = contracts;
   MACHINE_MODELS_CACHE = machineModels;
+  refreshContractGridColumns();
 }
 
 // What does one more machine cost under this rule? Walks the tree for the per-machine terms,
