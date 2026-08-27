@@ -278,7 +278,83 @@ function initGsi() {
   google.accounts.id.renderButton(document.getElementById('gsi-btn'), { theme: 'outline', size: 'large', type: 'standard' });
   google.accounts.id.prompt();
 }
+// ── "A new version is available" ──────────────────────────────────────────
+// A deploy replaces the service worker, but a tab that is already open keeps running the
+// JavaScript it parsed at load time — so someone can sit on a stale build indefinitely and
+// never know. The worker now waits instead of taking over silently; this notices it and asks.
+//
+// Deliberately a prompt rather than an automatic reload: someone may be mid-way through the
+// run wizard with an uploaded roster held in memory, and reloading under them would discard it.
+let updatePromptShown = false;
+
+function showUpdatePrompt(reg) {
+  if (updatePromptShown) return;
+  updatePromptShown = true;
+
+  const box = document.createElement('div');
+  // Inline styles, and appended to <body> rather than #main: this has to be able to appear over
+  // the login gate too, which replaces the app's markup entirely.
+  box.style.cssText = 'position:fixed;inset:0;z-index:99999;display:flex;align-items:center;'
+    + 'justify-content:center;background:rgba(15,18,24,.45);backdrop-filter:blur(2px);';
+  box.innerHTML = `
+    <div role="dialog" aria-modal="true" aria-labelledby="sw-up-t" style="background:#fff;border-radius:12px;
+         box-shadow:0 18px 48px rgba(0,0,0,.25);max-width:420px;width:calc(100% - 40px);padding:22px 24px;
+         font-family:inherit;">
+      <h3 id="sw-up-t" style="margin:0 0 6px;font-size:17px;">A new version is available</h3>
+      <p style="margin:0 0 18px;font-size:13.5px;line-height:1.5;color:#5c6470;">
+        This page is running an older build. Reload to pick up the latest changes.
+        Anything you have typed or uploaded but not saved will be lost.
+      </p>
+      <div style="display:flex;gap:8px;justify-content:flex-end;">
+        <button type="button" id="sw-up-later" class="btn-ghost">Not now</button>
+        <button type="button" id="sw-up-now" class="btn-primary">Reload</button>
+      </div>
+    </div>`;
+  document.body.appendChild(box);
+
+  // "Not now" must not nag: the prompt returns on the next update, or the next page load.
+  box.querySelector('#sw-up-later').addEventListener('click', () => box.remove());
+  box.querySelector('#sw-up-now').addEventListener('click', () => {
+    const btn = box.querySelector('#sw-up-now');
+    btn.disabled = true; btn.textContent = 'Reloading…';
+    const waiting = reg && reg.waiting;
+    if (!waiting) { location.reload(); return; }
+    // controllerchange fires once the waiting worker takes over — reload THEN, so the new page
+    // is served by the new worker rather than racing it.
+    navigator.serviceWorker.addEventListener('controllerchange', () => location.reload(), { once: true });
+    waiting.postMessage({ type: 'SKIP_WAITING' });
+    // If the worker never reports back (an old browser, or it was already active), don't leave
+    // the viewer staring at a disabled button.
+    setTimeout(() => location.reload(), 3000);
+  });
+}
+
+async function initUpdatePrompt() {
+  if (!('serviceWorker' in navigator)) return;
+  try {
+    const reg = await navigator.serviceWorker.getRegistration();
+    if (!reg) return;
+    // Already waiting when this tab loaded — e.g. the deploy happened while it was closed.
+    if (reg.waiting && navigator.serviceWorker.controller) showUpdatePrompt(reg);
+    reg.addEventListener('updatefound', () => {
+      const nw = reg.installing;
+      if (!nw) return;
+      nw.addEventListener('statechange', () => {
+        // `controller` is null on the very first install; prompting then would ask someone to
+        // reload a page that is already current.
+        if (nw.state === 'installed' && navigator.serviceWorker.controller) showUpdatePrompt(reg);
+      });
+    });
+    // A tab left open overnight would otherwise never check. Poll quietly, and again whenever
+    // it comes back to the foreground, which is when someone is about to act on what they see.
+    const check = () => reg.update().catch(() => {});
+    setInterval(check, 5 * 60 * 1000);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) check(); });
+  } catch { /* update prompting is a nicety — never let it break boot */ }
+}
+
 async function boot() {
+  initUpdatePrompt();
   if (ID_TOKEN) {
     let me = null;
     try { me = await fetchMe(); } catch (_) { me = null; }   // transient/invalid → fall back to sign-in
