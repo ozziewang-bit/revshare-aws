@@ -1,7 +1,7 @@
 # revshare-aws — handoff
 
-Last updated: 2026-08-26 (Singapore seeded: 554 contracts from the rev-share record; LL20/LL40/S10-A are real models; deploy preflight guards the SG db.mjs mirror).
-Service-worker `CACHE_VERSION` is at `revshare-v124` (bump on every shell change).
+Last updated: 2026-08-27 (merchant sheet rebuilt to mirror the grid and read by header name; share terms are importable; Rev share guide tab; Mode dropdown).
+Service-worker `CACHE_VERSION` is at `revshare-v129` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
 end-to-end before touching anything. The codebase is the ultimate source of
@@ -209,7 +209,7 @@ whose two lines are both fully populated, still resolves later-row-wins as befor
 2026-08-13 by dropping that column entirely (see below), which also removed `bool()` — it had
 no other caller.
 
-**Merchant-sheet template download (2026-08-13):** the Merchant view's **Download sheet**
+**Merchant-sheet template download (2026-08-13; SUPERSEDED 2026-08-27 — see §1g, which describes the current sheet. Kept for the history of why the layout was positional):** the Merchant view's **Download sheet**
 button writes the current (non-archived) merchant list as `.xlsx` in the exact shape **Upload
 sheet** reads — sheet `All_Merchant`, two header rows, data from row 3, the same 23 fixed
 column positions. `TEMPLATE_COLUMNS` in `frontend/app.js` is the writer's half of that
@@ -272,7 +272,7 @@ CSV already handle per_store correctly; this was a config issue, not a code bug.
 default to the lower-paying `whole` branch, which is exactly how 7-Eleven's original
 under-payment happened.
 
-Tests: `npm test` → **169/169** pass (incl. `ddb-util.test.mjs` — Query pagination +
+Tests: `npm test` → **181/181** pass (incl. `ddb-util.test.mjs` — Query pagination +
 BatchWriteItem chunking, §1c; `payout.test.mjs` — `merchantRowChanged` / `ruleHasValue` /
 `contractNeedsTerms` / label resolution; `bulk-runs.test.mjs` — roster-to-contract
 resolution + order-less fixed-fee; `contracts.test.mjs` — sheet-row normalisation, name
@@ -431,6 +431,45 @@ default. What to know before touching SG data:
 (`buildContractGridColumns` / `refreshContractGridColumns` in `app.js`), not a hardcoded
 `S5/S8/M10/L20/L40` — that list matched neither region.
 
+## 1g. The merchant sheet (rebuilt 2026-08-27) — READ BEFORE CHANGING IT
+
+The sheet now **mirrors the Merchant view grid**: same column order, row 1 carrying the grid's
+category names (`Merchant`, `Contact`, `Machines`, `Contract`, `Share terms`), and **every column
+addressed by HEADER NAME**. That replaced a 23-column positional layout whose indices were read
+with `at(i)` — where one inserted column silently shifted every field after it, and four dead
+columns had to be kept forever just to hold their slots.
+
+- **Two shapes are accepted.** `normalizeContractRow(cells, header, groups)` routes to
+  `normalizeGridRow` (by name) or `normalizeLegacyRow` (the old positional path). `Link Contract`
+  in column 22 is what identifies a legacy file. Old workbooks still import; that path is pinned
+  by a test and reads no terms, exactly as it never did.
+- **Machine columns are 8 blank slots** under the `Machines` category. Whatever model code is
+  typed in row 2 becomes the model, so one sheet serves both regions without the app dictating
+  the model list. A slot with a blank header imports nothing — a stray number cannot invent a model.
+- **Share terms are importable now** (they never were before). Structured columns:
+  `Mode`, `No payout`, `GP %`, `Placement <model>` …, `MG <model>` …, `Electricity`, `Others`.
+  Placement/MG columns are emitted only for models that actually have machines — Singapore gets
+  3 of each, not 13. A brief free-text version (`GP 25% + Placement S8 100`) was tried and removed
+  the same day: too coarse to edit, and it could fail to parse.
+- **The safety property that matters:** a rule is built ONLY when a term cell says something.
+  Every term blank ⇒ `rule` is absent from the row ⇒ `buildImportPlan`'s `{...existing, ...row}`
+  keeps what is stored. **An upload can never clear terms by omission.** Three tests pin this.
+  `No payout = Y` sets the flag and writes no rule.
+- **`Rev share guide` sheet**: definition, per-merchant vs PER MACHINE, and a worked number for
+  every term and every mode. It exists to state the two things nobody guesses — MG is a **floor,
+  not a bonus**, and Electricity **never competes** in a comparison.
+- **Closed merchants are excluded from the download.** `(Closed)…` names — **207 of Singapore's
+  554** — are skipped. They are NOT archived (the prefix is how the source list records it), they
+  stay in the app, and an upload without them changes nothing since an import never deletes.
+- **Mode is a real Excel dropdown.** SheetJS's community build cannot write `dataValidation` at
+  all, so `withModeDropdown` re-opens the workbook after SheetJS writes it and splices
+  `<dataValidations>` into the worksheet XML; `zip.js` gained a minimal **reader** (STORED
+  entries only — what SheetJS emits) for this. It **fails safe** at every step: unreadable zip,
+  a compressed entry, an unresolvable sheet, or any exception returns `null` and the untouched
+  file is downloaded.
+- `compileRule` now lives in **`code/rules.mjs`** (pure), so `contracts.mjs` can build a rule
+  without pulling `routes/import.mjs`'s AWS imports. Re-exported there for existing callers.
+
 ## 2. Live URLs and resources
 
 - **Site:** https://d2t76jfby056ul.cloudfront.net
@@ -452,6 +491,7 @@ Account `<YOUR_AWS_ACCOUNT_ID>`, region `ap-northeast-1`. IAM user `<your-iam-us
 | `infra/backfill-sg-contract-fields.mjs` | Fill `merchantType` / `units` / `installedUnits` on SG contracts from the same workbook (2026-08-26). Dry run by default; never touches rule/aggregationMode/noPayout/currency. |
 | `infra/check-db-exports.mjs` | Deploy preflight (2026-08-26): every name the synced code imports from `db.mjs` must exist in BOTH regions' `db.mjs`. `deploy-lambda-all.sh` aborts if not. See §8. |
 | `infra/rerun-bulk-run.mjs` | Recompute a bulk run from its stored inputs (2026-08-24) — no browser token, no re-upload. Dry run by default; `--apply` writes a new run, `--replace` also deletes the original. Calls the same `computeBulkRun` the HTTP route uses, with `persist: false` on a dry run so a preview cannot mutate the registry. Sets `AWS_REGION` before importing `db.mjs` (which otherwise falls back to the wrong region) — hence its dynamic imports. |
+| `lambda/revshare-api/code/rules.mjs` | Pure rule construction (2026-08-27) — `compileRule`, moved out of `routes/import.mjs` so the sheet importer can use it without AWS imports. |
 | `lambda/revshare-api/code/ddb-util.mjs` | Pure DynamoDB helpers (2026-08-24), no AWS imports — the caller injects `send`. `queryAll` follows `LastEvaluatedKey` (every list in `db.mjs` goes through it; see §1c); `chunkUnique` builds duplicate-free `BatchWriteItem` batches. |
 | `lambda/revshare-api/code/payout.mjs` | Pure payout-decision module (2026-08-07). No AWS imports. Exports `merchantRowChanged` (2026-08-24 — is a roster row worth writing back? see §1c), `ruleHasValue` (does a rule tree pay anything?), `contractNeedsTerms` (also requires a valid `aggregationMode` as of 2026-08-09, to agree with `payoutDecision`), `indexContractsByName`/`resolveLabel` (name-based roster resolution). |
 | `lambda/revshare-api/code/routes/` | partners.mjs, runs.mjs |
@@ -461,7 +501,7 @@ Account `<YOUR_AWS_ACCOUNT_ID>`, region `ap-northeast-1`. IAM user `<your-iam-us
 | `lambda/revshare-api/code/routes/bulk-runs.mjs` | Bulk run routes. Exports `buildRosterRows` (roster-authoritative row seeding, keyed by `contractId`; its `if (!m.contractId) continue` guard is defence in depth, not a live path — `applyMerchantRoster` always assigns a `contractId` first), `applyMerchantRoster` (resolves roster labels to `CONTRACT` rows, auto-creating a `noPayout: true` stub for any unmatched label; currency comes from `db.mjs`'s `DEFAULT_CURRENCY`, not a literal), `payoutDecision` (why a contract is/isn't paid; names the merchant in its warning when a sample name is available), `groupOrders` (legacy, order-only grouping, unused in the live route). `createBulkRunRoute` also builds a **`skipped`** list (2026-08-09) — brands that matched roster/order rows but weren't paid — with `skippedCount`/`skippedRevenue`/`totalOrderRevenue` on the run, so revenue never disappears from every total silently; see §1b and Finding 1 of the 2026-08-09 review. `paidBrandCount`/`rosterBrandCount` replace the old overloaded `merchantBrandCount` on the run payload (the `/bulk-runs/prepare` response still uses `merchantBrandCount` for its own, unambiguous meaning: distinct contracts in the roster). |
 | `lambda/revshare-api/code/contracts.mjs` | Contract sheet-row normalisation, name matching (`matchContracts`), import diffing (`buildImportPlan`). Contract fields only — never touches `rule`. |
 | `lambda/revshare-api/code/routes/contracts.mjs` | Contract (`CONTRACT`) CRUD + import routes. `WRITABLE` includes `rule`/`aggregationMode`/`noPayout`/`currency` for direct PUT edits — `CONTRACT` is the payout entity now (§5). |
-| `lambda/revshare-api/tests/` | `engine.test.mjs`, `csv.test.mjs`, `contracts.test.mjs`, `payout.test.mjs`, `bulk-runs.test.mjs`, `ddb-util.test.mjs`, `device-models.test.mjs`, others — `npm test` → 169 total. |
+| `lambda/revshare-api/tests/` | `engine.test.mjs`, `csv.test.mjs`, `contracts.test.mjs`, `payout.test.mjs`, `bulk-runs.test.mjs`, `ddb-util.test.mjs`, `device-models.test.mjs`, `sheet-grid-shape.test.mjs`, others — `npm test` → 181 total. |
 | `frontend/index.html` | SPA shell + pre-paint auth gate. |
 | `frontend/style.css` | All styles (tokenized). |
 | `frontend/app.js` | All app JS: auth, screens, Merchant view grid + terms editor, run flow. |
@@ -501,7 +541,7 @@ Run all tests:
 ```bash
 npm test    # from repo root
 ```
-169/169 should pass.
+181/181 should pass.
 
 ## 5. Data model
 
