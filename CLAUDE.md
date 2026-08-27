@@ -1,7 +1,7 @@
 # revshare-aws — handoff
 
-Last updated: 2026-08-27 (merchant sheet rebuilt to mirror the grid and read by header name; share terms are importable; Rev share guide tab; Mode dropdown).
-Service-worker `CACHE_VERSION` is at `revshare-v129` (bump on every shell change).
+Last updated: 2026-08-27 (merchant sheet rebuilt to mirror the grid and read by header name; share terms importable; Rev share guide tab; Mode dropdown; new-version reload prompt).
+Service-worker `CACHE_VERSION` is at `revshare-v130` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
 end-to-end before touching anything. The codebase is the ultimate source of
@@ -621,12 +621,37 @@ domain exists.
    for "this works."
 2. **Service worker `CACHE_VERSION` bumps on every shell change.** Without
    the bump, old caches keep serving stale JS/CSS for users who already
-   loaded the page once.
+   loaded the page once. Since 2026-08-27 the worker also **waits** rather than
+   calling `skipWaiting()` on install, and the page shows a "A new version is
+   available" modal (`initUpdatePrompt` / `showUpdatePrompt` in `app.js`) — see §7a.
 3. **Don't include `Co-Authored-By:` trailers in commit messages** — this
    project's commits don't have them.
 4. **The calculation engine stays pure.** Tests in `node:test`. No DDB / no
    SSM / no fetch / no fs in `engine.mjs`. If you need IO, do it at the
    route layer and pass plain data into the engine.
+
+## 7a. The new-version reload prompt (2026-08-27)
+
+A deploy used to be invisible to anyone already looking at the page: the worker called
+`skipWaiting()` on install and `clients.claim()` on activate, so the cache swapped at once
+while the open tab kept running the JavaScript it had parsed at load. Every deploy this week
+ended with someone being told to reload.
+
+The worker now **waits**. `initUpdatePrompt` (called first thing in `boot()`) watches the
+registration and shows a modal; **Reload** posts `SKIP_WAITING`, and the reload fires on
+`controllerchange` so the new page is served by the new worker instead of racing it.
+
+- **Never prompt when `navigator.serviceWorker.controller` is null** — that is a first install,
+  and prompting asks a new visitor to reload a page that is already current. Easiest thing to
+  get wrong here.
+- It is a **prompt, not an auto-reload**: a run-wizard roster lives in memory, and reloading
+  under someone discards it. The dialog says unsaved work will be lost.
+- Open tabs re-check with `reg.update()` every 5 minutes and on `visibilitychange`.
+- The dialog is appended to `<body>` with inline styles — it must be able to cover the login
+  gate, which replaces the app's markup.
+- Everything is wrapped so a failure cannot break boot, with a 3s fallback reload.
+- **A tab on the previous build cannot prompt** (it runs the old `app.js`), so the deploy that
+  introduces a change like this always needs one manual reload.
 
 ## 8. Deploy commands
 
