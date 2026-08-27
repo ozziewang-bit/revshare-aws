@@ -4,12 +4,11 @@ const VALID_MODELS = new Set(['S5','S8','S10','T8','T10','T20','T35','L20','L40'
 
 export function parseDeviceType(deviceType) {
   if (!deviceType) return null;
-  // Longest-first: S10-A must win over S10, and LL20/LL40 over L20/L40. This used to end with
-  // `.replace('LL','L')`, folding Singapore's LL20/LL40 into Thailand's L20/L40 — they are
-  // separate models as of 2026-08-26, so that fold is gone.
-  const m = String(deviceType).match(/-(S10-A|S5|S8|S10|T8|T10|T20|T35|LL20|LL40|L20|L40|M10)$/i);
+  // Longest-first so S10-A wins over S10. LL20/LL40 are the platform's spelling of L20/L40 and
+  // fold to them — Thailand's roster uses LL40 for the machines its contracts call L40.
+  const m = String(deviceType).match(/-(S10-A|S5|S8|S10|T8|T10|T20|T35|LL?20|LL?40|M10)$/i);
   if (!m) return null;
-  return m[1].toUpperCase();
+  return m[1].toUpperCase().replace('LL', 'L');
 }
 
 // compileRule moved to ../rules.mjs (2026-08-27) so the pure contracts.mjs can build a rule

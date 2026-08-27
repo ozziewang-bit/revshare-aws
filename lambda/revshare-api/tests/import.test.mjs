@@ -4,11 +4,14 @@ import { compileRule, parseDeviceType } from '../code/routes/import.mjs';
 
 test('parseDeviceType: S5', () => assert.equal(parseDeviceType('Advertising Player-S5'), 'S5'));
 test('parseDeviceType: S8', () => assert.equal(parseDeviceType('ChargeSpot Station-S8'), 'S8'));
-// These two used to assert the opposite — that LL20/LL40 were folded into L20/L40. Singapore's
-// codes became models in their own right on 2026-08-26, so the fold was removed and these now
-// pin the new contract. See tests/device-models.test.mjs for the full set.
-test('parseDeviceType: LL20 stays LL20', () => assert.equal(parseDeviceType('Advertising Player-LL20'), 'LL20'));
-test('parseDeviceType: LL40 stays LL40', () => assert.equal(parseDeviceType('Advertising Player-LL40'), 'LL40'));
+// LL20/LL40 are the PLATFORM's spelling of L20/L40 — Thailand's own roster uses it (152 rows
+// say "Advertising Player-LL40" while every Thai contract keys its terms to L40). Briefly, on
+// 2026-08-26, they were made separate models; that would have made evaluateRun reject those
+// rows as an unknown model and drop AOT, BIG-C, ICON SIAM and 7-Eleven out of the next run.
+// The fold is load-bearing. S10-A is different: it has no Thai equivalent and collides with
+// nothing, so it stays a model of its own.
+test('parseDeviceType: LL20 normalised to L20', () => assert.equal(parseDeviceType('Advertising Player-LL20'), 'L20'));
+test('parseDeviceType: LL40 normalised to L40', () => assert.equal(parseDeviceType('Advertising Player-LL40'), 'L40'));
 test('parseDeviceType: S10-A wins over S10', () => assert.equal(parseDeviceType('Advertising Player-S10-A'), 'S10-A'));
 test('parseDeviceType: null input', () => assert.equal(parseDeviceType(null), null));
 test('parseDeviceType: unrecognised string', () => assert.equal(parseDeviceType('Unknown-X9'), null));

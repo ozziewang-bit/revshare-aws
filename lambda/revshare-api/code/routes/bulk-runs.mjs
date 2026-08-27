@@ -125,6 +125,70 @@ export function buildRosterRows(roster, orders, machineIndex, aliasIndex) {
            matchedByAlias: [...aliased.values()] };
 }
 
+// Machine counts per contract, straight from the roster. The Merchant view's unit columns were
+// hand-typed and drifted from what is actually deployed; a run refreshes them.
+//
+// This counts ROSTER ROWS per model, which is the same unit the payout uses: evalFlatPerMachine
+// sums one per roster row, and a minimum guarantee is per station rather than per cabinet (user,
+// 2026-08-27). So a BTS station holding four machines is one unit here exactly as it is one unit
+// in the payout — the two never disagree. The Machine List would give true cabinet counts, but it
+// is an optional upload and would mean something different from the payout.
+export function rosterUnitCounts(roster) {
+  const byContract = new Map();
+  for (const r of roster || []) {
+    if (!r.contractId) continue;
+    const m = byContract.get(r.contractId) || {};
+    // A row whose device type did not parse still exists, it just has no model to count against.
+    if (r.model) m[r.model] = (m[r.model] || 0) + 1;
+    byContract.set(r.contractId, m);
+  }
+  return byContract;
+}
+
+const sameCounts = (a, b) => {
+  const ka = Object.keys(a || {}).sort(), kb = Object.keys(b || {}).sort();
+  // Key order is not preserved by DynamoDB, so compare sorted keys rather than stringifying —
+  // a JSON.stringify diff reports a phantom change on every single run.
+  return ka.length === kb.length && ka.every((k, i) => k === kb[i] && Number(a[k]) === Number(b[k]));
+};
+
+// Contracts whose stored counts differ from the roster, as ready-to-write rows. A contract with
+// no roster rows this period is absent from `counts` and is left completely alone — a brand
+// missing from one upload must not have its unit counts wiped.
+export function unitsChanged(contracts, counts) {
+  const out = [];
+  for (const c of contracts || []) {
+    const next = counts.get(c.contractId);
+    if (!next) continue;
+    const total = Object.values(next).reduce((a, b) => a + b, 0);
+    if (sameCounts(c.units || {}, next) && Number(c.installedUnits || 0) === total) continue;
+    out.push({ ...c, units: next, installedUnits: total });
+  }
+  return out;
+}
+
+// Tag unmatched stores that ARE in the merchant list but were filtered out for not being
+// Approved. The roster upload keeps Approved rows only, so a Disapproved store still taking
+// rentals arrives here looking identical to a name nobody recognises — and they are not the
+// same thing at all. One is unknown; the other is a machine the platform knows about, earning
+// money, held out by a review flag. In July that was 6 stores and 910 THB (17% of unmatched),
+// including two live 7-Eleven branches and a Lawson.
+//
+// `excluded` is what the browser dropped: [{ name, label, reviewState }]. Absent (an older
+// frontend) means no classification, never an error.
+export function annotateUnmatched(unmatchedDetail, excluded) {
+  if (!excluded || !excluded.length) return unmatchedDetail;
+  const byName = new Map();
+  for (const e of excluded) {
+    const k = String(e?.name ?? '').toLowerCase().trim();
+    if (k && !byName.has(k)) byName.set(k, e);
+  }
+  return (unmatchedDetail || []).map((u) => {
+    const hit = byName.get(String(u.name ?? '').toLowerCase().trim());
+    return hit ? { ...u, reviewState: hit.reviewState || 'Not approved', label: hit.label || '' } : u;
+  });
+}
+
 // Machine List (optional upload) -> { machineNo: businessId }. Pass 2's lookup table.
 export function indexMachines(machines) {
   const idx = {};
@@ -201,12 +265,19 @@ export async function applyMerchantRoster(merchants, { persist = true } = {}) {
   }
   if (toWrite.length && persist) await putMerchantsBatch(toWrite);
 
+  // Refresh the Merchant view's machine counts from what the roster actually contains. Only
+  // contracts whose counts really changed are written, so a re-run writes nothing.
+  const changedUnits = unitsChanged(Object.values(seen), rosterUnitCounts(roster));
+  if (changedUnits.length && persist) await mapPool(changedUnits, 20, c => putContract(c));
+
   const merchantsNeedingTerms = Object.values(seen)
     .filter(contractNeedsTerms)
     .map(c => ({ contractId: c.contractId, name: c.merchantName }));
 
   // Built here because this is where the full contract list is already loaded.
-  return { roster, merchantsNeedingTerms, unassigned, newMerchants, aliasIndex: indexOrderAliases(contracts) };
+  return { roster, merchantsNeedingTerms, unassigned, newMerchants,
+           unitsUpdated: changedUnits.map(c => ({ contractId: c.contractId, merchantName: c.merchantName, units: c.units, installedUnits: c.installedUnits })),
+           aliasIndex: indexOrderAliases(contracts) };
 }
 
 export function groupOrders(orders, merchantMap) {
@@ -237,9 +308,9 @@ export async function prepareBulkRunRoute(event) {
   const body = JSON.parse(event.body || '{}');
   const merchants = Array.isArray(body.merchants) ? body.merchants : [];
   if (!merchants.length) return resp(400, { error: 'no_merchants' });
-  const { roster, merchantsNeedingTerms, unassigned, newMerchants } = await applyMerchantRoster(merchants);
+  const { roster, merchantsNeedingTerms, unassigned, newMerchants, unitsUpdated } = await applyMerchantRoster(merchants);
   const merchantBrandCount = new Set(roster.map(r => r.contractId)).size;
-  return resp(200, { rosterCount: roster.length, merchantBrandCount, newMerchants, unassigned, merchantsNeedingTerms });
+  return resp(200, { rosterCount: roster.length, merchantBrandCount, newMerchants, unassigned, merchantsNeedingTerms, unitsUpdated });
 }
 
 // Why a contract is or is not paid, as a pure decision — so the ordering of these rules is
@@ -275,7 +346,7 @@ export function payoutDecision(contract, contractId, sampleMerchantName) {
 // a run can also be recomputed from its stored inputs by infra/rerun-bulk-run.mjs — without a
 // browser token and without re-uploading anything. The route below is now a thin wrapper, so
 // there is exactly one implementation of what a run means.
-export async function computeBulkRun({ runId, orders = [], merchants = [], machines = [], periodStart, periodEnd, persist = true }) {
+export async function computeBulkRun({ runId, orders = [], merchants = [], machines = [], excluded = [], periodStart, periodEnd, persist = true }) {
   // Re-apply roster (idempotent) so the registry is current and we have resolved ids.
   const { roster, unassigned, aliasIndex } = await applyMerchantRoster(merchants, { persist });
   const machineModelsList = await listMachineModels();
@@ -283,9 +354,11 @@ export async function computeBulkRun({ runId, orders = [], merchants = [], machi
 
   // `machines` is the optional Machine List upload; without it pass 2 simply does not run.
   const machineIndex = machines.length ? indexMachines(machines) : null;
-  const { groups, unmatched, unmatchedOrderCount, unmatchedRevenue, unmatchedDetail,
+  const { groups, unmatched, unmatchedOrderCount, unmatchedRevenue, unmatchedDetail: rawUnmatched,
           matchedByMachine, matchedByAlias } =
     buildRosterRows(roster, orders, machineIndex, aliasIndex);
+  const unmatchedDetail = annotateUnmatched(rawUnmatched, excluded);
+  const notApproved = unmatchedDetail.filter((u) => u.reviewState);
 
   const results = [];
   const skipped = [];
@@ -377,6 +450,9 @@ export async function computeBulkRun({ runId, orders = [], merchants = [], machi
     // Per-name orders/revenue, so an unmatched store can be sized after the fact — the raw
     // orders do not survive the request.
     unmatchedDetail,
+    // Of those, the ones the merchant list DOES know about but excluded for their review state.
+    notApprovedCount: notApproved.length,
+    notApprovedRevenue: notApproved.reduce((a2, u) => a2 + (Number(u.revenue) || 0), 0),
     // Stores whose order-report name no longer matches their merchant-list name, recovered by
     // machine number. Shown on the run so the underlying rename gets fixed at source.
     matchedByMachine,
@@ -402,13 +478,13 @@ export async function computeBulkRun({ runId, orders = [], merchants = [], machi
 
 export async function createBulkRunRoute(event) {
   const body = JSON.parse(event.body || '{}');
-  const { orders = [], merchants = [], machines = [], periodStart, periodEnd } = body;
+  const { orders = [], merchants = [], machines = [], excluded = [], periodStart, periodEnd } = body;
   if (!periodStart || !periodEnd) return resp(400, { error: 'missing_fields', required: ['periodStart','periodEnd'] });
   if (!merchants.length) return resp(400, { error: 'no_merchants' });
 
-  const bulkRun = await computeBulkRun({ orders, merchants, machines, periodStart, periodEnd });
+  const bulkRun = await computeBulkRun({ orders, merchants, machines, excluded, periodStart, periodEnd });
   // Store the inputs alongside the run so it can be recomputed later without a re-upload.
-  await putBulkRun(bulkRun, { merchants, orders, machines, periodStart, periodEnd });
+  await putBulkRun(bulkRun, { merchants, orders, machines, excluded, periodStart, periodEnd });
   return resp(201, bulkRun);
 }
 
@@ -473,7 +549,7 @@ export async function recomputeBulkRunRoute(runId) {
   }
 
   const fresh = await computeBulkRun({
-    merchants: inputs.merchants, orders: inputs.orders, machines: inputs.machines,
+    merchants: inputs.merchants, orders: inputs.orders, machines: inputs.machines, excluded: inputs.excluded,
     periodStart: inputs.periodStart ?? old.periodStart, periodEnd: inputs.periodEnd ?? old.periodEnd,
   });
   fresh.recomputedFrom = runId;

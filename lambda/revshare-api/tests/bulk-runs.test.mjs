@@ -289,3 +289,99 @@ test('an alias works for a contract with no roster stores at all (the "+ Add mer
   assert.equal(groups['cNEW'][0].revenue, 70);
   assert.equal(groups['cNEW'][0].model, 'T10');
 });
+
+// ── Unit counts from the roster (2026-08-27) ──────────────────────────────
+// The Merchant view's machine counts were hand-typed and drifted. The roster says what is
+// actually deployed, so a run refreshes them. It counts ROSTER ROWS per model, which is the
+// same thing the payout counts: evalFlatPerMachine sums one per roster row, and the user
+// confirmed (2026-08-27) that a minimum guarantee is per station, not per cabinet — so a BTS
+// station with four machines is one unit here, exactly as it is one unit in the payout.
+import { rosterUnitCounts, unitsChanged } from '../code/routes/bulk-runs.mjs';
+
+test('counts roster rows per model, per contract', () => {
+  const counts = rosterUnitCounts([
+    { contractId: 'c1', model: 'S5' }, { contractId: 'c1', model: 'S5' }, { contractId: 'c1', model: 'S8' },
+    { contractId: 'c2', model: 'L20' },
+  ]);
+  assert.deepEqual(counts.get('c1'), { S5: 2, S8: 1 });
+  assert.deepEqual(counts.get('c2'), { L20: 1 });
+});
+
+test('rows with no model are counted in the total but not against any model', () => {
+  // A roster row whose device type did not parse still represents a deployed store; dropping
+  // it would make the Units total disagree with the number of stores in the run.
+  const counts = rosterUnitCounts([{ contractId: 'c1', model: null }, { contractId: 'c1', model: 'S5' }]);
+  assert.deepEqual(counts.get('c1'), { S5: 1 });
+  assert.equal(counts.get('c1')._total, undefined, 'the model map holds models only');
+});
+
+test('a contract with no roster rows gets no entry, so its stored units are left alone', () => {
+  const counts = rosterUnitCounts([{ contractId: 'c1', model: 'S5' }]);
+  assert.equal(counts.has('c2'), false);
+});
+
+test('unitsChanged reports only contracts whose counts actually differ', () => {
+  const contracts = [
+    { contractId: 'c1', units: { S5: 2, S8: 1 }, installedUnits: 3 },   // unchanged
+    { contractId: 'c2', units: { S5: 1 }, installedUnits: 1 },          // S5 1 -> 2
+    { contractId: 'c3', units: {}, installedUnits: null },              // newly counted
+  ];
+  const counts = new Map([['c1', { S5: 2, S8: 1 }], ['c2', { S5: 2 }], ['c3', { L20: 4 }]]);
+  const changed = unitsChanged(contracts, counts);
+  assert.deepEqual(changed.map(c => c.contractId).sort(), ['c2', 'c3']);
+  const c2 = changed.find(c => c.contractId === 'c2');
+  assert.deepEqual(c2.units, { S5: 2 });
+  assert.equal(c2.installedUnits, 2, 'installedUnits follows the counted total');
+});
+
+test('unitsChanged ignores key order, so a re-run reports nothing', () => {
+  // DynamoDB does not preserve map key order; comparing with JSON.stringify would report a
+  // phantom change on every run, exactly as it did for the merchant-sheet importer.
+  const contracts = [{ contractId: 'c1', units: { S8: 1, S5: 2 }, installedUnits: 3 }];
+  assert.deepEqual(unitsChanged(contracts, new Map([['c1', { S5: 2, S8: 1 }]])), []);
+});
+
+// ── "In the roster, but not Approved" (2026-08-27) ────────────────────────
+// The roster upload keeps Approved rows only, so a Disapproved store that is still taking
+// rentals lands in `unmatched` looking exactly like a store nobody has ever heard of. They are
+// very different things: one is an unknown name, the other is a machine the platform knows
+// about, earning money, excluded by a review flag. In July that was 6 stores and 910 THB — 17%
+// of the run's unmatched revenue — including two live 7-Eleven branches and a Lawson.
+import { annotateUnmatched } from '../code/routes/bulk-runs.mjs';
+
+const excluded = [
+  { name: '1110 - 7-Eleven Phahon 55', label: '7-Eleven', reviewState: 'Disapproved' },
+  { name: 'Novotel Phuket', label: 'Novotel', reviewState: 'Pending' },
+];
+
+test('an unmatched name that is a non-approved roster row is labelled as such', () => {
+  const out = annotateUnmatched(
+    [{ name: '1110 - 7-Eleven Phahon 55', orders: 2, revenue: 100 }, { name: 'Who Knows', orders: 1, revenue: 40 }],
+    excluded);
+  const [seven, unknown] = out;
+  assert.equal(seven.reviewState, 'Disapproved');
+  assert.equal(seven.label, '7-Eleven', 'the brand it would have been paid under');
+  assert.equal(unknown.reviewState, undefined, 'a genuinely unknown name stays unannotated');
+});
+
+test('matching ignores case and surrounding space', () => {
+  const [row] = annotateUnmatched([{ name: '  NOVOTEL PHUKET ', orders: 1, revenue: 10 }], excluded);
+  assert.equal(row.reviewState, 'Pending');
+});
+
+test('no excluded list supplied leaves every row untouched', () => {
+  // Older frontends do not send it; the run must still work and simply not classify.
+  const rows = [{ name: 'x', orders: 1, revenue: 5 }];
+  assert.deepEqual(annotateUnmatched(rows, undefined), rows);
+  assert.deepEqual(annotateUnmatched(rows, []), rows);
+});
+
+test('the run can total what the review flag is costing', () => {
+  const out = annotateUnmatched(
+    [{ name: '1110 - 7-Eleven Phahon 55', orders: 2, revenue: 100 },
+     { name: 'Novotel Phuket', orders: 3, revenue: 630 },
+     { name: 'Who Knows', orders: 1, revenue: 40 }], excluded);
+  const flagged = out.filter(r => r.reviewState);
+  assert.equal(flagged.length, 2);
+  assert.equal(flagged.reduce((a, r) => a + r.revenue, 0), 730);
+});

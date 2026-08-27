@@ -180,9 +180,10 @@ function readExcel(file) {
 
 // ── Merchant-list (Businessmen list) parser ────────────────────────────────
 // Keep in step with engine.mjs MACHINE_MODELS and merchants.mjs VALID_MODELS. parseDeviceModel
-// below picks the LONGEST match, which is what keeps Singapore's LL20/LL40/S10-A from being
-// swallowed by L20/L40/S10 — "…-LL20" also endsWith "L20", so order alone would not save us.
-const RS_MODELS = ['S5','S8','S10','T8','T10','T20','T35','L20','L40','M10','LL20','LL40','S10-A'];
+// picks the LONGEST match, so "…-S10-A" resolves to S10-A rather than S10. LL20/LL40 are NOT
+// listed on purpose: "…-LL40" endsWith "L40", which is exactly the fold we want — the platform
+// spells Thailand's L40 machines that way.
+const RS_MODELS = ['S5','S8','S10','T8','T10','T20','T35','L20','L40','M10','S10-A'];
 
 function parseDeviceModel(deviceType) {
   const s = String(deviceType || '').toUpperCase();
@@ -191,20 +192,30 @@ function parseDeviceModel(deviceType) {
   return hit.length ? hit.sort((a, b) => b.length - a.length)[0] : null;
 }
 
+// Returns the Approved rows the run uses, AND the rows it dropped. The dropped ones are not
+// paid — a review state of Disapproved or Pending means exactly that — but a store in that
+// state can still be taking rentals, and its orders then land in `unmatched` looking like a
+// name nobody recognises. Sending them lets the run say which is which.
 async function parseMerchantList(file) {
   const wb = await readExcel(file);
   const ws = wb.Sheets[wb.SheetNames[0]];
   const rows = XLSX.utils.sheet_to_json(ws, { defval: null });
-  return rows
-    .filter(r => String(r['Merchant Review State'] || '').trim().toLowerCase() === 'approved')
-    .map(r => ({
+  const named = rows.filter(r => String(r['merchant name.'] || '').trim());
+  const approved = r => String(r['Merchant Review State'] || '').trim().toLowerCase() === 'approved';
+  return {
+    merchants: named.filter(approved).map(r => ({
       name: String(r['merchant name.'] || '').trim(),
       nameEn: String(r['merchant name (English)'] || '').trim(),
       partnerName: String(r['Merchant label'] || '').trim(),
       model: parseDeviceModel(r['device type.']),
       externalId: String(r['ID'] || '').trim(),
-    }))
-    .filter(r => r.name);
+    })),
+    excluded: named.filter(r => !approved(r)).map(r => ({
+      name: String(r['merchant name.'] || '').trim(),
+      label: String(r['Merchant label'] || '').trim(),
+      reviewState: String(r['Merchant Review State'] || '').trim() || 'Not approved',
+    })),
+  };
 }
 
 const MERCHANT_LIST_COLUMNS = [
@@ -1866,6 +1877,7 @@ function renderNewBulkRunForm() {
             <strong>Roster loaded:</strong> ${wiz.prepare.rosterCount} machines · ${wiz.prepare.merchantBrandCount} merchants
             ${wiz.prepare.newMerchants?.length ? `· <span style="color:#2b8a3e;">${wiz.prepare.newMerchants.length} new merchant(s) created</span>` : ''}
             ${wiz.prepare.unassigned?.length ? `· <span style="color:#e67700;">${wiz.prepare.unassigned.length} unassigned store(s)</span>` : ''}
+            ${wiz.prepare.unitsUpdated?.length ? `· <span style="color:#1971c2;">machine counts refreshed on ${wiz.prepare.unitsUpdated.length} merchant(s)</span>` : ''}
           </div>` : ''}
           `}
         </div>
@@ -1942,10 +1954,11 @@ function renderNewBulkRunForm() {
         const status = document.getElementById('wiz-ml-status');
         status.innerHTML = 'Parsing merchant list…';
         try {
-          const merchants = await parseMerchantList(file);
+          const { merchants, excluded } = await parseMerchantList(file);
           if (!merchants.length) { status.innerHTML = '<p style="color:#f03e3e;">No Approved merchants found in file.</p>'; return; }
-          status.innerHTML = `Parsed ${merchants.length} merchants. Preparing…`;
+          status.innerHTML = `Parsed ${merchants.length} merchants${excluded.length ? ` (${excluded.length} not Approved, excluded)` : ''}. Preparing…`;
           wiz.merchants = merchants;
+          wiz.excluded = excluded;
           const prepare = await api('/bulk-runs/prepare', { method: 'POST', body: JSON.stringify({ merchants }) });
           wiz.prepare = prepare;
           render();
@@ -2013,7 +2026,7 @@ function renderNewBulkRunForm() {
             try {
               const run = await api('/bulk-runs', {
                 method: 'POST',
-                body: JSON.stringify({ periodStart: wiz.periodStart, periodEnd: wiz.periodEnd, merchants: wiz.merchants, orders: wiz.orders, machines: wiz.machines || [] })
+                body: JSON.stringify({ periodStart: wiz.periodStart, periodEnd: wiz.periodEnd, merchants: wiz.merchants, orders: wiz.orders, machines: wiz.machines || [], excluded: wiz.excluded || [] })
               });
               renderBulkRunDetail(run.runId);
             } catch (err) {
@@ -2404,10 +2417,34 @@ async function renderBulkRunDetail(runId) {
         </table>
       </div>` : ''}
 
+    ${run.notApprovedCount ? `
+      <div style="margin:14px 0;padding:12px 16px;background:#fff4e6;border:1px solid #ffa94d;border-radius:8px;">
+        <strong style="color:#d9480f;">⚠ ${run.notApprovedCount} store(s) took rentals but are not Approved in the merchant list</strong>
+        <p style="margin:6px 0 8px;font-size:13px;color:var(--ink-soft);">
+          These are in the merchant list, so the platform knows them — they were excluded from this run
+          because their review state is not Approved, and their revenue is <strong>not paid</strong>.
+          A store marked Disapproved can still have a live machine. Fix the review state in ChargeSpot,
+          or assign the name to a merchant here.
+        </p>
+        <table style="font-size:13px;width:100%;">
+          <thead><tr><th style="text-align:left;">Store</th><th style="text-align:left;">Review state</th><th style="text-align:left;">Would be paid under</th><th style="text-align:right;">Orders</th><th style="text-align:right;">Revenue</th></tr></thead>
+          <tbody>${run.unmatchedDetail.filter(u => u.reviewState).map(u => `<tr>
+            <td>${escape(u.name || '')}</td>
+            <td><span style="color:#d9480f;font-weight:600;">${escape(u.reviewState)}</span></td>
+            <td>${escape(u.label || '—')}</td>
+            <td style="text-align:right;">${Number(u.orders || 0).toLocaleString('en-US')}</td>
+            <td style="text-align:right;">${fmt2(Number(u.revenue || 0))}</td>
+          </tr>`).join('')}</tbody>
+        </table>
+        <p style="margin:8px 0 0;font-size:13px;">
+          Total held back by a review state: <strong>${fmt2(Number(run.notApprovedRevenue || 0))}</strong>
+        </p>
+      </div>` : ''}
+
     ${run.unmatched?.length ? `
       <div style="margin-top:24px;padding:16px;background:#fff5f5;border-radius:8px;border:1px solid #ffa8a8;">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
-          <strong style="color:#c92a2a;">⚠ ${run.unmatched.length} unmatched merchant(s)</strong>
+          <strong style="color:#c92a2a;">⚠ ${run.unmatched.length - Number(run.notApprovedCount || 0)} unmatched merchant(s)</strong>
           <button id="dl-unmatched" class="btn-ghost" style="color:var(--accent);">↓ Download list (CSV)</button>
         </div>
         <p style="color:#868e96;font-size:13px;">These names were in the order report but not found in the merchant registry. Add them under the correct merchant and re-run.</p>
@@ -2417,7 +2454,9 @@ async function renderBulkRunDetail(runId) {
         <table style="font-size:13px;width:100%;margin-top:6px;">
           <thead><tr><th style="text-align:left;">Merchant name in order report</th><th style="text-align:right;">Orders</th><th style="text-align:right;">Revenue</th><th></th></tr></thead>
           <tbody>${(run.unmatchedDetail?.length
-              ? run.unmatchedDetail
+              // Rows with a reviewState have their own panel above; listing them twice would
+              // double-count them by eye.
+              ? run.unmatchedDetail.filter(u => !u.reviewState)
               : (run.unmatched || []).map(n => ({ name: n, orders: null, revenue: null }))
             ).map(u => `<tr>
             <td>${escape(u.name || '')}</td>

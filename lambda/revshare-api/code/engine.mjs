@@ -1,9 +1,11 @@
-// Thailand's codes, then Singapore's. SG's LL20/LL40/S10-A are SEPARATE models, not aliases
-// of L20/L40/S10 (decision 2026-08-26): per-model terms key off these codes, so folding them
-// together would pay an SG machine from a Thai model's rate, or nothing at all.
+// Thailand's ten, plus S10-A which Singapore deploys and Thailand does not.
+// LL20/LL40 are deliberately ABSENT: they are the platform's spelling of L20/L40 and are
+// normalised to them on the way in. Thailand's own roster has 152 rows reading
+// "Advertising Player-LL40" while its contracts key terms to L40, so treating LL40 as a model
+// of its own makes evaluateRun reject those rows and drops the brand from the run.
 export const MACHINE_MODELS = new Set([
   'S5','S8','S10','T8','T10','T20','T35','L20','L40','M10',
-  'LL20','LL40','S10-A',
+  'S10-A',
 ]);
 
 // Count machines by model

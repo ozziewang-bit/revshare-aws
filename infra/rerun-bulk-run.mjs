@@ -51,6 +51,9 @@ const fresh = await computeBulkRun({
   persist: APPLY,
   runId: APPLY ? ulid() : 'DRYRUN',
   merchants: inputs.merchants, orders: inputs.orders, machines: inputs.machines,
+  // `excluded` is the non-Approved roster rows; without it the recomputed run cannot label
+  // which unmatched stores the merchant list actually knows about.
+  excluded: inputs.excluded,
   periodStart: inputs.periodStart ?? old.periodStart, periodEnd: inputs.periodEnd ?? old.periodEnd,
 });
 
@@ -75,6 +78,8 @@ const recon = n(fresh.results?.reduce((s, r) => s + n(r.revenue), 0)) + n(fresh.
 console.log(`\nreconciliation: paid+skipped+unmatched = ${f2(recon)} vs order total ${f2(fresh.totalOrderRevenue)} — ${Math.abs(recon - n(fresh.totalOrderRevenue)) < 0.01 ? 'OK' : 'MISMATCH'}`);
 
 if (!APPLY) { console.log('\nDRY RUN — nothing written. Re-run with --apply to create the new run.'); process.exit(0); }
+fresh.recomputedFrom = runId;
+fresh.recomputedAt = new Date().toISOString();
 await putBulkRun(fresh, inputs);
-console.log(`\ncreated run ${fresh.runId}`);
+console.log(`\ncreated run ${fresh.runId} (recomputed from ${runId})`);
 if (REPLACE) { await deleteBulkRun(runId); console.log(`deleted original run ${runId}`); }
