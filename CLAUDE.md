@@ -1,7 +1,7 @@
 # revshare-aws — handoff
 
-Last updated: 2026-08-27 (LL40/LL20/L20 are DISTINCT codes — nothing folds; merchant list shows only models in use; device types are per country).
-Service-worker `CACHE_VERSION` is at `revshare-v134` (bump on every shell change).
+Last updated: 2026-08-27 (run list = overview, run detail = tables only, Analytics = insight; LL40/LL20/L20 are DISTINCT codes).
+Service-worker `CACHE_VERSION` is at `revshare-v139` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
 end-to-end before touching anything. The codebase is the ultimate source of
@@ -272,7 +272,7 @@ CSV already handle per_store correctly; this was a config issue, not a code bug.
 default to the lower-paying `whole` branch, which is exactly how 7-Eleven's original
 under-payment happened.
 
-Tests: `npm test` → **191/191** pass (incl. `ddb-util.test.mjs` — Query pagination +
+Tests: `npm test` → **204/204** pass (incl. `ddb-util.test.mjs` — Query pagination +
 BatchWriteItem chunking, §1c; `payout.test.mjs` — `merchantRowChanged` / `ruleHasValue` /
 `contractNeedsTerms` / label resolution; `bulk-runs.test.mjs` — roster-to-contract
 resolution + order-less fixed-fee; `contracts.test.mjs` — sheet-row normalisation, name
@@ -503,6 +503,38 @@ In July: 6 stores, 910 THB, 17% of unmatched, including two live 7-Eleven branch
 Of 1,799 non-Approved rows only **33 carry a device type at all**, so the filter is mostly
 dropping paperwork — but not entirely.
 
+## 1i. What each Run share screen is for (2026-08-27)
+
+Settled after the run detail grew to nine coloured blocks around one table. **Each page has one
+job — do not put insight back on the run detail.**
+
+- **Run list = the month at a glance.** `Period · Uploaded · Revenue · Payout · Payout % ·
+  Unmatched`. No merchant count: a brand count says nothing about the money. **Revenue** means
+  revenue that reached a *paid* merchant — `totalOrderRevenue − skippedRevenue −
+  unmatchedRevenue` — the same base the detail divides by, so the two screens never quote
+  different percentages for one month. All of it comes off the **slim index row**; the list
+  fetches no run payload. Runs predating `totalOrderRevenue` render `—`, not `NaN`.
+- **Run detail = the tables.** Header is one row (Back + `Run share · <period>` left,
+  Archive/Delete right), then the download link, the payout table, and one **"Revenue not paid"**
+  section whose rows expand into the skipped / not-Approved / unmatched tables, closing with the
+  reconciliation line. The unmatched list keeps its **Assign / + Add merchant** buttons — that is
+  a workflow you act on, not an insight. No tiles, no description line, no per-merchant
+  breakdowns.
+- **Analytics = insight.** The trend chart, plus **"What the payout is made of"** — Guarantee /
+  Revenue share / Placement / Lump sum, following the same merchant filter. July: **50% of the
+  payout is a guarantee, not a share** (451,000 of 894,760).
+
+**`payoutBreakdown` / `guaranteeInfo` / `payoutComposition`** (`app.js`) read only what every run
+already freezes — `ruleSnapshots` + `engineResult` — so they work on runs of any age and
+recompute nothing. The guarantee test needs no re-derivation: **the engine records only the
+branch of a `max` that WON**, so a rule with a GP percentage that contributed no `percent` leaf
+was paid on its floor. Pinned by `tests/run-view.test.mjs`, which extracts them from `app.js`.
+
+**Watch for this when moving markup:** the Archive/Delete buttons moved into the page header
+while their handlers still queried `#br-detail` — all three would have rendered and done
+nothing. Three separate bugs of this exact shape landed on 2026-08-27 (`fmt2` out of scope, a
+missing routes-barrel re-export in CSTH, and this). Move markup, follow its handlers.
+
 ## 2. Live URLs and resources
 
 - **Site:** https://d2t76jfby056ul.cloudfront.net
@@ -538,7 +570,7 @@ Account `<YOUR_AWS_ACCOUNT_ID>`, region `ap-northeast-1`. IAM user `<your-iam-us
 | `lambda/revshare-api/code/routes/bulk-runs.mjs` | Bulk run routes. Exports `buildRosterRows` (roster-authoritative row seeding, keyed by `contractId`; its `if (!m.contractId) continue` guard is defence in depth, not a live path — `applyMerchantRoster` always assigns a `contractId` first), `applyMerchantRoster` (resolves roster labels to `CONTRACT` rows, auto-creating a `noPayout: true` stub for any unmatched label; currency comes from `db.mjs`'s `DEFAULT_CURRENCY`, not a literal), `payoutDecision` (why a contract is/isn't paid; names the merchant in its warning when a sample name is available), `groupOrders` (legacy, order-only grouping, unused in the live route). `createBulkRunRoute` also builds a **`skipped`** list (2026-08-09) — brands that matched roster/order rows but weren't paid — with `skippedCount`/`skippedRevenue`/`totalOrderRevenue` on the run, so revenue never disappears from every total silently; see §1b and Finding 1 of the 2026-08-09 review. `paidBrandCount`/`rosterBrandCount` replace the old overloaded `merchantBrandCount` on the run payload (the `/bulk-runs/prepare` response still uses `merchantBrandCount` for its own, unambiguous meaning: distinct contracts in the roster). |
 | `lambda/revshare-api/code/contracts.mjs` | Contract sheet-row normalisation, name matching (`matchContracts`), import diffing (`buildImportPlan`). Contract fields only — never touches `rule`. |
 | `lambda/revshare-api/code/routes/contracts.mjs` | Contract (`CONTRACT`) CRUD + import routes. `WRITABLE` includes `rule`/`aggregationMode`/`noPayout`/`currency` for direct PUT edits — `CONTRACT` is the payout entity now (§5). |
-| `lambda/revshare-api/tests/` | `engine.test.mjs`, `csv.test.mjs`, `contracts.test.mjs`, `payout.test.mjs`, `bulk-runs.test.mjs`, `ddb-util.test.mjs`, `device-models.test.mjs`, `sheet-grid-shape.test.mjs`, others — `npm test` → 191 total. |
+| `lambda/revshare-api/tests/` | `engine.test.mjs`, `csv.test.mjs`, `contracts.test.mjs`, `payout.test.mjs`, `bulk-runs.test.mjs`, `ddb-util.test.mjs`, `device-models.test.mjs`, `sheet-grid-shape.test.mjs`, `run-view.test.mjs`, others — `npm test` → 204 total. |
 | `frontend/index.html` | SPA shell + pre-paint auth gate. |
 | `frontend/style.css` | All styles (tokenized). |
 | `frontend/app.js` | All app JS: auth, screens, Merchant view grid + terms editor, run flow. |
@@ -578,7 +610,7 @@ Run all tests:
 ```bash
 npm test    # from repo root
 ```
-191/191 should pass.
+204/204 should pass.
 
 ## 5. Data model
 
