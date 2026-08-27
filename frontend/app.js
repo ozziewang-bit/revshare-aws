@@ -438,6 +438,58 @@ async function renderUsersScreen() {
   };
 }
 
+// What KIND of thing is the money being paid for? A payout of 894,760 says nothing about
+// whether it is a revenue share or a floor being topped up — and those behave completely
+// differently as revenue moves. Classified from the engine's own recorded components:
+//
+//   percent                -> Revenue share
+//   flat_per_machine       -> Guarantee if this merchant's max resolved to its MG, else Placement
+//   flat_per_partner_total -> Lump sum (electricity, others)
+//
+// The guarantee test is guaranteeInfo's: the engine records only the branch of a `max` that
+// won, so a rule with a GP percentage that contributed no percent leaf was paid on its floor.
+const COMPOSITION_ORDER = ['Guarantee', 'Revenue share', 'Placement', 'Lump sum'];
+
+// Horizontal bars, widest first. Deliberately plain: this answers one question, and a legend
+// or axis would cost more attention than it returns.
+function compositionHtml(comp, monthLabel) {
+  const total = Object.values(comp).reduce((a, b) => a + b, 0);
+  if (!total) return '';
+  const shade = { Guarantee: '#e8590c', 'Revenue share': '#1971c2', Placement: '#2b8a3e', 'Lump sum': '#868e96' };
+  const rows = COMPOSITION_ORDER.filter(k => comp[k] > 0);
+  return `<div style="margin-top:22px;">
+    <h3 style="margin:0 0 2px;font-size:15px;">What the payout is made of</h3>
+    <p class="muted" style="margin:0 0 10px;font-size:13px;">${escape(monthLabel)} · total ${fmt2(total)}</p>
+    ${rows.map(k => {
+      const pct = comp[k] / total * 100;
+      return `<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;font-size:13px;">
+        <div style="width:104px;flex:0 0 104px;">${escape(k)}</div>
+        <div style="flex:1;background:var(--bg-soft);border-radius:4px;height:16px;overflow:hidden;">
+          <div style="width:${pct.toFixed(1)}%;background:${shade[k]};height:100%;"></div>
+        </div>
+        <div style="width:104px;flex:0 0 104px;text-align:right;">${fmt2(comp[k])}</div>
+        <div style="width:46px;flex:0 0 46px;text-align:right;color:var(--ink-soft);">${pct.toFixed(0)}%</div>
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+
+function payoutComposition(run, onlyContractId) {
+  const out = { Guarantee: 0, 'Revenue share': 0, Placement: 0, 'Lump sum': 0 };
+  for (const r of run.results || []) {
+    if (onlyContractId && r.contractId !== onlyContractId) continue;
+    const onGuarantee = !!guaranteeInfo(r, (run.ruleSnapshots || {})[r.contractId]);
+    for (const c of engineComponents(r.engineResult)) {
+      const pay = Number(c.payout) || 0;
+      if (!pay) continue;
+      if (c.leafType === 'percent' || c.leafType === 'tiered_percent') out['Revenue share'] += pay;
+      else if (c.leafType === 'flat_per_machine') out[onGuarantee ? 'Guarantee' : 'Placement'] += pay;
+      else out['Lump sum'] += pay;
+    }
+  }
+  return out;
+}
+
 async function renderRevsharePathScreen() {
   const main = document.getElementById('main');
   main.innerHTML = `<div class="page-head"><h2>Analytics</h2></div>
@@ -484,6 +536,17 @@ async function renderRevsharePathScreen() {
     else { titleEl.textContent = ''; chartEl.innerHTML = `<p class="muted">No merchant matching “${escape(sel)}”.</p>`; return; }
     titleEl.textContent = label;
     chartEl.innerHTML = data && data.length ? revsharePathChartSvg(data) : '<p class="muted">No calculations yet to chart.</p>';
+
+    // Composition of the most recent month, following whatever the search box has selected.
+    // The trend chart shows how much; this shows what kind.
+    const latest = months[months.length - 1];
+    const run = latest ? byMonth[latest] : null;
+    if (run) {
+      const cid = (!key || key === 'total') ? null
+        : (run.results || []).find(r => r.merchantName === byLower[key])?.contractId;
+      const comp = (!key || key === 'total' || cid) ? payoutComposition(run, cid) : null;
+      if (comp) chartEl.insertAdjacentHTML('beforeend', compositionHtml(comp, latest));
+    }
   }
 
   document.getElementById('rp-search').addEventListener('input', e => show(e.target.value));
@@ -1867,15 +1930,36 @@ async function renderBulkRunsList() {
   const runs = await api('/bulk-runs');
   const out = document.getElementById('bulk-runs-out');
   if (!runs.length) { out.innerHTML = '<p class="muted">No calculations yet.</p>'; return; }
-  out.innerHTML = `<table class="ts"><thead><tr><th>Period</th><th>Uploaded</th><th>Merchants</th><th>Total payout</th><th>Unmatched</th><th></th></tr></thead>
-    <tbody>${runs.map(r => `<tr data-id="${r.runId}" style="cursor:pointer;">
+  // The month at a glance: what came in, what went out, and what share that is. Every figure
+  // here comes off the SLIM index row — no run payload is fetched to draw this list.
+  //
+  // Revenue means revenue that reached a paid merchant: the order report's total less the
+  // revenue that matched a merchant we do not pay (skipped) and the revenue that matched
+  // nothing (unmatched). That is the same base the run detail divides by, so the percentages
+  // on the two screens agree. A brand count is not shown — it says nothing about the money.
+  const matchedRevenue = (r) => (typeof r.totalOrderRevenue === 'number')
+    ? r.totalOrderRevenue - Number(r.skippedRevenue || 0) - Number(r.unmatchedRevenue || 0)
+    : null;
+
+  out.innerHTML = `<table class="ts"><thead><tr>
+      <th>Period</th><th>Uploaded</th>
+      <th style="text-align:right;">Revenue</th>
+      <th style="text-align:right;">Payout</th>
+      <th style="text-align:right;">Payout %</th>
+      <th style="text-align:right;">Unmatched</th><th></th></tr></thead>
+    <tbody>${runs.map(r => {
+      const rev = matchedRevenue(r);
+      return `<tr data-id="${r.runId}" style="cursor:pointer;">
       <td>${escape(periodMonth(r.periodStart))}${r.archived ? ' <span class="badge badge-neutral" title="Archived — cannot be deleted without unarchiving">🔒 Locked</span>' : ''}</td>
       <td>${escape(r.uploadedAt?.split('T')[0] || '')}</td>
-      <td>${r.paidBrandCount}${r.rosterBrandCount > r.paidBrandCount ? ` <span class="muted" style="font-size:11.5px;">of ${r.rosterBrandCount}</span>` : ''}</td>
-      <td>${(r.totalPayout || 0).toFixed(2)}</td>
-      <td>${r.unmatchedCount > 0 ? `<span style="color:#f03e3e;">${r.unmatchedCount}</span>` : '0'}</td>
+      <td style="text-align:right;" title="Revenue that reached a paid merchant">${rev == null ? '<span class="muted">—</span>' : fmt2(rev)}</td>
+      <td style="text-align:right;"><strong>${fmt2(r.totalPayout || 0)}</strong></td>
+      <td style="text-align:right;" title="Payout as a share of that revenue">${rev > 0 ? ((r.totalPayout || 0) / rev * 100).toFixed(1) + '%' : '<span class="muted">—</span>'}</td>
+      <td style="text-align:right;">${Number(r.unmatchedCount || 0) > 0
+        ? `<span style="color:#f03e3e;">${Number(r.unmatchedCount)}</span>`
+        : '0'}</td>
       <td style="text-align:right;">${(!r.archived && can('deleteRuns')) ? `<button class="btn-ghost del-run" data-id="${r.runId}" style="color:var(--loss);">Delete</button>` : ''}</td>
-    </tr>`).join('')}</tbody></table>`;
+    </tr>`; }).join('')}</tbody></table>`;
   out.querySelectorAll('tr[data-id]').forEach(tr => {
     tr.addEventListener('click', () => renderBulkRunDetail(tr.dataset.id));
   });
@@ -2372,9 +2456,91 @@ function downloadRevshareZip(run) {
   URL.revokeObjectURL(url);
 }
 
+const LEAF_LABELS = {
+  flat_per_machine: 'Per machine',
+  flat_per_partner_total: 'Lump sum',
+  percent: 'Revenue share',
+  tiered_percent: 'Tiered share',
+};
+
+// ── Reading a stored run ──────────────────────────────────────────────────
+// Every run freezes both the rule it used (ruleSnapshots) and the engine's own arithmetic
+// (engineResult). These read that stored detail back; they never recompute anything.
+//
+// The run detail deliberately does NOT use them — it shows the payout tables and nothing else
+// (user, 2026-08-27: "other insights and why, we leave it to analytics page"). They feed the
+// Analytics page's payout-composition chart.
+
+// The engine reports `byPartner` for `whole` aggregation and `byStore` for `per_store`.
+function engineComponents(engineResult) {
+  if (!engineResult) return [];
+  if (engineResult.byPartner) return engineResult.byPartner.components || [];
+  return (engineResult.byStore || []).flatMap(s => s.components || []);
+}
+
+// One row per leaf and model, summed across stores: "S8 x26 @ 4,000 = 104,000".
+// Rates are carried per model because a rule can price each one differently.
+function payoutBreakdown(engineResult) {
+  const rows = new Map();
+  for (const c of engineComponents(engineResult)) {
+    const contributed = c.modelRowsContributed || [];
+    if (!contributed.length) {
+      // percent / lump leaves have no per-model rows — keep them as a single line.
+      const k = `${c.leafType}|`;
+      const r = rows.get(k) || { leafType: c.leafType, model: null, count: null, amount: null, payout: 0 };
+      r.payout += Number(c.payout) || 0;
+      rows.set(k, r);
+      continue;
+    }
+    for (const m of contributed) {
+      if (!m.count && !m.payout) continue;          // a model priced but not present
+      const k = `${c.leafType}|${m.model}`;
+      const r = rows.get(k) || { leafType: c.leafType, model: m.model, count: 0, amount: m.amount, payout: 0 };
+      r.count += Number(m.count) || 0;
+      r.payout += Number(m.payout) || 0;
+      rows.set(k, r);
+    }
+  }
+  return [...rows.values()].filter(r => r.payout || r.count).sort((a, b) => b.payout - a.payout);
+}
+
+// Was this merchant paid its minimum guarantee rather than its revenue share?
+//
+// The engine records only the branch of a `max` that WON, so the tell is simple and needs no
+// re-derivation: the rule has a GP percentage, the method compares against an MG, and yet no
+// `percent` leaf contributed anything. `shareWouldBe` is what the revenue share alone would
+// have paid — the gap is what the guarantee is costing above it.
+function guaranteeInfo(result, ruleSnapshot) {
+  const form = decompileRule(ruleSnapshot);
+  const comparesAgainstMg = (form.method === 'higher' || form.method === 'hybrid-higher')
+    && (form.mgRows || []).some(r => Number(r.amount) > 0);
+  if (!comparesAgainstMg || !(Number(form.gpPercent) > 0)) return null;
+
+  const comps = engineComponents(result.engineResult);
+  const percentPaid = comps.filter(c => c.leafType === 'percent').reduce((a, c) => a + (Number(c.payout) || 0), 0);
+  const stores = (result.engineResult?.byStore || []).length;
+  const storesOnMg = stores
+    ? result.engineResult.byStore.filter(s => !(s.components || []).some(c => c.leafType === 'percent')).length
+    : (percentPaid > 0 ? 0 : 1);
+
+  if (!storesOnMg) return null;
+  const shareWouldBe = (Number(result.revenue) || 0) * Number(form.gpPercent) / 100;
+  return {
+    gpPercent: form.gpPercent,
+    shareWouldBe,
+    gap: (Number(result.payout) || 0) - shareWouldBe,
+    storesOnMg,
+    storesTotal: stores || 1,
+    everyStore: !stores || storesOnMg === stores,
+  };
+}
+
 async function renderBulkRunDetail(runId) {
   const main = document.getElementById('main');
-  main.innerHTML = `<div class="page-head"><button id="back" class="btn-ghost">← Back</button><h2>Run share</h2></div><div id="br-detail">Loading…</div>`;
+  main.innerHTML = `<div class="page-head">
+      <div style="display:flex;align-items:baseline;gap:14px;"><button id="back" class="btn-ghost">← Back</button><h2 id="br-title">Run share</h2></div>
+      <div id="br-actions"></div>
+    </div><div id="br-detail">Loading…</div>`;
   document.getElementById('back').addEventListener('click', renderBulkRunsList);
   const run = await api('/bulk-runs/' + runId);
   const el = document.getElementById('br-detail');
@@ -2393,7 +2559,12 @@ async function renderBulkRunDetail(runId) {
   const hasOrderTotal = typeof run.totalOrderRevenue === 'number';
   const reconciles = hasOrderTotal ? Math.abs(reconciledTotal - run.totalOrderRevenue) < 0.01 : null;
 
-  // Archive / Unarchive / Delete action bar
+  // The period belongs in the title: with the description line gone it is the only thing that
+  // says which run you are looking at.
+  const titleEl = document.getElementById('br-title');
+  if (titleEl) titleEl.textContent = `Run share · ${periodMonth(run.periodStart)}`;
+
+  // Archive / Unarchive / Delete — rendered into the header, opposite the title.
   const archiveBar = (() => {
     const parts = [];
     if (isArchived) {
@@ -2410,22 +2581,38 @@ async function renderBulkRunDetail(runId) {
         parts.push(`<button id="br-delete" class="btn-ghost" style="color:var(--loss);">Delete</button>`);
       }
     }
-    return parts.length ? `<div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;">${parts.join('')}</div>` : '';
+    return parts.join('');
   })();
+  const actionsEl = document.getElementById('br-actions');
+  if (actionsEl) actionsEl.innerHTML = archiveBar;
+
+  // Everything that is NOT a payout answers one question — where did the rest of the revenue
+  // go? It used to be six separate coloured panels stacked around the payout table: skipped,
+  // not-approved, unmatched, two recovery notices and the reconciliation banner, in five
+  // different colours. One topic, one section, ranked by size. Colour is spent once, on
+  // whether the run reconciles.
+  const notPaidTotal = skippedRevenue + unmatchedRevenue;
+  const naDetail = (run.unmatchedDetail || []).filter(u => u.reviewState);
+  const unknownDetail = (run.unmatchedDetail?.length
+    ? run.unmatchedDetail.filter(u => !u.reviewState)
+    : (run.unmatched || []).map(n => ({ name: n, orders: null, revenue: null })));
+  const naRevenue = Number(run.notApprovedRevenue || 0);
+  const num = v => v == null ? '<span class="muted">—</span>' : Number(v).toLocaleString('en-US');
+
+  // One row of the "revenue not paid" table: a headline, and a panel it expands into.
+  const npRow = (key, label, count, unit, revenue, body, note) => !count ? '' : `
+    <tr class="np-row" data-np="${key}">
+      <td style="width:60%;"><button type="button" class="btn-ghost np-toggle" data-np="${key}" style="padding:0;font-size:13.5px;">▸ ${label}</button>
+        ${note ? `<div class="muted" style="font-size:12px;margin-top:2px;">${note}</div>` : ''}</td>
+      <td style="text-align:right;white-space:nowrap;">${count} ${escape(unit)}</td>
+      <td style="text-align:right;"><strong>${fmt2(revenue)}</strong></td>
+    </tr>
+    <tr id="np-${key}" hidden><td colspan="3" style="background:var(--bg-soft);padding:12px 14px;">${body}</td></tr>`;
 
   el.innerHTML = `
-    ${archiveBar}
-    <p class="muted">Period: <strong>${escape(periodMonth(run.periodStart))}</strong> · Uploaded: ${escape(run.uploadedAt?.split('T')[0])} · ${run.orderCount} orders · ${run.paidBrandCount} merchant(s) paid${run.rosterBrandCount > run.paidBrandCount ? ` of ${run.rosterBrandCount} in roster` : ''}</p>
-    ${(run.results?.length) ? `<p><a href="#" id="dl-revshare-zip" class="zip-link">↓ ${escape(periodTag(run.periodStart))}_revshare</a> <span class="muted" style="font-size:12px;">(zip · one CSV per merchant)</span></p>` : ''}
-    ${run.unmatchedOrderCount ? `
-      <div style="margin:8px 0 4px;padding:12px 16px;background:#fff5f5;border:1px solid #ffa8a8;border-radius:8px;font-size:13.5px;">
-        <strong style="color:#c92a2a;">⚠ ${Number(run.unmatchedOrderCount).toLocaleString('en-US')} order(s) dropped</strong>
-        — ${Number(run.unmatchedCount).toLocaleString('en-US')} unrecognized merchant name(s), revenue not counted:
-        <strong>${Number(run.unmatchedRevenue || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>.
-        Matched <strong>${Number((run.orderCount || 0) - run.unmatchedOrderCount).toLocaleString('en-US')}</strong> of ${Number(run.orderCount || 0).toLocaleString('en-US')} paid orders.
-      </div>` : ''}
-    ${run.warnings?.length ? `<p style="color:#e67700;">${run.warnings.map(escape).join('<br>')}</p>` : ''}
-    <table class="ts"><thead><tr><th>Merchant</th><th>Merchants</th><th>Rentals</th><th>Revenue</th><th>Payout</th><th>Revenue share %</th></tr></thead>
+    ${(run.results?.length) ? `<p><a href="#" id="dl-revshare-zip" class="zip-link">↓ ${escape(periodTag(run.periodStart))}_revshare</a></p>` : ''}
+
+    <table class="ts"><thead><tr><th>Merchant</th><th>Stores</th><th>Rentals</th><th>Revenue</th><th>Payout</th><th>Share %</th></tr></thead>
     <tbody>${(run.results || []).sort((a,b) => b.payout - a.payout).map(r => `<tr>
       <td>${escape(r.merchantName)}</td>
       <td>${r.merchantCount}</td>
@@ -2435,141 +2622,103 @@ async function renderBulkRunDetail(runId) {
       <td>${r.revenue > 0 ? (r.payout / r.revenue * 100).toFixed(1) + '%' : '—'}</td>
     </tr>`).join('')}</tbody>
     <tfoot><tr>
-      <td>Total</td>
-      <td></td>
-      <td></td>
+      <td>Total</td><td></td><td></td>
       <td>${totalRevenue.toFixed(2)}</td>
       <td>${Number(run.totalPayout || 0).toFixed(2)}</td>
       <td>${totalSharePct}</td>
     </tr></tfoot>
     </table>
-    ${run.skipped?.length ? `
-      <div style="margin-top:24px;padding:16px;background:#fff9db;border-radius:8px;border:1px solid #ffe066;">
-        <strong style="color:#e67700;">⚠ ${run.skipped.length} merchant(s) skipped — matched orders, not paid</strong>
-        <p style="color:#868e96;font-size:13px;">These merchants' stores were in the roster and had matching orders, but were not paid this run (no revenue share, no usable terms, or a calculation error). Their revenue is not in the Payout total above — it's accounted for here instead.</p>
-        <table class="ts" style="margin-top:8px;">
-          <thead><tr><th>Merchant</th><th>Stores</th><th>Rentals</th><th>Revenue</th><th>Reason</th></tr></thead>
-          <tbody>${run.skipped.map(s => `<tr>
-            <td>${escape(s.merchantName || s.contractId)}</td>
-            <td>${s.merchantCount}</td>
-            <td>${s.rentals}</td>
-            <td>${Number(s.revenue).toFixed(2)}</td>
-            <td style="font-size:12.5px;color:#868e96;">${escape(s.reason || '')}</td>
-          </tr>`).join('')}</tbody>
-          <tfoot><tr><td>Total</td><td></td><td></td><td>${skippedRevenue.toFixed(2)}</td><td></td></tr></tfoot>
-        </table>
-      </div>` : ''}
-    ${run.matchedByMachine?.length ? `
-      <div style="margin:14px 0;padding:12px 16px;background:#fff9db;border:1px solid #ffe066;border-radius:8px;">
-        <strong style="color:#e67700;">↔ ${run.matchedByMachine.length} store(s) matched by machine number, not by name</strong>
-        <p style="margin:6px 0 8px;font-size:13px;color:var(--ink-soft);">
-          These stores are named differently in the order report and the merchant list. Their revenue
-          <strong>was paid</strong> — recovered via the Machine List — but the two exports disagree, so
-          the name is worth correcting at source.
-        </p>
-        <table style="font-size:13px;width:100%;">
-          <thead><tr><th style="text-align:left;">Order report name</th><th style="text-align:left;">Merchant list name</th><th style="text-align:right;">Orders</th><th style="text-align:right;">Revenue</th></tr></thead>
-          <tbody>${run.matchedByMachine.map(m => `<tr>
-            <td>${escape(m.orderName || '')}</td>
-            <td>${escape(m.rosterName || '')}</td>
-            <td style="text-align:right;">${Number(m.orders || 0).toLocaleString('en-US')}</td>
-            <td style="text-align:right;">${fmt2(Number(m.revenue || 0))}</td>
-          </tr>`).join('')}</tbody>
-        </table>
-      </div>` : ''}
 
-    ${run.matchedByAlias?.length ? `
-      <div style="margin:14px 0;padding:12px 16px;background:#e7f5ff;border:1px solid #74c0fc;border-radius:8px;">
-        <strong style="color:#1971c2;">→ ${run.matchedByAlias.length} name(s) paid by manual assignment</strong>
-        <p style="margin:6px 0 8px;font-size:13px;color:var(--ink-soft);">
-          These order-report names are not in the merchant list, so they were assigned to a merchant by hand.
-          Each one is counted as an additional store of that merchant.
-        </p>
-        <table style="font-size:13px;width:100%;">
-          <thead><tr><th style="text-align:left;">Order report name</th><th style="text-align:left;">Paid to</th><th style="text-align:right;">Orders</th><th style="text-align:right;">Revenue</th></tr></thead>
-          <tbody>${run.matchedByAlias.map(m => {
-            const paid = (run.results || []).find(r => r.contractId === m.contractId);
-            return `<tr>
-              <td>${escape(m.name || '')}</td>
-              <td>${escape(paid?.merchantName || m.contractId || '')}</td>
-              <td style="text-align:right;">${Number(m.orders || 0).toLocaleString('en-US')}</td>
-              <td style="text-align:right;">${fmt2(Number(m.revenue || 0))}</td>
-            </tr>`; }).join('')}</tbody>
-        </table>
-      </div>` : ''}
 
-    ${run.notApprovedCount ? `
-      <div style="margin:14px 0;padding:12px 16px;background:#fff4e6;border:1px solid #ffa94d;border-radius:8px;">
-        <strong style="color:#d9480f;">⚠ ${run.notApprovedCount} store(s) took rentals but are not Approved in the merchant list</strong>
-        <p style="margin:6px 0 8px;font-size:13px;color:var(--ink-soft);">
-          These are in the merchant list, so the platform knows them — they were excluded from this run
-          because their review state is not Approved, and their revenue is <strong>not paid</strong>.
-          A store marked Disapproved can still have a live machine. Fix the review state in ChargeSpot,
-          or assign the name to a merchant here.
-        </p>
-        <table style="font-size:13px;width:100%;">
-          <thead><tr><th style="text-align:left;">Store</th><th style="text-align:left;">Review state</th><th style="text-align:left;">Would be paid under</th><th style="text-align:right;">Orders</th><th style="text-align:right;">Revenue</th></tr></thead>
-          <tbody>${run.unmatchedDetail.filter(u => u.reviewState).map(u => `<tr>
-            <td>${escape(u.name || '')}</td>
-            <td><span style="color:#d9480f;font-weight:600;">${escape(u.reviewState)}</span></td>
-            <td>${escape(u.label || '—')}</td>
-            <td style="text-align:right;">${Number(u.orders || 0).toLocaleString('en-US')}</td>
-            <td style="text-align:right;">${fmt2(Number(u.revenue || 0))}</td>
-          </tr>`).join('')}</tbody>
-        </table>
-        <p style="margin:8px 0 0;font-size:13px;">
-          Total held back by a review state: <strong>${fmt2(Number(run.notApprovedRevenue || 0))}</strong>
-        </p>
-      </div>` : ''}
 
-    ${run.unmatched?.length ? `
-      <div style="margin-top:24px;padding:16px;background:#fff5f5;border-radius:8px;border:1px solid #ffa8a8;">
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
-          <strong style="color:#c92a2a;">⚠ ${run.unmatched.length - Number(run.notApprovedCount || 0)} unmatched merchant(s)</strong>
-          <button id="dl-unmatched" class="btn-ghost" style="color:var(--accent);">↓ Download list (CSV)</button>
-        </div>
-        <p style="color:#868e96;font-size:13px;">These names were in the order report but not found in the merchant registry. Add them under the correct merchant and re-run.</p>
-        <!-- Runs from before 2026-08-24 stored names only, with no per-store split. They still
-             need the Assign / Add buttons, so both shapes are normalised into one table rather
-             than a second, button-less branch. -->
-        <table style="font-size:13px;width:100%;margin-top:6px;">
-          <thead><tr><th style="text-align:left;">Merchant name in order report</th><th style="text-align:right;">Orders</th><th style="text-align:right;">Revenue</th><th></th></tr></thead>
-          <tbody>${(run.unmatchedDetail?.length
-              // Rows with a reviewState have their own panel above; listing them twice would
-              // double-count them by eye.
-              ? run.unmatchedDetail.filter(u => !u.reviewState)
-              : (run.unmatched || []).map(n => ({ name: n, orders: null, revenue: null }))
-            ).map(u => `<tr>
-            <td>${escape(u.name || '')}</td>
-            <td style="text-align:right;">${u.orders == null ? '<span class="muted">—</span>' : Number(u.orders).toLocaleString('en-US')}</td>
-            <td style="text-align:right;">${u.revenue == null ? '<span class="muted">—</span>' : fmt2(Number(u.revenue))}</td>
-            <td style="text-align:right;white-space:nowrap;">
-              ${can('manageMerchants') ? `
+    ${notPaidTotal || run.matchedByMachine?.length || run.matchedByAlias?.length ? `
+    <section style="margin-top:28px;">
+      <h3 style="margin:0 0 4px;font-size:15px;">Revenue not paid</h3>
+      <p class="muted" style="margin:0 0 10px;font-size:13px;">
+        ${fmt2(notPaidTotal)} of the order report's ${fmt2(run.totalOrderRevenue || 0)}. Every order either paid a
+        merchant, matched one that is not paid, or matched nothing at all — these are the last two.
+      </p>
+      ${(run.matchedByMachine?.length || run.matchedByAlias?.length) ? `
+        <p style="margin:0 0 10px;font-size:13px;color:#1971c2;">
+          ↔ Recovered: ${[
+            run.matchedByMachine?.length ? `${run.matchedByMachine.length} store(s) by machine number` : '',
+            run.matchedByAlias?.length ? `${run.matchedByAlias.length} name(s) by manual assignment` : '',
+          ].filter(Boolean).join(' · ')} — these ARE paid.
+          <button type="button" class="btn-ghost np-toggle" data-np="recovered" style="padding:0 4px;font-size:12.5px;">show</button>
+        </p>
+        <div id="np-recovered" hidden style="background:var(--bg-soft);padding:12px 14px;border-radius:8px;margin-bottom:10px;">
+          <table style="font-size:13px;width:100%;">
+            <thead><tr><th style="text-align:left;">Order report name</th><th style="text-align:left;">Paid to</th><th style="text-align:left;">How</th><th style="text-align:right;">Orders</th><th style="text-align:right;">Revenue</th></tr></thead>
+            <tbody>
+              ${(run.matchedByMachine || []).map(m => `<tr><td>${escape(m.orderName || '')}</td><td>${escape(m.rosterName || '')}</td><td>machine number</td><td style="text-align:right;">${num(m.orders)}</td><td style="text-align:right;">${fmt2(m.revenue)}</td></tr>`).join('')}
+              ${(run.matchedByAlias || []).map(m => { const paidTo = (run.results || []).find(r => r.contractId === m.contractId);
+                return `<tr><td>${escape(m.name || '')}</td><td>${escape(paidTo?.merchantName || m.contractId || '')}</td><td>manual assignment</td><td style="text-align:right;">${num(m.orders)}</td><td style="text-align:right;">${fmt2(m.revenue)}</td></tr>`; }).join('')}
+            </tbody>
+          </table>
+        </div>` : ''}
+
+      <table class="ts"><tbody>
+        ${npRow('skipped', 'Skipped — matched a merchant that is not paid', (run.skipped || []).length, 'brands', skippedRevenue,
+          `<table style="font-size:13px;width:100%;">
+            <thead><tr><th style="text-align:left;">Merchant</th><th style="text-align:right;">Stores</th><th style="text-align:right;">Rentals</th><th style="text-align:right;">Revenue</th><th style="text-align:left;">Reason</th></tr></thead>
+            <tbody>${(run.skipped || []).slice().sort((a2,b2) => b2.revenue - a2.revenue).map(sk => `<tr>
+              <td>${escape(sk.merchantName || '')}</td><td style="text-align:right;">${sk.merchantCount}</td>
+              <td style="text-align:right;">${sk.rentals}</td><td style="text-align:right;">${fmt2(sk.revenue)}</td>
+              <td class="muted">${escape(sk.reason || '')}</td></tr>`).join('')}</tbody></table>`,
+          'Their orders matched, but the merchant is marked no-payout, archived, or has no usable terms.')}
+
+        ${npRow('notapproved', 'Not Approved in the merchant list', naDetail.length, 'stores', naRevenue,
+          `<p class="muted" style="margin:0 0 8px;font-size:13px;">The platform knows these stores; they were excluded because their review state is not Approved. A store marked Disapproved can still have a live machine.</p>
+           <table style="font-size:13px;width:100%;">
+            <thead><tr><th style="text-align:left;">Store</th><th style="text-align:left;">Review state</th><th style="text-align:left;">Would be paid under</th><th style="text-align:right;">Orders</th><th style="text-align:right;">Revenue</th></tr></thead>
+            <tbody>${naDetail.map(u => `<tr><td>${escape(u.name || '')}</td>
+              <td><span style="color:#d9480f;font-weight:600;">${escape(u.reviewState)}</span></td>
+              <td>${escape(u.label || '—')}</td><td style="text-align:right;">${num(u.orders)}</td>
+              <td style="text-align:right;">${fmt2(u.revenue)}</td></tr>`).join('')}</tbody></table>`,
+          'Fix the review state in ChargeSpot, or assign the name to a merchant below.')}
+
+        ${npRow('unknown', 'Unmatched — no such store anywhere', unknownDetail.length, 'names', unmatchedRevenue - naRevenue,
+          `<div style="display:flex;justify-content:flex-end;margin-bottom:6px;"><button id="dl-unmatched" class="btn-ghost" style="color:var(--accent);font-size:12.5px;">↓ Download list (CSV)</button></div>
+           <table style="font-size:13px;width:100%;">
+            <thead><tr><th style="text-align:left;">Merchant name in order report</th><th style="text-align:right;">Orders</th><th style="text-align:right;">Revenue</th><th></th></tr></thead>
+            <tbody>${unknownDetail.map(u => `<tr>
+              <td>${escape(u.name || '')}</td><td style="text-align:right;">${num(u.orders)}</td>
+              <td style="text-align:right;">${u.revenue == null ? '<span class="muted">—</span>' : fmt2(u.revenue)}</td>
+              <td style="text-align:right;white-space:nowrap;">${can('manageMerchants') ? `
                 <button type="button" class="btn-ghost um-assign" data-name="${escape(u.name || '')}" style="font-size:12px;padding:2px 8px;">Assign→</button>
-                <button type="button" class="btn-ghost um-add" data-name="${escape(u.name || '')}" style="font-size:12px;padding:2px 8px;">+ Add merchant</button>` : ''}
-            </td>
-          </tr>`).join('')}</tbody>
-        </table>
-      </div>` : ''}
+                <button type="button" class="btn-ghost um-add" data-name="${escape(u.name || '')}" style="font-size:12px;padding:2px 8px;">+ Add merchant</button>` : ''}</td>
+            </tr>`).join('')}</tbody></table>`,
+          'These names are in the order report but nowhere in the merchant list.')}
+      </tbody></table>
 
-    ${hasOrderTotal ? `
-      <div style="margin-top:24px;padding:12px 16px;border-radius:8px;font-size:13px;${reconciles ? 'background:#ebfbee;border:1px solid #8ce99a;color:#2b8a3e;' : 'background:#fff5f5;border:1px solid #ffa8a8;color:#c92a2a;'}">
-        <strong>${reconciles ? '✓ Reconciles' : '✗ Does NOT reconcile'}:</strong>
-        paid ${fmt2(totalRevenue)} + skipped ${fmt2(skippedRevenue)} + unmatched ${fmt2(unmatchedRevenue)}
-        = ${fmt2(reconciledTotal)} ${reconciles ? '' : `vs. total order revenue ${fmt2(run.totalOrderRevenue)} — `}
-        ${reconciles ? `matches the order report's total revenue (${fmt2(run.totalOrderRevenue)}).` : 'this run does not account for all order revenue — investigate before treating totals as final.'}
-      </div>` : ''}`;
+      ${hasOrderTotal ? `
+        <p style="margin:12px 0 0;font-size:13px;color:${reconciles ? '#2b8a3e' : '#c92a2a'};">
+          <strong>${reconciles ? '✓ Reconciles' : '✗ Does NOT reconcile'}:</strong>
+          paid ${fmt2(totalRevenue)} + skipped ${fmt2(skippedRevenue)} + unmatched ${fmt2(unmatchedRevenue)} = ${fmt2(reconciledTotal)}
+          ${reconciles ? `— matches the order report's total.` : `vs. the order report's ${fmt2(run.totalOrderRevenue)}. Investigate before treating totals as final.`}
+        </p>` : ''}
+    </section>` : ''}`;
 
   el.querySelector('#dl-revshare-zip')?.addEventListener('click', (ev) => {
     ev.preventDefault();
     downloadRevshareZip(run);
   });
+  // The "revenue not paid" rows expand in place.
+  el.querySelectorAll('.np-toggle').forEach(b => b.addEventListener('click', () => {
+    const row = el.querySelector('#np-' + CSS.escape(b.dataset.np));
+    if (!row) return;
+    row.hidden = !row.hidden;
+    b.textContent = b.textContent.startsWith('▸') ? b.textContent.replace('▸', '▾')
+      : b.textContent.startsWith('▾') ? b.textContent.replace('▾', '▸')
+      : (row.hidden ? 'show' : 'hide');
+  }));
+
   el.querySelector('#dl-unmatched')?.addEventListener('click', () => downloadUnmatchedCsv(run));
   bindUnmatchedActions(el, run);
 
-  el.querySelector('#br-archive')?.addEventListener('click', async () => {
+  main.querySelector('#br-archive')?.addEventListener('click', async () => {
     if (!confirm('Archive this run? It will be locked and cannot be deleted until unarchived.')) return;
-    const btn = el.querySelector('#br-archive');
+    const btn = main.querySelector('#br-archive');
     btn.disabled = true; btn.textContent = 'Archiving…';
     try {
       await api('/bulk-runs/' + runId + '/archive', { method: 'POST' });
@@ -2580,9 +2729,9 @@ async function renderBulkRunDetail(runId) {
     }
   });
 
-  el.querySelector('#br-unarchive')?.addEventListener('click', async () => {
+  main.querySelector('#br-unarchive')?.addEventListener('click', async () => {
     if (!confirm('Unarchive this run? It will no longer be locked.')) return;
-    const btn = el.querySelector('#br-unarchive');
+    const btn = main.querySelector('#br-unarchive');
     btn.disabled = true; btn.textContent = 'Unarchiving…';
     try {
       await api('/bulk-runs/' + runId + '/unarchive', { method: 'POST' });
@@ -2593,9 +2742,9 @@ async function renderBulkRunDetail(runId) {
     }
   });
 
-  el.querySelector('#br-delete')?.addEventListener('click', async () => {
+  main.querySelector('#br-delete')?.addEventListener('click', async () => {
     if (!confirm('Delete this calculation? This cannot be undone.')) return;
-    const btn = el.querySelector('#br-delete');
+    const btn = main.querySelector('#br-delete');
     btn.disabled = true; btn.textContent = 'Deleting…';
     try {
       await api('/bulk-runs/' + runId, { method: 'DELETE' });
