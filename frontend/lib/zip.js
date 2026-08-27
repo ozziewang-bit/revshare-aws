@@ -84,4 +84,32 @@
   }
 
   global.SimpleZip = { makeZip };
+
+  // ── Reader ────────────────────────────────────────────────────────────
+  // Enough of a ZIP reader to re-open a workbook SheetJS just wrote, so a member can be
+  // edited and the archive rebuilt. STORED entries only — SheetJS writes uncompressed by
+  // default, and inflate is not worth carrying. Returns null if anything is compressed, so
+  // callers fall back to the untouched file rather than producing a corrupt one.
+  function readZip(bytes) {
+    const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+    const files = [];
+    let i = 0;
+    while (i + 4 <= u8.length && dv.getUint32(i, true) === 0x04034b50) {
+      const method = dv.getUint16(i + 8, true);
+      const compSize = dv.getUint32(i + 18, true);
+      const nameLen = dv.getUint16(i + 26, true);
+      const extraLen = dv.getUint16(i + 28, true);
+      const nameStart = i + 30;
+      const name = new TextDecoder().decode(u8.subarray(nameStart, nameStart + nameLen));
+      const dataStart = nameStart + nameLen + extraLen;
+      if (method !== 0) return null;                       // compressed — give up, safely
+      files.push({ name, data: u8.slice(dataStart, dataStart + compSize) });
+      i = dataStart + compSize;
+    }
+    return files.length ? files : null;
+  }
+
+  global.SimpleZip.readZip = readZip;
+
 })(typeof window !== 'undefined' ? window : this);

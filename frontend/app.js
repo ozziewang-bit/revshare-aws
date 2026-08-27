@@ -1192,8 +1192,52 @@ function gridTemplateColumns(contracts) {
   ].map((c, i) => ({ ...c, i }));
 }
 
+// A merchant whose name is prefixed "(Closed)" has shut. Singapore's list carries 207 of them
+// out of 554, and they are not archived in the app — the prefix is how that list records it.
+// They are excluded from the download so the sheet is the merchants you still deal with; they
+// stay in the app, and an upload without them changes nothing, since an import never deletes.
+const CLOSED_NAME = /^\s*\(?\s*closed\s*\)/i;
+
+// Excel data validation — a real dropdown on the Mode column. SheetJS's community build cannot
+// write <dataValidations>, so the workbook is re-opened after it is written and the element is
+// spliced into the worksheet XML. Everything here degrades to null on anything unexpected, and
+// the caller then ships the untouched file: a sheet without a dropdown is a small loss, a
+// corrupt workbook is not.
+function withModeDropdown(bytes, sheetName, modeCol, lastRow) {
+  try {
+    if (!modeCol || !window.SimpleZip?.readZip) return null;
+    const files = SimpleZip.readZip(bytes);
+    if (!files) return null;
+    const dec = new TextDecoder(), enc = new TextEncoder();
+    const get = n => files.find(f => f.name === n);
+
+    // sheet name -> r:id -> the worksheet part it points at
+    const wbXml = dec.decode(get('xl/workbook.xml')?.data || new Uint8Array());
+    const rid = wbXml.match(new RegExp(`<sheet[^>]*name="${sheetName}"[^>]*r:id="([^"]+)"`))?.[1];
+    if (!rid) return null;
+    const relsXml = dec.decode(get('xl/_rels/workbook.xml.rels')?.data || new Uint8Array());
+    const target = relsXml.match(new RegExp(`<Relationship[^>]*Id="${rid}"[^>]*Target="([^"]+)"`))?.[1];
+    if (!target) return null;
+    const part = get('xl/' + target.replace(/^\/?xl\//, ''));
+    if (!part) return null;
+
+    const colRef = colLetter(modeCol.i);
+    const dv = `<dataValidations count="1"><dataValidation type="list" allowBlank="1" showInputMessage="1" showErrorMessage="1"`
+      + ` errorTitle="Pick a mode" error="Choose one of the four modes, or leave the cell blank."`
+      + ` sqref="${colRef}3:${colRef}${Math.max(lastRow, 200)}"><formula1>"${PAYOUT_METHOD_META.map(m => m.title).join(',')}"</formula1></dataValidation></dataValidations>`;
+
+    let xml = dec.decode(part.data);
+    if (xml.includes('<dataValidations')) return null;
+    // Schema order matters: dataValidations sits after sheetData and before pageMargins.
+    xml = xml.includes('<pageMargins') ? xml.replace('<pageMargins', dv + '<pageMargins')
+                                       : xml.replace('</worksheet>', dv + '</worksheet>');
+    part.data = enc.encode(xml);
+    return SimpleZip.makeZip(files);
+  } catch { return null; }
+}
+
 function downloadMerchantTemplate() {
-  const rows = CONTRACTS.filter(c => !c.archived)
+  const rows = CONTRACTS.filter(c => !c.archived && !CLOSED_NAME.test(c.merchantName || ''))
     .slice()
     .sort((a, b) => (a.merchantName || '').localeCompare(b.merchantName || ''));
   const COLS = gridTemplateColumns(rows);
@@ -1274,7 +1318,9 @@ function downloadMerchantTemplate() {
   XLSX.utils.book_append_sheet(wb, termGuide, 'Rev share guide');
   XLSX.utils.book_append_sheet(wb, guide, 'Field guide');
   XLSX.utils.book_append_sheet(wb, ws, 'All_Merchant');
-  const out = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+  const written = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+  const modeCol = COLS.find(c => c.head2 === 'Mode');
+  const out = withModeDropdown(written, 'All_Merchant', modeCol, rows.length + 3) || written;
   const url = URL.createObjectURL(new Blob([out], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
   const a = document.createElement('a');
   a.href = url;
