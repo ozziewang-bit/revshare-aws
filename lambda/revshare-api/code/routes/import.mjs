@@ -12,48 +12,9 @@ export function parseDeviceType(deviceType) {
   return m[1].toUpperCase();
 }
 
-// Rule shape: comparable terms (GP / Placement / Others) + optional per-device-type MG
-// floor, combined per `method`. Electricity is a cost reimbursement — it never competes
-// in a max(), it is added to whatever the comparison settles on.
-// Leaves tagged (_t/_m) and the root tagged (_method) so the editor can decompile exactly.
-// Keep in lockstep with compileRule in frontend/app.js.
-export function compileRule({ gpPercent, electricity, placementRows, mgRows, others, method }) {
-  const gpLeaf = Number(gpPercent) > 0
-    ? { type: 'percent', _t: 'gp', _m: 'add', rows: [{ model: 'ALL', percent: Number(gpPercent) }] } : null;
-  const elecLeaf = Number(electricity) > 0
-    ? { type: 'flat_per_partner_total', _t: 'elec', _m: 'add', amount: Number(electricity) } : null;
-  const vp = (placementRows || []).filter(r => r.model && Number(r.amount) > 0);
-  const placementLeaf = vp.length
-    ? { type: 'flat_per_machine', _t: 'placement', _m: 'add', rows: vp.map(r => ({ model: r.model, amount: Number(r.amount) })) } : null;
-  const othersLeaf = Number(others) > 0
-    ? { type: 'flat_per_partner_total', _t: 'others', _m: 'add', amount: Number(others) } : null;
-  const vmg = (mgRows || []).filter(r => r.model && Number(r.amount) > 0);
-  const mgLeaf = vmg.length
-    ? { type: 'flat_per_machine', _t: 'mg', rows: vmg.map(r => ({ model: r.model, amount: Number(r.amount) })) } : null;
-
-  const cmpTerms = [gpLeaf, placementLeaf, othersLeaf].filter(Boolean);   // electricity excluded
-  const allTerms = [gpLeaf, elecLeaf, placementLeaf, othersLeaf].filter(Boolean);
-
-  // No explicit method (the /import/rev-share caller) → infer as before.
-  const m = ['default', 'hybrid', 'higher', 'hybrid-higher'].includes(method)
-    ? method
-    : (mgLeaf ? 'hybrid-higher' : (allTerms.length <= 1 ? 'default' : 'hybrid'));
-
-  const zero = () => ({ type: 'percent', _t: 'gp', rows: [{ model: 'ALL', percent: 0 }] });
-  const nest = (type, list) => list.length === 0 ? null : (list.length === 1 ? list[0] : { type, children: list });
-  const addElec = core => elecLeaf ? (core ? { type: 'sum', children: [core, elecLeaf] } : elecLeaf) : (core || zero());
-
-  let rule;
-  if (m === 'higher') {
-    rule = addElec(nest('max', mgLeaf ? [...cmpTerms, mgLeaf] : cmpTerms));
-  } else if (m === 'hybrid-higher') {
-    const s = nest('sum', cmpTerms);
-    rule = addElec(mgLeaf ? (s ? { type: 'max', children: [s, mgLeaf] } : mgLeaf) : s);
-  } else {
-    rule = nest('sum', allTerms) || zero();   // default | hybrid — MG not used
-  }
-  return { ...rule, _method: m };
-}
+// compileRule moved to ../rules.mjs (2026-08-27) so the pure contracts.mjs can build a rule
+// from sheet columns without pulling this module's AWS imports in. Re-exported for callers.
+export { compileRule } from '../rules.mjs';
 
 export async function importRevShareRoute(event) {
   const body = JSON.parse(event.body || '{}');

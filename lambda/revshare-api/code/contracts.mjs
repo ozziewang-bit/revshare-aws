@@ -1,3 +1,4 @@
+import { compileRule } from './rules.mjs';
 // Pure contract-sheet normalizer + partner matcher. No AWS imports — unit-tested.
 // Source: the `All_Merchant` sheet of the merchant workbook. Two header rows; data
 // starts at row 3. The browser sends raw positional cell arrays; every coercion is here.
@@ -57,7 +58,104 @@ function toDate(v) {
 // junk merchant in production. Keep in step with EXAMPLE_ROW in frontend/app.js.
 const EXAMPLE_ROW_NAME = /^example row\b/i;
 
-export function normalizeContractRow(cells) {
+// Columns 23+ are addressed by HEADER NAME, not position (2026-08-27). Positions 0-22 stay
+// index-addressed so every existing workbook keeps importing unchanged, but the appended block
+// carries per-model Placement/MG/Units columns whose NUMBER varies by region — Thailand has no
+// S10-A, Singapore has no T35 — and a per-region column count cannot live at a fixed index.
+// `header` is header row 2. Omit it and the function behaves exactly as it did before.
+const hkey = s => String(s ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
+function headerReader(cells, header) {
+  const idx = new Map();
+  (header || []).forEach((h, i) => { const k = hkey(h); if (k && i >= 23 && !idx.has(k)) idx.set(k, i); });
+  const get = name => { const i = idx.get(hkey(name)); return i == null ? undefined : (Array.isArray(cells) ? cells[i] : undefined); };
+  // Every appended column whose header starts with `prefix ` — e.g. "Placement S8" -> S8.
+  const byPrefix = prefix => {
+    const out = [];
+    const want = hkey(prefix) + ' ';        // idx keys are normalised, so the prefix must be too
+    for (const [k, i] of idx) {
+      if (!k.startsWith(want)) continue;
+      const model = String(header[i]).trim().slice(prefix.length).trim();
+      const amount = num(cells?.[i]);
+      if (model && amount != null) out.push({ model, amount });
+    }
+    return out;
+  };
+  return { get, byPrefix, present: idx.size > 0 };
+}
+
+// Grid-shaped sheets (2026-08-27) mirror the Merchant view: same column order, row 1 carrying
+// the grid's category names, and every column addressed BY NAME. Machine columns are blank
+// slots under the "Machines" category — whatever model code the user types in row 2 is the
+// model, which is what lets one sheet serve both regions without the app dictating the list.
+//
+// The old 23-column layout is positional, so it is kept as a fallback: files already in
+// circulation must keep importing. `Link Contract` in column 22 is what tells them apart.
+const GRID_FIELDS = {
+  'merchant': 'merchantName', 'type': 'merchantType', 'merchant type': 'merchantType',
+  'counter party': 'counterParty', 'contact': 'contactName', 'phone': 'contactPhone',
+  'email': 'contactEmail', 'units': 'installedUnits', 'start': 'startDate', 'end': 'endDate',
+  'notice': 'terminationNoticeDays', 'auto-renewal': 'autoRenewal', 'contract': 'contractLink',
+};
+const isLegacySheet = header => /link/i.test(String((header || [])[22] ?? ''));
+
+function normalizeGridRow(cells, header, groups) {
+  const at = i => (Array.isArray(cells) ? cells[i] : undefined);
+  const g = i => hkey((groups || [])[i]);
+  const out = { units: {} };
+  let mode = null, noPayout = null;
+  const termCells = { gp: null, electricity: null, others: null, placementRows: [], mgRows: [] };
+
+  for (let i = 0; i < header.length; i++) {
+    const name = hkey(header[i]);
+    if (!name) continue;
+    // A machine column is identified by its CATEGORY, not its header — the header is the model
+    // code the user chose. Without this, "Units" (the total) would become units.Units.
+    if (g(i) === 'machines' && name !== 'units') {
+      const n = num(at(i));
+      if (n != null) out.units[String(header[i]).trim().toUpperCase()] = n;
+      continue;
+    }
+    if (name === 'mode') { mode = at(i); continue; }
+    if (name === 'no payout') { noPayout = at(i); continue; }
+    // Share terms are structured columns, one per term and per machine model — a single text
+    // column proved too coarse to edit. Placement/MG name their model in the header.
+    if (name === 'gp %' || name === 'gp%') { termCells.gp = num(at(i)); continue; }
+    if (name === 'electricity') { termCells.electricity = num(at(i)); continue; }
+    if (name === 'others' || name === 'other') { termCells.others = num(at(i)); continue; }
+    if (name.startsWith('placement ')) {
+      const amt = num(at(i));
+      if (amt != null) termCells.placementRows.push({ model: String(header[i]).trim().slice('Placement'.length).trim().toUpperCase(), amount: amt });
+      continue;
+    }
+    if (name.startsWith('mg ')) {
+      const amt = num(at(i));
+      if (amt != null) termCells.mgRows.push({ model: String(header[i]).trim().slice('MG'.length).trim().toUpperCase(), amount: amt });
+      continue;
+    }
+    const field = GRID_FIELDS[name];
+    if (!field) continue;
+    const v = field === 'installedUnits' || field === 'terminationNoticeDays' ? num(at(i))
+            : field === 'startDate' || field === 'endDate' ? toDate(at(i))
+            : field === 'autoRenewal' ? autoRenewal(at(i))
+            : str(at(i));
+    if (v != null) out[field] = v;
+  }
+
+  if (!out.merchantName) return null;
+  if (EXAMPLE_ROW_NAME.test(out.merchantName)) return null;
+  Object.assign(out, termsFields(mode, noPayout, termCells));
+  return out;
+}
+
+export function normalizeContractRow(cells, header, groups) {
+  if (Array.isArray(header) && !isLegacySheet(header)) return normalizeGridRow(cells, header, groups);
+  return normalizeLegacyRow(cells);
+}
+
+// The pre-2026-08-27 sheet: 23 columns read by POSITION, with revenue-share terms present but
+// never imported. Files in circulation still use it, so it keeps working exactly as it did —
+// including not touching terms. Nothing here reads a header; the grid shape is where names are.
+function normalizeLegacyRow(cells) {
   const at = i => (Array.isArray(cells) ? cells[i] : undefined);
   const merchantName = str(at(1));
   if (!merchantName) return null;   // blank name => not a merchant row
@@ -68,6 +166,8 @@ export function normalizeContractRow(cells) {
     const n = num(at(i));
     if (n != null) units[model] = n;
   }
+  // Models with no fixed column arrive through the header-named "Units <model>" block.
+
 
   return {
     merchantName,
@@ -81,6 +181,8 @@ export function normalizeContractRow(cells) {
     autoRenewal: autoRenewal(at(14)),
     contractLink: str(at(22)),
     // Preview only. Never written to a partner rule — see the plan's Global Constraints.
+    // These are the ORIGINAL columns 16-20, which the importer has always ignored; the
+    // importable terms are the appended, header-named ones below.
     sheetTerms: {
       shareMode: str(at(16)),
       revSharePct: num(at(17)),
@@ -90,6 +192,36 @@ export function normalizeContractRow(cells) {
     },
   };
 }
+
+const AGG_MODES = new Set(['whole', 'per_store']);
+const METHODS = new Set(['default', 'hybrid', 'higher', 'hybrid-higher']);
+const METHOD_CODES = { d: 'default', h: 'hybrid', wh: 'higher', hh: 'hybrid-higher' };
+// The Mode column is written with the same human label the grid shows, so the sheet must read
+// those back. Keep in step with PAYOUT_METHOD_META in frontend/app.js.
+const METHOD_NAMES = { 'default': 'default', 'hybrid': 'hybrid', 'whichever is higher': 'higher', 'hybrid-higher': 'hybrid-higher' };
+
+// The Share terms block -> rule / noPayout.
+function termsFields(modeCell, noPayoutCell, t) {
+  const out = {};
+  const rawMethod = String(str(modeCell) ?? '').toLowerCase();
+  const method = METHODS.has(rawMethod) ? rawMethod : METHOD_CODES[rawMethod] || METHOD_NAMES[rawMethod];
+
+  const noPay = String(str(noPayoutCell) ?? '').toLowerCase();
+  if (['y', 'yes', 'true', '1'].includes(noPay)) { out.noPayout = true; return out; }
+  if (noPay) out.noPayout = false;
+
+  // A rule is built ONLY when the sheet actually states a term. Every term cell blank leaves
+  // `rule` absent, so an upload can never clear terms by omission — the single most dangerous
+  // thing an importer that can write rules could do.
+  const said = [t.gp, t.electricity, t.others].some(v => v != null) || t.placementRows.length || t.mgRows.length;
+  if (said) {
+    out.rule = compileRule({ gpPercent: t.gp, electricity: t.electricity, others: t.others,
+                             placementRows: t.placementRows, mgRows: t.mgRows, method });
+    out.noPayout = false;
+  }
+  return out;
+}
+
 
 const key = s => String(s || '').toLowerCase().trim();
 

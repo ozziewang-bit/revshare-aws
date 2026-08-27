@@ -163,6 +163,7 @@ function payoutFormula(form) {
   return labels.join(' + ') || '0';   // default | hybrid
 }
 
+
 function readExcel(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -1083,81 +1084,9 @@ const SHEET_TERMS_GROUP = 'Share terms — NOT imported, set these with "Edit te
 // Spreadsheet column letter for a 0-based index. The sheet is 23 wide, so single letters
 // suffice, but the AA+ case is handled anyway rather than left as a trap for column 26.
 const colLetter = i => (i < 26 ? '' : String.fromCharCode(64 + Math.floor(i / 26))) + String.fromCharCode(65 + (i % 26));
-const TEMPLATE_COLUMNS = [
-  { i: 0,  group: '',              head2: 'No',              from: (c, n) => n, imp: 'no',
-    desc: 'Row number. Ignored on upload — renumber freely, or leave blank.' },
-  { i: 1,  group: 'Merchant',      head2: 'Merchant',        from: c => c.merchantName ?? null,
-    desc: 'REQUIRED — the brand name, and the key an upload matches on. An existing name '
-        + 'updates that merchant; a name not already in the app creates a new one. Editing a '
-        + 'name here therefore ADDS a merchant rather than renaming one, and leaves the old '
-        + 'row behind. It should also match the "Merchant label" in the ChargeSpot roster, or '
-        + 'the brand\u2019s machines will not be found when a run is prepared. '
-        + 'A row with this cell empty is skipped entirely.' },
-  { i: 2,  group: 'Merchant',      head2: 'Merchant Type',   from: c => c.merchantType ?? null,
-    desc: 'Category. One of: ' + MERCHANT_TYPES.join(', ') + '.' },
-  { i: 3,  group: 'Merchant',      head2: 'name',            from: c => c.counterParty ?? null,
-    desc: 'Counter party — the legal entity named on the contract. Free text; may differ from '
-        + 'the brand name.' },
-  // The stored value when there is one — including a real 0, which `unitsTotal(c) || null`
-  // would have turned into a blank and written back as null on the next upload. Falls back to
-  // the model-count sum only when nothing is recorded.
-  { i: 4,  group: 'Machines',      head2: 'Installed\nunits',
-    from: c => (c.installedUnits ?? (unitsTotal(c) || null)),
-    desc: 'Total machines installed. Should equal S5 + S8 + M10 + LL20 + LL40. Stored as '
-        + 'typed — the app displays the sum of the model counts, so a mismatch here shows up '
-        + 'as a disagreement between this column and those five.' },
-  { i: 5,  group: 'Machines',      head2: 'S5',              from: c => (c.units || {}).S5 ?? null,
-    desc: 'Number of S5 machines. Whole number, or blank for none.' },
-  { i: 6,  group: 'Machines',      head2: 'S8',              from: c => (c.units || {}).S8 ?? null,
-    desc: 'Number of S8 machines. Whole number, or blank for none.' },
-  { i: 7,  group: 'Machines',      head2: 'M10',             from: c => (c.units || {}).M10 ?? null,
-    desc: 'Number of M10 machines. Whole number, or blank for none.' },
-  // The sheet spells the two large models LL20/LL40; normalizeContractRow maps them back.
-  { i: 8,  group: 'Machines',      head2: 'LL20',            from: c => (c.units || {}).L20 ?? null,
-    desc: 'Number of L20 machines. The sheet spells it LL20; the app stores it as L20.' },
-  { i: 9,  group: 'Machines',      head2: 'LL40',            from: c => (c.units || {}).L40 ?? null,
-    desc: 'Number of L40 machines. The sheet spells it LL40; the app stores it as L40.' },
-  { i: 10, group: 'Contract',      head2: 'Start',           from: c => c.startDate ?? null,
-    desc: 'Contract start date. Write YYYY-MM-DD, or use a real Excel date cell — both are '
-        + 'read correctly. Text in any other format is likely to be misread.' },
-  { i: 11, group: 'Contract',      head2: 'End',             from: c => c.endDate ?? null,
-    desc: 'Contract end date, same format as Start. Drives the "Contract due or overdue" '
-        + 'filter in the app, together with Notice period and Auto-renewal.' },
-  { i: 12, group: 'Contract',      head2: 'period',          from: c => c.terminationNoticeDays ?? null,
-    desc: 'Termination notice period, in DAYS (a number, not a date). With Auto-renewal = No, '
-        + 'the app flags the merchant once the end date is this many days away. Leave blank if '
-        + 'no notice period is agreed — the merchant is then only flagged once already overdue.' },
-  // Dead as of 2026-08-13. The column keeps its slot because the importer reads by INDEX —
-  // removing the entry would shift every field after it — but nothing reads or writes it.
-  { i: 13, group: '',              head2: 'the contract',    from: () => null, imp: 'no — unused',
-    desc: 'NOT USED. Kept only so the columns after it stay in position. Anything typed here '
-        + 'is ignored.' },
-  { i: 14, group: 'Contract',      head2: 'Status',          from: c => c.autoRenewal ?? null,
-    desc: 'Auto-renewal. Yes or No ("No (Need to contact)" is also accepted and stored as No). '
-        + 'Only a No contract is ever flagged as due or overdue — one that renews by itself '
-        + 'needs no action.' },
-  { i: 15, group: '',              head2: 'Included',        from: () => null, imp: 'no — unused',
-    desc: 'NOT USED. Kept only so the columns after it stay in position.' },
-  // Columns 16-20 are read into `sheetTerms`, which buildImportPlan strips before writing —
-  // revenue-share terms live on the row and are edited with "Edit terms". Left blank and
-  // labelled, so nobody fills them in expecting an import to apply them.
-  { i: 16, group: SHEET_TERMS_GROUP, head2: 'Mode',          from: () => null, imp: 'no',
-    desc: 'NOT IMPORTED. Revenue-share terms are set in the app with "Edit terms" on the '
-        + 'merchant row — they are a rule, not a number, and an upload never changes them.' },
-  { i: 17, group: SHEET_TERMS_GROUP, head2: 'Before VAT',    from: () => null, imp: 'no',
-    desc: 'NOT IMPORTED. See Mode.' },
-  { i: 18, group: SHEET_TERMS_GROUP, head2: '(THB/month)',   from: () => null, imp: 'no',
-    desc: 'NOT IMPORTED. See Mode.' },
-  { i: 19, group: SHEET_TERMS_GROUP, head2: 'Electricity',   from: () => null, imp: 'no',
-    desc: 'NOT IMPORTED. See Mode.' },
-  { i: 20, group: SHEET_TERMS_GROUP, head2: 'Garantee',      from: () => null, imp: 'no',
-    desc: 'NOT IMPORTED. See Mode.' },
-  { i: 21, group: '',              head2: null,              from: () => null, imp: 'no — unused',
-    desc: 'NOT USED. Kept only so the column after it stays in position.' },
-  { i: 22, group: 'Contract',      head2: 'Link Contract',   from: c => c.contractLink ?? null,
-    desc: 'Link to the signed contract file. Must start with http:// or https:// — the app '
-        + 'shows anything else as plain text rather than a clickable link.' },
-];
+// The old positional TEMPLATE_COLUMNS was removed on 2026-08-27: the sheet is now written
+// grid-shaped and read by header name, so the eight dead columns it had to carry (kept only
+// because a positional layout cannot drop one without shifting every field) are gone.
 
 // Downloads the current merchant list in the exact shape `Upload sheet` expects, so the file
 // round-trips: download, edit in Excel, upload. Archived merchants are left out — they are
@@ -1178,23 +1107,107 @@ const EXAMPLE_ROW = {
   terminationNoticeDays: 30,
   autoRenewal: 'Yes',
   contractLink: 'https://drive.google.com/file/d/EXAMPLE/view',
+  contactName: 'Somchai P.',
+  contactPhone: '+66 2 123 4567',
+  contactEmail: 'finance@example.com',
+  // Shown so the sample demonstrates the Rev terms format, which is the one column people
+  // most need an example of.
+  rule: { type: 'sum', _method: 'hybrid', children: [
+    { type: 'percent', _t: 'gp', rows: [{ model: 'ALL', percent: 20 }] },
+    { type: 'flat_per_machine', _t: 'placement', rows: [{ model: 'S5', amount: 500 }] } ] },
 };
+
+// Columns appended AFTER the fixed 22. They are addressed by header NAME on import (see
+// normalizeContractRow), which is what allows their number to differ by region: the per-model
+// Placement / MG / Units columns come from this region's Device Types. Never insert one of
+// these before column 22 — everything up to there is read by position.
+// The merchant sheet is the Merchant view grid, in the same column ORDER, with row 1 carrying
+// the grid's own category names. Every column is addressed by header NAME on import, which is
+// what let the old layout's dead columns go — it had eight of them, kept only because that
+// sheet was read by position and dropping one would have shifted every field after it.
+//
+// Machine columns are EIGHT slots under "Machines". Models that actually have units are
+// written in; the rest are left blank for you to label. Neither region's model list is baked
+// into the sheet, so one shape serves both.
+const MACHINE_SLOTS = 8;
+
+function gridTemplateColumns(contracts) {
+  const used = [];
+  for (const c of contracts || []) for (const [m, n] of Object.entries(c.units || {})) {
+    if (Number(n) > 0 && !used.includes(m)) used.push(m);
+  }
+  const slots = used.slice(0, MACHINE_SLOTS);
+  while (slots.length < MACHINE_SLOTS) slots.push(null);       // blank, ready to be labelled
+
+  const terms = c => decompileRule(c && c.rule);
+  const amountFor = (c, rowsKey, model) => {
+    if (!c || c.noPayout || !c.rule || !isRepresentable(c.rule)) return null;
+    const hit = terms(c)[rowsKey].find(r => r.model === model || r.model === 'ALL');
+    return hit && hit.amount ? hit.amount : null;
+  };
+  const col = (group, head2, from, desc) => ({ group, head2, from, desc });
+  return [
+    col('Merchant', 'Merchant', c => c.merchantName ?? null,
+      'REQUIRED — the brand name, and the key an upload matches on. An existing name updates that merchant; a new one creates it. '
+      + 'Editing a name here therefore ADDS a merchant rather than renaming one. It should also match the "Merchant label" in the '
+      + 'ChargeSpot roster, or the brand\u2019s machines will not be found when a run is prepared. A row with this cell empty is skipped.'),
+    col('Merchant', 'Type', c => c.merchantType ?? null, 'Category. One of: ' + MERCHANT_TYPES.join(', ') + '.'),
+    col('Merchant', 'Counter party', c => c.counterParty ?? null,
+      'The legal entity named on the contract. Free text; may differ from the brand name.'),
+    col('Contact', 'Contact', c => c.contactName ?? null, 'Contact name at the merchant.'),
+    col('Contact', 'Phone', c => c.contactPhone ?? null, 'Contact phone. Kept exactly as typed.'),
+    col('Contact', 'Email', c => c.contactEmail ?? null, 'Contact email.'),
+    col('Machines', 'Units', c => (c.installedUnits ?? (unitsTotal(c) || null)),
+      'Total machines installed. Should equal the eight model columns to its right; the app shows the sum of those, so a mismatch is visible.'),
+    ...slots.map(model => col('Machines', model,
+      c => model ? ((c.units || {})[model] ?? null) : null,
+      'A machine model. Put the model code in this header row (S5, S8, LL20, S10-A \u2026) and the count below it. '
+      + 'Eight slots are provided; blank ones are ignored, so a column with no model code in its header imports nothing.')),
+    col('Contract', 'Start', c => c.startDate ?? null, 'Contract start date. YYYY-MM-DD.'),
+    col('Contract', 'End', c => c.endDate ?? null, 'Contract end date. YYYY-MM-DD. The app flags rows due or overdue.'),
+    col('Contract', 'Notice', c => c.terminationNoticeDays ?? null, 'Termination notice period, in days. A plain number.'),
+    col('Contract', 'Auto-renewal', c => c.autoRenewal ?? null, 'Whether the contract renews automatically.'),
+    col('Contract', 'Contract', c => c.contractLink ?? null, 'Link to the signed contract. A full https:// URL.'),
+    col('Share terms', 'Mode', c => (!c.noPayout && c.rule && isRepresentable(c.rule)) ? methodToName(terms(c).method) : null,
+      'How the terms below combine. Default = a single term, just pay it. Hybrid = add every term together. '
+      + 'Whichever is higher = pay the best of each comparable term against the MG. Hybrid-higher = pay the best of the '
+      + 'SUMMED terms against the MG. Electricity is always added on top and never competes. See the "Rev share guide" sheet.'),
+    col('Share terms', 'No payout', c => c.noPayout ? 'Y' : null,
+      'Y = this merchant is deliberately not paid, and every term below is ignored. Blank = paid normally.'),
+    col('Share terms', 'GP %', c => (!c.noPayout && c.rule && terms(c).gpPercent) || null,
+      'Revenue share as a percentage of the merchant\u2019s net revenue. Enter 25 for 25%.'),
+    ...slots.filter(Boolean).map(model => col('Share terms', `Placement ${model}`,
+      c => amountFor(c, 'placementRows', model),
+      `Placement fee for each ${model} machine, per period. Charged PER MACHINE — three machines at 500 pay 1,500.`)),
+    ...slots.filter(Boolean).map(model => col('Share terms', `MG ${model}`,
+      c => amountFor(c, 'mgRows', model),
+      `Minimum guarantee for each ${model} machine, per period. A floor, not an addition: only the "Whichever is higher" `
+      + `and "Hybrid-higher" modes use it, and it is compared against the other terms rather than added to them.`)),
+    col('Share terms', 'Electricity', c => (!c.noPayout && c.rule && terms(c).electricity) || null,
+      'Electricity reimbursement, one lump sum per merchant per period. Never competes in a comparison \u2014 it is added '
+      + 'to whatever the mode settles on.'),
+    col('Share terms', 'Others', c => (!c.noPayout && c.rule && terms(c).others) || null,
+      'Any other lump sum per merchant per period. Unlike Electricity this DOES compete inside a "Whichever is higher" '
+      + 'or "Hybrid-higher" comparison.'),
+  ].map((c, i) => ({ ...c, i }));
+}
 
 function downloadMerchantTemplate() {
   const rows = CONTRACTS.filter(c => !c.archived)
     .slice()
     .sort((a, b) => (a.merchantName || '').localeCompare(b.merchantName || ''));
+  const COLS = gridTemplateColumns(rows);
   const aoa = [
-    TEMPLATE_COLUMNS.map(c => c.group || null),
-    TEMPLATE_COLUMNS.map(c => c.head2),
-    TEMPLATE_COLUMNS.map(col => col.from(EXAMPLE_ROW, null)),
-    ...rows.map((c, n) => TEMPLATE_COLUMNS.map(col => col.from(c, n + 1))),
+    COLS.map(c => c.group || null),
+    COLS.map(c => c.head2),
+    COLS.map(col => col.from(EXAMPLE_ROW, null)),
+    ...rows.map((c, n) => COLS.map(col => col.from(c, n + 1))),
   ];
   const ws = XLSX.utils.aoa_to_sheet(aoa);
-  ws['!cols'] = TEMPLATE_COLUMNS.map(c => ({ wch: c.i === 1 ? 44 : c.i === 3 ? 34 : c.i === 22 ? 40 : 12 }));
+  ws['!cols'] = COLS.map(c => ({ wch: c.i === 1 ? 44 : c.i === 3 ? 34 : c.i === 22 ? 40 : 12 }));
   // The same description twice, in the two places people actually look: hovering the header
   // cell, and a sheet they can read end to end. Both come from `desc`, so they cannot disagree.
-  for (const col of TEMPLATE_COLUMNS) {
+  for (const col of COLS) {
     if (!col.desc) continue;
     const ref = XLSX.utils.encode_cell({ r: 1, c: col.i });      // row 2 = the header row
     const cell = ws[ref] || (ws[ref] = { t: 's', v: '' });
@@ -1211,11 +1224,12 @@ function downloadMerchantTemplate() {
     ['Upload this file with "Upload sheet" on the Merchant view.'],
     ['Only the All_Merchant sheet is read. This sheet, and anything else you add, is ignored.'],
     ['Merchants in the app but missing from this file are LEFT ALONE — an upload never deletes.'],
-    ['Revenue-share terms are never imported. Set them per merchant with "Edit terms".'],
+    ['Revenue-share terms ARE imported now — see the "Rev share guide" sheet for what each term means.'],
+    ['Leave every share-terms cell blank to change nothing: an upload never clears terms already set.'],
     ['Row 3 is a worked example. It is skipped on upload, so it is safe to leave in place.'],
     [],
     ['Column', 'Header', 'Imported?', 'What it is'],
-    ...TEMPLATE_COLUMNS.map(c => [
+    ...COLS.map(c => [
       colLetter(c.i),
       c.head2 ? String(c.head2).replace(/\n/g, ' ') : '(unlabelled)',
       c.imp || 'yes',
@@ -1223,6 +1237,41 @@ function downloadMerchantTemplate() {
     ]),
   ]);
   guide['!cols'] = [{ wch: 8 }, { wch: 18 }, { wch: 12 }, { wch: 110 }];
+  // A guide to the terms themselves, separate from the per-column field guide: what each term
+  // means and what it pays, with a worked number. The share-terms columns are the ones people
+  // get wrong, because "MG 200" being a floor rather than a bonus is not guessable.
+  const money = n => n.toLocaleString('en-US');
+  const termGuide = XLSX.utils.aoa_to_sheet([
+    ['Revenue-share terms — what each one means'],
+    [],
+    ['Fill these in on the All_Merchant sheet, in the "Share terms" columns.'],
+    ['Leave a term blank when it does not apply. Leaving EVERY term blank changes nothing —'],
+    ['an upload never clears terms a merchant already has.'],
+    [],
+    ['Term', 'What it means', 'Charged', 'Example', 'That example pays'],
+    ['GP %', 'A share of the revenue the machines take at that merchant.', 'Per merchant',
+      '20 with 10,000 revenue', money(2000)],
+    ['Placement <model>', 'A fixed rental fee for putting a machine in the location. Entered per machine model, so a site with two models can pay two rates.',
+      'PER MACHINE', '500 under "Placement S5", merchant has 3 S5 machines', money(1500)],
+    ['MG <model>', 'Minimum guarantee: a FLOOR, not a bonus. The merchant is paid the better of the other terms or this — never both. Only the "Whichever is higher" and "Hybrid-higher" modes use it.',
+      'PER MACHINE', 'MG S8 200 vs GP% earning 150, one machine', money(200) + ' (the MG, because it is higher)'],
+    ['Electricity', 'Reimbursement of the power the machines use. Never competes with anything — it is always added on top of whatever the mode settles on.',
+      'Per merchant', '300, on top of a GP% of 2,000', money(2300)],
+    ['Others', 'Any other lump sum. Unlike Electricity this DOES compete inside a comparison.',
+      'Per merchant', '100 as a single term', money(100)],
+    [],
+    ['Mode', 'How the terms above combine', '', 'Example', 'That example pays'],
+    ['Default', 'One term only — just pay it.', '', 'GP 20% on 10,000 revenue', money(2000)],
+    ['Hybrid', 'Add every term together.', '', 'GP 20% (2,000) + Placement 500 x 1 machine', money(2500)],
+    ['Whichever is higher', 'Pay the best single comparable term, or the MG, whichever wins. Electricity is added afterwards.',
+      '', 'GP 20% (2,000) vs MG 2,500, plus Electricity 300', money(2800) + ' (2,500 MG + 300)'],
+    ['Hybrid-higher', 'Add the comparable terms up first, THEN take the better of that total and the MG. Electricity is added afterwards.',
+      '', 'GP 2,000 + Placement 500 = 2,500 vs MG 2,200', money(2500) + ' (the summed terms won)'],
+    [],
+    ['No payout', 'Y means this merchant is deliberately not paid at all. Every term above is ignored.', '', 'Y', money(0)],
+  ]);
+  termGuide['!cols'] = [{ wch: 20 }, { wch: 74 }, { wch: 14 }, { wch: 44 }, { wch: 32 }];
+  XLSX.utils.book_append_sheet(wb, termGuide, 'Rev share guide');
   XLSX.utils.book_append_sheet(wb, guide, 'Field guide');
   XLSX.utils.book_append_sheet(wb, ws, 'All_Merchant');
   const out = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
@@ -1245,15 +1294,26 @@ async function parseAllMerchantSheet(file) {
   // vanish, MG lands in the Electricity slot — with no error and no way to tell from the
   // "N rows read" summary. Check two fixed anchors on header row 2 before trusting any
   // index below: this is a human-maintained spreadsheet, so a column insert is a *when*.
+  const groups1 = aoa[0] || [];
   const header2 = aoa[1] || [];
-  if (!/merchant/i.test(String(header2[1] || '')) || !/link/i.test(String(header2[22] || ''))) {
+  // Two shapes are accepted. The GRID shape (2026-08-27) is addressed by header name, so it
+  // only needs to name its columns. The LEGACY shape is positional, and keeps the two anchor
+  // checks that guard it: in a position-read sheet an inserted column silently shifts every
+  // field, with no error and no way to tell from the "N rows read" summary.
+  const isGrid = /rev terms/i.test(header2.map(h => String(h ?? '')).join('|'));
+  if (!isGrid && (!/merchant/i.test(String(header2[1] || '')) || !/link/i.test(String(header2[22] || '')))) {
     throw new Error('This workbook\'s "All_Merchant" sheet layout has changed — column positions no longer match what the importer expects. Check for inserted/removed/reordered columns before re-uploading.');
   }
   const body = aoa.slice(2);
+  // Columns 0-22 are the fixed layout the anchors above guard. Anything BEYOND 22 is the
+  // appended, header-named block (contacts, per-region unit columns, payout terms), so the
+  // rows are no longer truncated at 23 and header row 2 travels with them — the importer
+  // addresses that block by name, which is what lets its column count differ per region.
+  const width = Math.max(23, header2.length, ...body.map(r => r.length));
   const rows = body
-    .map(r => { const c = new Array(23).fill(null); for (let i = 0; i < 23; i++) c[i] = r[i] ?? null; return c; })
+    .map(r => { const c = new Array(width).fill(null); for (let i = 0; i < width; i++) c[i] = r[i] ?? null; return c; })
     .filter(c => String(c[1] || '').trim());
-  return { rows, skipped: body.length - rows.length };
+  return { rows, header: header2, groups: groups1, skipped: body.length - rows.length };
 }
 
 async function renderContractsScreen() {
@@ -1318,8 +1378,8 @@ async function renderContractsScreen() {
     const label = btn ? btn.textContent : '';
     if (btn) { btn.disabled = true; btn.textContent = 'Importing…'; }
     try {
-      const { rows } = await parseAllMerchantSheet(file);
-      const r = await api('/contracts/import', { method: 'POST', body: JSON.stringify({ rows, links: {} }) });
+      const { rows, header, groups } = await parseAllMerchantSheet(file);
+      const r = await api('/contracts/import', { method: 'POST', body: JSON.stringify({ rows, header, groups, links: {} }) });
       await renderContractsScreen();
       alert(`Imported ${rows.length} rows from the sheet.\n\n`
           + `${r.created} added, ${r.updated} updated.\n`

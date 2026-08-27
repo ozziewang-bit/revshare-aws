@@ -69,7 +69,11 @@ export async function importContractsRoute(event) {
   const rawRows = Array.isArray(body.rows) ? body.rows : [];
   if (!rawRows.length) return resp(400, { error: 'no_rows' });
 
-  const normalized = rawRows.map(normalizeContractRow).filter(Boolean);
+  // `header` is header row 2 of the sheet. Columns 0-22 are read by position as always;
+  // anything appended from 23 on is addressed by name from this row (see contracts.mjs).
+  const header = Array.isArray(body.header) ? body.header : null;
+  const groups = Array.isArray(body.groups) ? body.groups : null;   // row 1: the grid's categories
+  const normalized = rawRows.map(r => normalizeContractRow(r, header, groups)).filter(Boolean);
   const [existing, partners] = await Promise.all([listContracts(), listPartners()]);
   const plan = buildImportPlan(normalized, existing, partners, body.links || {});
 
