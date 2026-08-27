@@ -4,14 +4,12 @@ import { compileRule, parseDeviceType } from '../code/routes/import.mjs';
 
 test('parseDeviceType: S5', () => assert.equal(parseDeviceType('Advertising Player-S5'), 'S5'));
 test('parseDeviceType: S8', () => assert.equal(parseDeviceType('ChargeSpot Station-S8'), 'S8'));
-// LL20/LL40 are the PLATFORM's spelling of L20/L40 — Thailand's own roster uses it (152 rows
-// say "Advertising Player-LL40" while every Thai contract keys its terms to L40). Briefly, on
-// 2026-08-26, they were made separate models; that would have made evaluateRun reject those
-// rows as an unknown model and drop AOT, BIG-C, ICON SIAM and 7-Eleven out of the next run.
-// The fold is load-bearing. S10-A is different: it has no Thai equivalent and collides with
-// nothing, so it stays a model of its own.
-test('parseDeviceType: LL20 normalised to L20', () => assert.equal(parseDeviceType('Advertising Player-LL20'), 'L20'));
-test('parseDeviceType: LL40 normalised to L40', () => assert.equal(parseDeviceType('Advertising Player-LL40'), 'L40'));
+// LL20, LL40 and L20 are DISTINCT codes — the Thai roster carries both "Advertising
+// Player-LL40" (152 rows) and "Advertising Player-L20" (5). The old `.replace('LL','L')` fold is
+// why Thai contracts stored L40; the data was wrong, not the code.
+test('parseDeviceType: LL20 stays LL20', () => assert.equal(parseDeviceType('Advertising Player-LL20'), 'LL20'));
+test('parseDeviceType: LL40 stays LL40', () => assert.equal(parseDeviceType('Advertising Player-LL40'), 'LL40'));
+test('parseDeviceType: L20 stays L20', () => assert.equal(parseDeviceType('Advertising Player-L20'), 'L20'));
 test('parseDeviceType: S10-A wins over S10', () => assert.equal(parseDeviceType('Advertising Player-S10-A'), 'S10-A'));
 test('parseDeviceType: null input', () => assert.equal(parseDeviceType(null), null));
 test('parseDeviceType: unrecognised string', () => assert.equal(parseDeviceType('Unknown-X9'), null));

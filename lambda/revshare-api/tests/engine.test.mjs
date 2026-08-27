@@ -3,11 +3,11 @@ import { strict as assert } from 'node:assert';
 import { MACHINE_MODELS, evaluateRun } from '../code/engine.mjs';
 
 test('MACHINE_MODELS enum contains the Thai and Singapore models', () => {
-  // The ten Thai codes plus S10-A, which Singapore deploys and Thailand does not. LL20/LL40
-  // are NOT here: they are the platform's spelling of L20/L40 and are normalised to them —
-  // Thailand's roster uses that spelling for the machines its contracts call L40.
+  // Every distinct device code. LL20/LL40/L20/S10-A are all separate: the Thai roster carries
+  // both "Advertising Player-LL40" and "Advertising Player-L20". L40 is retained for old stored
+  // data even though no roster produces it.
   assert.deepEqual([...MACHINE_MODELS].sort(),
-    ['L20','L40','M10','S10','S10-A','S5','S8','T10','T20','T35','T8']);
+    ['L20','L40','LL20','LL40','M10','S10','S10-A','S5','S8','T10','T20','T35','T8']);
 });
 
 test('evaluateRun respects allowedModels override', () => {

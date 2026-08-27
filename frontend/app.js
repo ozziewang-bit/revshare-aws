@@ -180,10 +180,10 @@ function readExcel(file) {
 
 // ── Merchant-list (Businessmen list) parser ────────────────────────────────
 // Keep in step with engine.mjs MACHINE_MODELS and merchants.mjs VALID_MODELS. parseDeviceModel
-// picks the LONGEST match, so "…-S10-A" resolves to S10-A rather than S10. LL20/LL40 are NOT
-// listed on purpose: "…-LL40" endsWith "L40", which is exactly the fold we want — the platform
-// spells Thailand's L40 machines that way.
-const RS_MODELS = ['S5','S8','S10','T8','T10','T20','T35','L20','L40','M10','S10-A'];
+// picks the LONGEST match, which is what keeps these apart: "…-LL40" also ends with "L40", and
+// "…-S10-A" also contains "S10". LL20, LL40 and L20 are distinct codes — the Thai roster has
+// both LL40 and L20 machines.
+const RS_MODELS = ['S5','S8','S10','T8','T10','T20','T35','L20','L40','M10','LL20','LL40','S10-A'];
 
 function parseDeviceModel(deviceType) {
   const s = String(deviceType || '').toUpperCase();
@@ -502,24 +502,64 @@ async function renderDeviceTypesScreen() {
 
   document.getElementById('add-model-btn')?.addEventListener('click', showAddModelForm);
 
+  // Every per-machine term row in a rule, at any depth.
+  function ruleModels(node, out = []) {
+    if (!node || typeof node !== 'object') return out;
+    if (node.type === 'flat_per_machine') for (const r of node.rows || []) if (r.model) out.push(r.model);
+    (node.children || []).forEach(c => ruleModels(c, out));
+    return out;
+  }
+
+  // What each device type is actually doing in THIS region. Two very different kinds of use:
+  // machines counted against merchants, and per-machine terms that pay by model. A type with
+  // neither is safe to remove; one with either is not.
+  function modelUsage(contracts) {
+    const use = {};
+    const touch = (m) => (use[m] = use[m] || { units: 0, merchants: new Set(), termOf: new Set() });
+    for (const c of contracts || []) {
+      for (const [m, n] of Object.entries(c.units || {})) { touch(m).units += Number(n) || 0; use[m].merchants.add(c.merchantName); }
+      for (const m of ruleModels(c.rule)) { if (m === 'ALL') continue; touch(m).termOf.add(c.merchantName); }
+    }
+    return use;
+  }
+
   async function loadModels() {
     const out = document.getElementById('models-out');
     if (!out) return;
-    const models = await api('/machine-models');
+    // Contracts come along so the list can say what each type is used for. Deleting one is not
+    // cosmetic: createBulkRunRoute builds allowedModels from these rows, so a roster row that
+    // parses to a removed model makes evaluateRun reject it and drops the whole brand into
+    // `skipped`. That has to be visible BEFORE the Delete button, not after.
+    const [models, contracts] = await Promise.all([api('/machine-models'), api('/contracts').catch(() => [])]);
     if (!models.length) { out.innerHTML = '<p class="muted">No device types yet.</p>'; return; }
+    const usage = modelUsage(contracts);
+    window.__MODEL_USAGE = usage;
     out.innerHTML = `
+      <p class="muted" style="font-size:12.5px;margin:0 0 10px;">
+        This list is per country — you are editing <strong>${escape(R().name)}</strong>. It decides which
+        machine columns the Merchant view shows, and which models a run will accept.
+      </p>
       <table class="ts">
-        <thead><tr><th>Display Name</th><th>Code</th><th></th></tr></thead>
+        <thead><tr><th>Display Name</th><th>Code</th><th>In use</th><th></th></tr></thead>
         <tbody>
-          ${models.map(m => `
+          ${models.map(m => {
+            const u = usage[m.code];
+            const inUse = u && (u.units > 0 || u.termOf.size > 0);
+            const bits = [];
+            if (u?.units) bits.push(`${u.units} machine${u.units === 1 ? '' : 's'} at ${u.merchants.size} merchant${u.merchants.size === 1 ? '' : 's'}`);
+            if (u?.termOf.size) bits.push(`paid by ${u.termOf.size} term${u.termOf.size === 1 ? '' : 's'}`);
+            return `
             <tr id="model-row-${escape(m.code)}">
               <td>${escape(m.displayName)}</td>
               <td><span class="badge badge-neutral">${escape(m.code)}</span></td>
+              <td style="font-size:12.5px;">${inUse
+                ? escape(bits.join(' · '))
+                : '<span class="muted">not used — safe to remove</span>'}</td>
               <td>
                 ${can('manageDeviceTypes') ? `<button class="btn-ghost edit-model" data-code="${escape(m.code)}" data-dn="${escape(m.displayName)}">Edit</button>` : ''}
                 ${can('manageDeviceTypes') ? `<button class="btn-ghost del-model" data-code="${escape(m.code)}" style="color:var(--loss)">Delete</button>` : ''}
               </td>
-            </tr>`).join('')}
+            </tr>`; }).join('')}
         </tbody>
       </table>`;
     out.querySelectorAll('.edit-model').forEach(btn => {
@@ -527,8 +567,21 @@ async function renderDeviceTypesScreen() {
     });
     out.querySelectorAll('.del-model').forEach(btn => {
       btn.addEventListener('click', async () => {
-        if (!confirm(`Delete device type "${btn.dataset.code}"? Merchants with this model will keep their existing value.`)) return;
-        await api('/machine-models/' + btn.dataset.code, { method: 'DELETE' });
+        const code = btn.dataset.code;
+        const u = (window.__MODEL_USAGE || {})[code];
+        const names = u ? [...new Set([...u.merchants, ...u.termOf])] : [];
+        // Spell out the consequence rather than the action. A removed model is not merely
+        // hidden: a run will REJECT a roster row that parses to it, and skip that brand's
+        // payout entirely.
+        const warn = names.length
+          ? `"${code}" is still in use by ${names.length} merchant(s):\n\n`
+            + names.slice(0, 8).map(n => `  • ${n}`).join('\n')
+            + (names.length > 8 ? `\n  …and ${names.length - 8} more` : '')
+            + `\n\nRemoving it means a run will REJECT any roster row with this model and skip that`
+            + ` merchant's payout entirely. Their stored counts and terms stay, but stop working.\n\nDelete anyway?`
+          : `Delete device type "${code}"? It is not used by any merchant in ${R().name}.`;
+        if (!confirm(warn)) return;
+        await api('/machine-models/' + code, { method: 'DELETE' });
         loadModels();
       });
     });
@@ -630,8 +683,36 @@ let CONTRACT_GRID_COLUMNS = buildContractGridColumns();
 
 // Call once the region's machine models are known, so the unit columns match what this region
 // actually deploys. Safe to call repeatedly.
+// Only the models this region actually DEPLOYS get a column. Showing every configured type
+// meant Thailand carried five permanently blank columns (S10, T8, T10, T20, T35) and Singapore
+// six — noise in a grid that is already too wide to fit on a laptop. A model earns its column
+// by having machines counted against it, or by being named in a per-machine term (a merchant
+// can have a rate agreed for a cabinet that is not installed yet).
+//
+// Device Types remains the source of truth for what a run will ACCEPT; this is only about what
+// is worth showing. If a type is configured and unused, it simply has no column until it does.
+function modelsInUse(contracts, configured) {
+  const used = new Set();
+  const fromRule = (n) => {
+    if (!n || typeof n !== 'object') return;
+    if (n.type === 'flat_per_machine') for (const r of n.rows || []) if (r.model && r.model !== 'ALL') used.add(r.model);
+    (n.children || []).forEach(fromRule);
+  };
+  for (const c of contracts || []) {
+    for (const [m, n] of Object.entries(c.units || {})) if (Number(n) > 0) used.add(m);
+    fromRule(c.rule);
+  }
+  // Keep the configured order, so the columns do not reshuffle as data changes.
+  const inUse = (configured || []).filter(m => used.has(m));
+  // A model in use but NOT configured still gets a column — otherwise its numbers would be
+  // invisible and uneditable, which is worse than an unexpected column.
+  for (const m of used) if (!inUse.includes(m)) inUse.push(m);
+  return inUse;
+}
+
 function refreshContractGridColumns() {
-  CONTRACT_GRID_COLUMNS = buildContractGridColumns(MACHINE_MODELS_CACHE.map(m => m.code));
+  CONTRACT_GRID_COLUMNS = buildContractGridColumns(
+    modelsInUse(CONTRACTS, MACHINE_MODELS_CACHE.map(m => m.code)));
 }
 
 // 23 columns is ~2400px — more than a laptop can show at once even full-width. Rather than

@@ -1,11 +1,10 @@
-// Thailand's ten, plus S10-A which Singapore deploys and Thailand does not.
-// LL20/LL40 are deliberately ABSENT: they are the platform's spelling of L20/L40 and are
-// normalised to them on the way in. Thailand's own roster has 152 rows reading
-// "Advertising Player-LL40" while its contracts key terms to L40, so treating LL40 as a model
-// of its own makes evaluateRun reject those rows and drops the brand from the run.
+// Every distinct device code. LL20, LL40, L20 and S10-A are all separate models — the Thai
+// roster carries both "Advertising Player-LL40" (152 rows) and "Advertising Player-L20" (5), so
+// the LL is not a prefix convention. `L40` is kept for stored data written while an old importer
+// folded LL40 into it; no roster produces it.
 export const MACHINE_MODELS = new Set([
   'S5','S8','S10','T8','T10','T20','T35','L20','L40','M10',
-  'S10-A',
+  'LL20','LL40','S10-A',
 ]);
 
 // Count machines by model
