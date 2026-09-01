@@ -2261,9 +2261,18 @@ async function parseOrderReport(file) {
   return rows
     // Include every rental except unpaid ones (refunded rentals stay in).
     .filter(r => String(r['Payment Status'] || '').trim().toLowerCase() !== 'unpaid')
+    // The extra columns exist only to reproduce the per-merchant statement the finance team
+    // already uses (Rental Time … Order Status). They are carried through to the run's stored
+    // inputs; runs made before 2026-09-01 have only the first three, so their download shows
+    // the summary block and says the order detail was not recorded.
     .map(r => ({ merchantName: String(r['Rental Merchant'] || '').trim(),
                  netAmount: Number(r['Net Amount'] || 0),
-                 machineNo: String(pick(r, 'Rental Machine No.') ?? '').trim() }))
+                 machineNo: String(pick(r, 'Rental Machine No.') ?? '').trim(),
+                 rentalTime: String(r['Rental Time'] ?? '').trim(),
+                 returnTime: String(r['Return Time'] ?? '').trim(),
+                 returnMerchant: String(r['Return Merchant'] ?? '').trim(),
+                 duration: r['Rental Duration'] == null ? null : Number(r['Rental Duration']),
+                 orderStatus: String(r['Order Status'] ?? '').trim() }))
     .filter(r => r.merchantName);
 }
 
@@ -2401,53 +2410,126 @@ function apportion(total, weights) {
 
 // One CSV per merchant (roster brand), ORDER REPORT format:
 // Merchant name,Total rentals,Total revenue,Total share amount
-function buildPartnerCsv(result) {
-  const q = s => `"${String(s).replace(/"/g, '""')}"`;
-  const n2 = v => (Math.round(Number(v) * 100) / 100).toFixed(2);
-  const header = 'Merchant name,Total rentals,Total revenue,Total share amount';
 
+// The per-merchant statement, in the shape finance already works with: one workbook per
+// merchant, two blocks on one sheet.
+//
+//   rows 1..n   pivot per store — Rental Place, order count, paid, sharing rate, sharing amount
+//               and a Grand Total row
+//   row  n+3    the orders themselves — rental/return time, both stores and their KA names,
+//               duration, net amount, status
+//
+// The second block needs order-level columns that runs before 2026-09-01 never kept, so for
+// those the sheet carries the pivot and says so rather than inventing rows.
+const SHEET_SAFE = /[\\/?*\[\]:]/g;
+
+function buildPartnerSheet(XLSXns, result, orders, kaByStore) {
+  const merchants = result.merchants || [];
   const eng = result.engineResult || {};
   const perStore = Array.isArray(eng.byStore);
-  const merchants = result.merchants || [];
 
-  // Per-merchant share: real per-store payout (per_store mode), or apportioned
-  // by revenue from the partner total (whole mode — engine gives no split).
+  // Per-store share: the engine's own figure in per_store mode; apportioned by revenue in whole
+  // mode, where it computes one number for the merchant and no split exists.
   let shares;
   if (perStore) {
     const byStore = {};
-    eng.byStore.forEach(s => { byStore[s.storeId] = s.payout; });
+    eng.byStore.forEach(x => { byStore[x.storeId] = x.payout; });
     shares = merchants.map(m => byStore[m.merchantId] || 0);
   } else {
     shares = apportion(result.payout || 0, merchants.map(m => Math.max(0, Number(m.revenue) || 0)));
   }
 
-  let sumRentals = 0, sumRevenue = 0, sumShare = 0;
-  const rows = merchants.map((m, i) => {
-    sumRentals += m.rentals;
-    sumRevenue += m.revenue;
-    sumShare += shares[i];
-    return [q(m.merchantName), m.rentals, n2(m.revenue), n2(shares[i])].join(',');
+  const aoa = [['Rental Place', 'Count of order number', 'Sum of Paid', 'Max of Sharing Rate', 'Sum of Sharing Amount']];
+  let nOrders = 0, sumPaid = 0, sumShare = 0, maxRate = 0;
+  merchants.forEach((m, i) => {
+    const rate = m.revenue > 0 ? shares[i] / m.revenue : 0;
+    nOrders += m.rentals; sumPaid += m.revenue; sumShare += shares[i];
+    maxRate = Math.max(maxRate, rate);
+    aoa.push([m.merchantName, m.rentals, round2(m.revenue), round4(rate), round2(shares[i])]);
   });
-
-  // per_store top-level lump sum (flat_per_partner_total) — not tied to any one merchant
   if (perStore && eng.topLevel && eng.topLevel.payout) {
     sumShare += eng.topLevel.payout;
-    rows.push([q('(merchant-level lump sum)'), '', '', n2(eng.topLevel.payout)].join(','));
+    aoa.push(['(merchant-level lump sum)', null, null, null, round2(eng.topLevel.payout)]);
+  }
+  aoa.push(['Grand Total', nOrders, round2(sumPaid), round4(maxRate), round2(sumShare)]);
+
+  aoa.push([], []);
+  if (orders) {
+    aoa.push(['Rental Time', 'Rental Merchant', 'Rental KA Name', 'Return Time', 'Return Merchant',
+              'Return KA Name', 'Rental Duration', 'Net Amount', 'Order Status']);
+    for (const o of orders) {
+      aoa.push([o.rentalTime || '', o.merchantName || '', result.merchantName,
+                o.returnTime || '', o.returnMerchant || '',
+                // The brand that owns the RETURN store, which is often a different merchant —
+                // and blank when it is a store this run never saw.
+                kaByStore.get(String(o.returnMerchant || '').toLowerCase().trim()) || 'ไม่พบข้อมูล',
+                o.duration ?? '', Number(o.netAmount) || 0, o.orderStatus || '']);
+    }
+  } else {
+    aoa.push(['Order detail was not recorded for this run.']);
   }
 
-  const totalRow = [q('Total'), sumRentals, n2(sumRevenue), n2(sumShare)].join(',');
-  return [header, ...rows, totalRow].join('\n') + '\n';
+  const ws = XLSXns.utils.aoa_to_sheet(aoa);
+  ws['!cols'] = [{ wch: 46 }, { wch: 20 }, { wch: 14 }, { wch: 18 }, { wch: 20 },
+                 { wch: 46 }, { wch: 16 }, { wch: 14 }, { wch: 14 }];
+  return ws;
 }
 
-function downloadRevshareZip(run) {
+const round2 = v => Math.round(Number(v) * 100) / 100;
+const round4 = v => Math.round(Number(v) * 10000) / 10000;
+
+async function downloadRevshareZip(run) {
   const tag = periodTag(run.periodStart);
-  const enc = new TextEncoder();
+  const results = (run.results || []).slice().sort((a, b) => b.payout - a.payout);
+
+  // Orders live in the run's stored inputs, not its payload — one fetch of several MB, only
+  // when someone actually downloads. A run without them still produces the summary block.
+  let orders = null;
+  try {
+    const inputs = await api(`/bulk-runs/${encodeURIComponent(run.runId)}/inputs`);
+    if (Array.isArray(inputs?.orders) && inputs.orders.some(o => o.rentalTime != null)) orders = inputs.orders;
+  } catch { /* older run, or inputs gone — fall back to the summary block alone */ }
+
+  // Which merchant does an order belong to? Every store name this run paid, plus the names
+  // recovered by machine number or manual assignment, mapped to the merchant that was paid.
+  const contractOfStore = new Map();
+  const kaByStore = new Map();
+  for (const r of results) {
+    for (const m of r.merchants || []) {
+      const k = String(m.merchantName || '').toLowerCase().trim();
+      if (!k) continue;
+      contractOfStore.set(k, r.contractId);
+      kaByStore.set(k, r.merchantName);
+    }
+  }
+  for (const m of run.matchedByMachine || []) {
+    const to = contractOfStore.get(String(m.rosterName || '').toLowerCase().trim());
+    if (to) contractOfStore.set(String(m.orderName || '').toLowerCase().trim(), to);
+  }
+  for (const m of run.matchedByAlias || []) {
+    contractOfStore.set(String(m.name || '').toLowerCase().trim(), m.contractId);
+  }
+
+  const ordersByContract = new Map();
+  for (const o of orders || []) {
+    const cid = contractOfStore.get(String(o.merchantName || '').toLowerCase().trim());
+    if (!cid) continue;                      // unmatched — it belongs to no merchant statement
+    if (!ordersByContract.has(cid)) ordersByContract.set(cid, []);
+    ordersByContract.get(cid).push(o);
+  }
+
   const used = {};
-  const files = (run.results || []).map(r => {
-    let base = `${sanitizeFilename(r.merchantName)}_${tag}`;
+  const files = results.map((r, i) => {
+    const label = `${i + 1}) ${sanitizeFilename(r.merchantName)}`;
+    let base = label;
     if (used[base]) { base = `${base} (${used[base]++})`; } else { used[base] = 1; }
-    return { name: `${base}.csv`, data: enc.encode('﻿' + buildPartnerCsv(r)) };
+    const wb = XLSX.utils.book_new();
+    // Excel caps a sheet name at 31 characters and rejects \ / ? * [ ] :
+    const sheetName = base.replace(SHEET_SAFE, '-').slice(0, 31);
+    XLSX.utils.book_append_sheet(wb, buildPartnerSheet(XLSX, r, orders ? (ordersByContract.get(r.contractId) || []) : null, kaByStore), sheetName);
+    return { name: `${base}.xlsx`, data: new Uint8Array(XLSX.write(wb, { bookType: 'xlsx', type: 'array' })) };
   });
+
   const blob = SimpleZip.makeZip(files);
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -2699,9 +2781,14 @@ async function renderBulkRunDetail(runId) {
         </p>` : ''}
     </section>` : ''}`;
 
-  el.querySelector('#dl-revshare-zip')?.addEventListener('click', (ev) => {
+  el.querySelector('#dl-revshare-zip')?.addEventListener('click', async (ev) => {
     ev.preventDefault();
-    downloadRevshareZip(run);
+    const link = ev.currentTarget;
+    const label = link.textContent;
+    link.textContent = 'Preparing…';
+    try { await downloadRevshareZip(run); }
+    catch (e) { alert(`Could not build the download: ${e.message}`); }
+    finally { link.textContent = label; }
   });
   // The "revenue not paid" rows expand in place.
   el.querySelectorAll('.np-toggle').forEach(b => b.addEventListener('click', () => {

@@ -530,6 +530,20 @@ function resp(statusCode, body) {
   return { statusCode, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) };
 }
 
+// GET /bulk-runs/:id/inputs — the roster, orders and machine list a run was computed from.
+//
+// The run payload holds only aggregates, so the per-merchant download cannot show order-level
+// detail without this. Kept as a separate object (and a separate request) because it is several
+// MB: the run-detail page must never pay for it just to draw a table.
+export async function getBulkRunInputsRoute(runId) {
+  const inputs = await getBulkRunInputs(runId);
+  if (!inputs) {
+    return resp(409, { error: 'no_stored_inputs',
+      message: 'This run predates stored inputs (2026-08-24), so its orders were not kept.' });
+  }
+  return resp(200, inputs);
+}
+
 // POST /bulk-runs/:id/recompute — rebuild a run from its stored inputs and REPLACE it.
 //
 // Replacing rather than versioning is a deliberate user decision (2026-08-24): the point is to
