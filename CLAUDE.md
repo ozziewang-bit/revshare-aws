@@ -1,7 +1,7 @@
 # revshare-aws — handoff
 
-Last updated: 2026-08-27 (run list = overview, run detail = tables only, Analytics = insight; LL40/LL20/L20 are DISTINCT codes).
-Service-worker `CACHE_VERSION` is at `revshare-v139` (bump on every shell change).
+Last updated: 2026-09-01 (per-merchant download is now an .xlsx statement with order detail; run list = overview, detail = tables, Analytics = insight).
+Service-worker `CACHE_VERSION` is at `revshare-v140` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
 end-to-end before touching anything. The codebase is the ultimate source of
@@ -535,6 +535,37 @@ while their handlers still queried `#br-detail` — all three would have rendere
 nothing. Three separate bugs of this exact shape landed on 2026-08-27 (`fmt2` out of scope, a
 missing routes-barrel re-export in CSTH, and this). Move markup, follow its handlers.
 
+## 1j. The per-merchant download (2026-09-01)
+
+One **.xlsx per merchant**, zipped, named `1) AOT.xlsx` and ranked by payout — the shape finance
+already reconciles against. Two blocks on one sheet:
+
+```
+r1..n   Rental Place · Count of order number · Sum of Paid · Max of Sharing Rate ·
+        Sum of Sharing Amount          … then a Grand Total row
+r n+3   Rental Time · Rental Merchant · Rental KA Name · Return Time · Return Merchant ·
+        Return KA Name · Rental Duration · Net Amount · Order Status
+```
+
+- **Sharing Rate is the EFFECTIVE rate** (share ÷ paid), by the user's decision on 2026-09-01.
+  Every row then multiplies out and the Grand Total reconciles. A merchant paid its **guarantee**
+  therefore shows a high rate rather than its contractual one — that is accepted, not a bug.
+- **Per-store share**: the engine's own `byStore` figure in `per_store` mode; **apportioned by
+  revenue** in `whole` mode, where the engine computes one number for the merchant and no split
+  exists.
+- **Return KA Name** is the brand owning the RETURN store — rented at AOT, returned at a BTS
+  station reads `BTS` — falling back to `ไม่พบข้อมูล` for a store the run never saw.
+- Orders are attributed to a merchant by store name **including the names recovered by machine
+  number and manual assignment** (§1d), so a statement is not missing the rows those passes saved.
+
+**Two dependencies to know about:**
+- `parseOrderReport` keeps rental/return time, return merchant, duration and status. It discarded
+  all of them until 2026-09-01, so **runs made before that have no order detail** — their download
+  carries the pivot block and says so. Do not "fix" that by inventing rows.
+- `GET /bulk-runs/:id/inputs` exposes a run's stored orders. It is **several MB**, so it is
+  fetched only when someone downloads; the run-detail page must never call it just to draw a
+  table. GET needs no permission (`requiredPermission` returns null for reads).
+
 ## 2. Live URLs and resources
 
 - **Site:** https://d2t76jfby056ul.cloudfront.net
@@ -671,6 +702,7 @@ migrated `CONTRACT` rule can be checked against its `PARTNER` source.
 | GET | `/bulk-runs/:id` | Get full bulk run (from S3). |
 | POST | `/bulk-runs/:id/archive` | Lock run (sets `archived: true`). Requires `runCalcs`. Locked runs block DELETE (409). |
 | POST | `/bulk-runs/:id/unarchive` | Remove lock. Requires `admin`. |
+| GET | `/bulk-runs/:id/inputs` | The roster, orders and machine list a run was computed from (§1j). Several MB — fetched only by the download. 409 if the run predates stored inputs. |
 | POST | `/bulk-runs/:id/recompute` | Rebuild a run from its stored inputs and replace it (§1e). Requires `runCalcs`. 409 if archived, or if the run predates stored inputs. |
 | DELETE | `/bulk-runs/:id` | Delete run. Returns 409 if archived. Requires `deleteRuns`. |
 | GET | `/contracts` | List all contracts |
