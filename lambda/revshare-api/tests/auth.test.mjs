@@ -55,3 +55,19 @@ test('requiredPermission: contract writes need manageMerchants', () => {
 test('POST /bulk-runs/:id/recompute requires runCalcs', () => {
   assert.equal(requiredPermission('POST', '/bulk-runs/01ABC/recompute'), 'runCalcs');
 });
+
+// Anyone signed in can FILE a feature request — the people using the app daily are the ones who
+// notice what it is missing. The /feature-requests catch-all would otherwise fall through to the
+// fail-closed `admin` at the bottom of requiredPermission, and only admins could ask for anything.
+test('POST /feature-requests needs no permission beyond being signed in', () => {
+  assert.equal(requiredPermission('POST', '/feature-requests'), null);
+});
+
+test('reading feature requests is open, like every other GET', () => {
+  assert.equal(requiredPermission('GET', '/feature-requests'), null);
+});
+
+test('resolving or deleting one is admin', () => {
+  assert.equal(requiredPermission('PUT', '/feature-requests/01ABC'), 'admin');
+  assert.equal(requiredPermission('DELETE', '/feature-requests/01ABC'), 'admin');
+});

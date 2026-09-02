@@ -2,8 +2,8 @@
 // One site, two backends. Both API URLs are public (no auth). Switching region
 // persists to localStorage and reloads (see switchRegion) so no TH/SG state bleeds.
 const REGIONS = {
-  th: { name: 'Thailand',  api: 'https://7z269nmx74.execute-api.ap-southeast-7.amazonaws.com/prod', ccy: 'THB', sym: '฿'  },
-  sg: { name: 'Singapore', api: 'https://4qcyojfg79.execute-api.ap-southeast-7.amazonaws.com/prod', ccy: 'SGD', sym: 'S$' },
+  th: { name: 'Thailand',  api: 'https://7z269nmx74.execute-api.ap-southeast-7.amazonaws.com/prod', ccy: 'THB', sym: '฿',  notFound: 'ไม่พบข้อมูล' },
+  sg: { name: 'Singapore', api: 'https://4qcyojfg79.execute-api.ap-southeast-7.amazonaws.com/prod', ccy: 'SGD', sym: 'S$', notFound: 'Not found'   },
 };
 let REGION = (localStorage.getItem('rs_region') in REGIONS) ? localStorage.getItem('rs_region') : 'th';
 const R = () => REGIONS[REGION];
@@ -388,6 +388,86 @@ function switchRegion(rk) {
   location.reload();   // full reset — partner/run/merchant state is per-backend
 }
 
+// ── Feature requests ──────────────────────────────────────────────────────
+// A header button rather than a nav tab: filing one is a thing you do mid-task, and it should
+// not cost you the screen you are on. The dialog carries which screen you were looking at,
+// because that is usually half the request.
+const FR_STATUS = { open: 'Open', planned: 'Planned', done: 'Done', declined: 'Declined' };
+
+function currentScreenName() {
+  const active = document.querySelector('.nav-btn.active');
+  return active ? active.textContent.trim() : '';
+}
+
+async function openFeatureRequests() {
+  const { card, close } = ctModal(680);
+  card.innerHTML = `
+    <h3 style="margin:0 0 4px;">Feature requests</h3>
+    <p class="muted" style="margin:0 0 14px;font-size:12.5px;">
+      What is this app missing, or what slows you down? Anyone can file one; ${escape(R().name)} and
+      Singapore keep separate lists.
+    </p>
+    <label style="font-size:12.5px;color:var(--ink-soft);">What would you like?
+      <input id="fr-title" class="input" maxlength="140" placeholder="One line — e.g. show last month next to this one" style="display:block;margin-top:4px;width:100%;">
+    </label>
+    <label style="font-size:12.5px;color:var(--ink-soft);display:block;margin-top:10px;">Any detail (optional)
+      <textarea id="fr-detail" class="input" rows="3" maxlength="4000" placeholder="Why it matters, or what you do today instead" style="display:block;margin-top:4px;width:100%;resize:vertical;"></textarea>
+    </label>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;">
+      <button type="button" id="fr-cancel" class="btn-ghost">Close</button>
+      <button type="button" id="fr-send" class="btn-primary">Send</button>
+    </div>
+    <div id="fr-status" style="margin-top:8px;font-size:13px;"></div>
+    <div id="fr-list" style="margin-top:18px;border-top:1px solid var(--line);padding-top:14px;">Loading…</div>`;
+
+  card.querySelector('#fr-cancel').addEventListener('click', close);
+  card.querySelector('#fr-send').addEventListener('click', async () => {
+    const title = card.querySelector('#fr-title').value.trim();
+    const statusEl = card.querySelector('#fr-status');
+    if (!title) { statusEl.className = 'form-error'; statusEl.textContent = 'A one-line description is required.'; return; }
+    const btn = card.querySelector('#fr-send');
+    btn.disabled = true; btn.textContent = 'Sending…';
+    try {
+      await api('/feature-requests', { method: 'POST', body: JSON.stringify({
+        title, detail: card.querySelector('#fr-detail').value.trim(), screen: currentScreenName() }) });
+      card.querySelector('#fr-title').value = '';
+      card.querySelector('#fr-detail').value = '';
+      statusEl.className = ''; statusEl.style.color = '#2b8a3e';
+      statusEl.textContent = 'Thanks — filed.';
+      await loadRequests();
+    } catch (e) {
+      statusEl.className = 'form-error'; statusEl.textContent = e.message || 'Could not file that — try again.';
+    } finally { btn.disabled = false; btn.textContent = 'Send'; }
+  });
+
+  async function loadRequests() {
+    const box = card.querySelector('#fr-list');
+    let rows = [];
+    try { rows = await api('/feature-requests'); }
+    catch (e) { box.innerHTML = `<p class="muted">Could not load existing requests: ${escape(e.message)}</p>`; return; }
+    if (!rows.length) { box.innerHTML = '<p class="muted" style="font-size:13px;">No requests yet.</p>'; return; }
+    box.innerHTML = `<table style="font-size:13px;width:100%;">
+      <thead><tr><th style="text-align:left;">Request</th><th style="text-align:left;">From</th><th style="text-align:left;">Status</th>${can('admin') ? '<th></th>' : ''}</tr></thead>
+      <tbody>${rows.map(r => `<tr>
+        <td><strong>${escape(r.title)}</strong>
+          ${r.detail ? `<div class="muted" style="font-size:12px;white-space:pre-wrap;">${escape(r.detail)}</div>` : ''}
+          ${r.screen ? `<div class="muted" style="font-size:11.5px;">on ${escape(r.screen)}</div>` : ''}</td>
+        <td class="muted">${escape((r.createdBy || '').split('@')[0])}<div style="font-size:11.5px;">${escape((r.createdAt || '').slice(0, 10))}</div></td>
+        <td>${escape(FR_STATUS[r.status] || r.status || 'Open')}</td>
+        ${can('admin') ? `<td style="text-align:right;white-space:nowrap;">
+          <select class="fr-set" data-id="${escape(r.id)}" style="font-size:12px;">
+            ${Object.entries(FR_STATUS).map(([v, l]) => `<option value="${v}"${r.status === v ? ' selected' : ''}>${l}</option>`).join('')}
+          </select></td>` : ''}
+      </tr>`).join('')}</tbody></table>`;
+    box.querySelectorAll('.fr-set').forEach(sel => sel.addEventListener('change', async () => {
+      sel.disabled = true;
+      try { await api(`/feature-requests/${encodeURIComponent(sel.dataset.id)}`, { method: 'PUT', body: JSON.stringify({ status: sel.value }) }); await loadRequests(); }
+      catch (e) { alert(`Could not update: ${e.message}`); sel.disabled = false; }
+    }));
+  }
+  loadRequests();
+}
+
 function renderNav() {
   const nav = document.getElementById('topnav');
   nav.innerHTML = `
@@ -403,6 +483,9 @@ function renderNav() {
   nav.querySelector('#nav-device-types').addEventListener('click', () => { setActiveNav('nav-device-types'); renderDeviceTypesScreen(); });
   nav.querySelector('#nav-contracts').addEventListener('click', () => { setActiveNav('nav-contracts'); renderContractsScreen(); });
   nav.querySelector('#nav-users')?.addEventListener('click', () => { setActiveNav('nav-users'); renderUsersScreen(); });
+  // Lives in the brand bar, not the nav, so it survives every screen change.
+  const frBtn = document.getElementById('feature-request');
+  if (frBtn && !frBtn.dataset.wired) { frBtn.dataset.wired = '1'; frBtn.addEventListener('click', openFeatureRequests); }
 }
 
 function setActiveNav(id) {
@@ -2439,7 +2522,13 @@ function buildPartnerSheet(XLSXns, result, orders, kaByStore) {
     shares = apportion(result.payout || 0, merchants.map(m => Math.max(0, Number(m.revenue) || 0)));
   }
 
-  const aoa = [['Rental Place', 'Count of order number', 'Sum of Paid', 'Max of Sharing Rate', 'Sum of Sharing Amount']];
+  // The amount columns carry the currency. The source format omits it because it only ever
+  // described one country; with two regions sharing this download, a statement of bare numbers
+  // is ambiguous. Taken from the merchant's own stored currency, not the region, so a run can
+  // never label a merchant with a currency it is not paid in.
+  const ccy = result.currency || '';
+  const money = (label) => ccy ? `${label} (${ccy})` : label;
+  const aoa = [['Rental Place', 'Count of order number', money('Sum of Paid'), 'Max of Sharing Rate', money('Sum of Sharing Amount')]];
   let nOrders = 0, sumPaid = 0, sumShare = 0, maxRate = 0;
   merchants.forEach((m, i) => {
     const rate = m.revenue > 0 ? shares[i] / m.revenue : 0;
@@ -2456,13 +2545,13 @@ function buildPartnerSheet(XLSXns, result, orders, kaByStore) {
   aoa.push([], []);
   if (orders) {
     aoa.push(['Rental Time', 'Rental Merchant', 'Rental KA Name', 'Return Time', 'Return Merchant',
-              'Return KA Name', 'Rental Duration', 'Net Amount', 'Order Status']);
+              'Return KA Name', 'Rental Duration', money('Net Amount'), 'Order Status']);
     for (const o of orders) {
       aoa.push([o.rentalTime || '', o.merchantName || '', result.merchantName,
                 o.returnTime || '', o.returnMerchant || '',
                 // The brand that owns the RETURN store, which is often a different merchant —
                 // and blank when it is a store this run never saw.
-                kaByStore.get(String(o.returnMerchant || '').toLowerCase().trim()) || 'ไม่พบข้อมูล',
+                kaByStore.get(String(o.returnMerchant || '').toLowerCase().trim()) || R().notFound,
                 o.duration ?? '', Number(o.netAmount) || 0, o.orderStatus || '']);
     }
   } else {

@@ -2,6 +2,7 @@ import { verifyGoogleToken, resolvePermissions, requiredPermission } from './aut
 import { getUser } from './users-db.mjs';
 import { meRoute } from './routes/me.mjs';
 import { listUsersRoute, putUserRoute, deleteUserRoute } from './routes/users.mjs';
+import { listFeatureRequestsRoute, createFeatureRequestRoute, updateFeatureRequestRoute, deleteFeatureRequestRoute } from './routes/features.mjs';
 
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
 const ALLOWED_DOMAINS = (process.env.ALLOWED_DOMAINS || '').split(',').map(s => s.trim()).filter(Boolean);
@@ -88,6 +89,10 @@ export const handler = async (event) => {
     // Import
     else if (method === 'POST'   && path === '/import/rev-share')                               result = await importRevShareRoute(event);
     // Bulk runs
+    else if (method === 'GET'    && path === '/feature-requests')                                result = await listFeatureRequestsRoute();
+    else if (method === 'POST'   && path === '/feature-requests')                                result = await createFeatureRequestRoute(event);
+    else if (method === 'PUT'    && /^\/feature-requests\/[^/]+$/.test(path))                    result = await updateFeatureRequestRoute(event, path.split('/')[2]);
+    else if (method === 'DELETE' && /^\/feature-requests\/[^/]+$/.test(path))                    result = await deleteFeatureRequestRoute(path.split('/')[2]);
     else if (method === 'POST'   && path === '/bulk-runs/prepare')                              result = await prepareBulkRunRoute(event);
     else if (method === 'POST'   && path === '/bulk-runs')                                      result = await createBulkRunRoute(event);
     else if (method === 'GET'    && path === '/bulk-runs')                                      result = await listBulkRunsRoute();

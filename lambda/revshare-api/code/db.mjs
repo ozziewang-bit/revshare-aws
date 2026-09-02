@@ -298,6 +298,36 @@ export async function deleteBulkRun(runId) {
   }));
 }
 
+// ── Feature requests ──────────────────────────────────────────────────────
+// Anyone signed in can file one; admins resolve them. Kept in this table rather than a new one
+// so it needs no extra IAM, and per-region like everything else here — a Thai user's request
+// lands in the Thai table, which is also where the person reading it is working.
+
+export async function listFeatureRequests() {
+  return query({
+    TableName: TABLE,
+    KeyConditionExpression: 'pk = :p',
+    ExpressionAttributeValues: { ':p': 'FEATURE' },
+    ScanIndexForward: false,        // ULID sort key, so newest first
+  });
+}
+
+export async function getFeatureRequest(id) {
+  const out = await ddb.send(new GetCommand({ TableName: TABLE, Key: { pk: 'FEATURE', sk: `FEATURE#${id}` } }));
+  return out.Item || null;
+}
+
+export async function putFeatureRequest(fr) {
+  const now = new Date().toISOString();
+  const item = { pk: 'FEATURE', sk: `FEATURE#${fr.id}`, ...fr, updatedAt: now, createdAt: fr.createdAt || now };
+  await ddb.send(new PutCommand({ TableName: TABLE, Item: item }));
+  return item;
+}
+
+export async function deleteFeatureRequest(id) {
+  await ddb.send(new DeleteCommand({ TableName: TABLE, Key: { pk: 'FEATURE', sk: `FEATURE#${id}` } }));
+}
+
 // ── Machine Models ────────────────────────────────────────────────────────
 
 export async function listMachineModels() {

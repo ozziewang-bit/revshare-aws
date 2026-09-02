@@ -21,6 +21,10 @@ export function resolvePermissions(email, row, adminEmails) {
 export function requiredPermission(method, path) {
   if (method === 'GET') return path.startsWith('/users') ? 'admin' : null;   // reads are open; /users list is admin
   if (path.startsWith('/users')) return 'admin';
+  // Anyone signed in can FILE a feature request — the catch-all below would otherwise demand
+  // admin and only admins could ask for anything. Resolving one is still admin.
+  if (path === '/feature-requests') return null;
+  if (path.startsWith('/feature-requests')) return 'admin';
   if (path.startsWith('/partners') && /\/runs(\/|$)/.test(path)) return 'runCalcs';   // POST runs / rerun
   if (path.startsWith('/partners')) return 'editPartners';
   if (path === '/bulk-runs' || path === '/bulk-runs/prepare') return 'runCalcs';
