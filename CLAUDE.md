@@ -1,7 +1,7 @@
 # revshare-aws — handoff
 
-Last updated: 2026-09-01 (per-merchant download is now an .xlsx statement with order detail; run list = overview, detail = tables, Analytics = insight).
-Service-worker `CACHE_VERSION` is at `revshare-v140` (bump on every shell change).
+Last updated: 2026-09-02 (feature requests filed from the header; per-merchant download is an .xlsx statement with order detail).
+Service-worker `CACHE_VERSION` is at `revshare-v142` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
 end-to-end before touching anything. The codebase is the ultimate source of
@@ -272,7 +272,7 @@ CSV already handle per_store correctly; this was a config issue, not a code bug.
 default to the lower-paying `whole` branch, which is exactly how 7-Eleven's original
 under-payment happened.
 
-Tests: `npm test` → **204/204** pass (incl. `ddb-util.test.mjs` — Query pagination +
+Tests: `npm test` → **207/207** pass (incl. `ddb-util.test.mjs` — Query pagination +
 BatchWriteItem chunking, §1c; `payout.test.mjs` — `merchantRowChanged` / `ruleHasValue` /
 `contractNeedsTerms` / label resolution; `bulk-runs.test.mjs` — roster-to-contract
 resolution + order-less fixed-fee; `contracts.test.mjs` — sheet-row normalisation, name
@@ -566,6 +566,24 @@ r n+3   Rental Time · Rental Merchant · Rental KA Name · Return Time · Retur
   fetched only when someone downloads; the run-detail page must never call it just to draw a
   table. GET needs no permission (`requiredPermission` returns null for reads).
 
+## 1k. Feature requests (2026-09-02)
+
+**✦ New feature request** in the brand bar, after the country selector — in the header rather
+than the nav so filing one does not cost you the screen you are on. The dialog files and lists
+in one place.
+
+- **Anyone signed in can file one.** `requiredPermission` falls through to a fail-closed
+  `'admin'` for unknown mutations, so `POST /feature-requests` needs an **explicit `null`** rule —
+  without it only admins could ask for anything, which is the opposite of the point. `PUT`/`DELETE`
+  stay `admin`. Pinned in `auth.test.mjs`.
+- The row records **which screen the person was on** (`screen`), because that is usually half the
+  request.
+- **Title and detail are never editable** — only `status` and an admin `note`. A request must not
+  be quietly rewritten into something the requester did not ask for.
+- `FEATURE` row family in the existing table (no new IAM), **per region**: a Thai user's request
+  lands in the Thai table, which is where the person reading it works. Sorted newest-first by
+  ULID sort key.
+
 ## 2. Live URLs and resources
 
 - **Site:** https://d2t76jfby056ul.cloudfront.net
@@ -591,6 +609,7 @@ Account `<YOUR_AWS_ACCOUNT_ID>`, region `ap-northeast-1`. IAM user `<your-iam-us
 | `infra/backfill-sg-contract-fields.mjs` | Fill `merchantType` / `units` / `installedUnits` on SG contracts from the same workbook (2026-08-26). Dry run by default; never touches rule/aggregationMode/noPayout/currency. |
 | `infra/check-db-exports.mjs` | Deploy preflight (2026-08-26): every name the synced code imports from `db.mjs` must exist in BOTH regions' `db.mjs`. `deploy-lambda-all.sh` aborts if not. See §8. |
 | `infra/rerun-bulk-run.mjs` | Recompute a bulk run from its stored inputs (2026-08-24) — no browser token, no re-upload. Dry run by default; `--apply` writes a new run, `--replace` also deletes the original. Calls the same `computeBulkRun` the HTTP route uses, with `persist: false` on a dry run so a preview cannot mutate the registry. Sets `AWS_REGION` before importing `db.mjs` (which otherwise falls back to the wrong region) — hence its dynamic imports. |
+| `lambda/revshare-api/code/routes/features.mjs` | Feature-request routes (2026-09-02, §1k). Anyone signed in files; admins resolve. Title/detail immutable after filing. |
 | `lambda/revshare-api/code/rules.mjs` | Pure rule construction (2026-08-27) — `compileRule`, moved out of `routes/import.mjs` so the sheet importer can use it without AWS imports. |
 | `lambda/revshare-api/code/ddb-util.mjs` | Pure DynamoDB helpers (2026-08-24), no AWS imports — the caller injects `send`. `queryAll` follows `LastEvaluatedKey` (every list in `db.mjs` goes through it; see §1c); `chunkUnique` builds duplicate-free `BatchWriteItem` batches. |
 | `lambda/revshare-api/code/payout.mjs` | Pure payout-decision module (2026-08-07). No AWS imports. Exports `merchantRowChanged` (2026-08-24 — is a roster row worth writing back? see §1c), `ruleHasValue` (does a rule tree pay anything?), `contractNeedsTerms` (also requires a valid `aggregationMode` as of 2026-08-09, to agree with `payoutDecision`), `indexContractsByName`/`resolveLabel` (name-based roster resolution). |
@@ -601,7 +620,7 @@ Account `<YOUR_AWS_ACCOUNT_ID>`, region `ap-northeast-1`. IAM user `<your-iam-us
 | `lambda/revshare-api/code/routes/bulk-runs.mjs` | Bulk run routes. Exports `buildRosterRows` (roster-authoritative row seeding, keyed by `contractId`; its `if (!m.contractId) continue` guard is defence in depth, not a live path — `applyMerchantRoster` always assigns a `contractId` first), `applyMerchantRoster` (resolves roster labels to `CONTRACT` rows, auto-creating a `noPayout: true` stub for any unmatched label; currency comes from `db.mjs`'s `DEFAULT_CURRENCY`, not a literal), `payoutDecision` (why a contract is/isn't paid; names the merchant in its warning when a sample name is available), `groupOrders` (legacy, order-only grouping, unused in the live route). `createBulkRunRoute` also builds a **`skipped`** list (2026-08-09) — brands that matched roster/order rows but weren't paid — with `skippedCount`/`skippedRevenue`/`totalOrderRevenue` on the run, so revenue never disappears from every total silently; see §1b and Finding 1 of the 2026-08-09 review. `paidBrandCount`/`rosterBrandCount` replace the old overloaded `merchantBrandCount` on the run payload (the `/bulk-runs/prepare` response still uses `merchantBrandCount` for its own, unambiguous meaning: distinct contracts in the roster). |
 | `lambda/revshare-api/code/contracts.mjs` | Contract sheet-row normalisation, name matching (`matchContracts`), import diffing (`buildImportPlan`). Contract fields only — never touches `rule`. |
 | `lambda/revshare-api/code/routes/contracts.mjs` | Contract (`CONTRACT`) CRUD + import routes. `WRITABLE` includes `rule`/`aggregationMode`/`noPayout`/`currency` for direct PUT edits — `CONTRACT` is the payout entity now (§5). |
-| `lambda/revshare-api/tests/` | `engine.test.mjs`, `csv.test.mjs`, `contracts.test.mjs`, `payout.test.mjs`, `bulk-runs.test.mjs`, `ddb-util.test.mjs`, `device-models.test.mjs`, `sheet-grid-shape.test.mjs`, `run-view.test.mjs`, others — `npm test` → 204 total. |
+| `lambda/revshare-api/tests/` | `engine.test.mjs`, `csv.test.mjs`, `contracts.test.mjs`, `payout.test.mjs`, `bulk-runs.test.mjs`, `ddb-util.test.mjs`, `device-models.test.mjs`, `sheet-grid-shape.test.mjs`, `run-view.test.mjs`, others — `npm test` → 207 total. |
 | `frontend/index.html` | SPA shell + pre-paint auth gate. |
 | `frontend/style.css` | All styles (tokenized). |
 | `frontend/app.js` | All app JS: auth, screens, Merchant view grid + terms editor, run flow. |
@@ -641,7 +660,7 @@ Run all tests:
 ```bash
 npm test    # from repo root
 ```
-204/204 should pass.
+207/207 should pass.
 
 ## 5. Data model
 
@@ -649,6 +668,7 @@ Single DDB table `RevsharePartner`. Five row families:
 
 | pk | sk | What |
 |---|---|---|
+| `FEATURE` | `FEATURE#<ulid>` | A feature request (2026-09-02, §1k): title, detail, the screen it was filed from, status, who filed and who resolved it. Per region. |
 | `CONTRACT` | `CONTRACT#<contractId>` | **The payout entity (since 2026-08-07).** Merchant contract terms (type, counter party, unit counts, start/end, etc.) **plus** `rule`, `aggregationMode`, `noPayout`, `currency` — the fields a bulk run actually evaluates. Optional `partnerId` back-link to the `PARTNER` row it was migrated from. Edited entirely from the Merchant view screen. |
 | `MERCHANT` | `MERCHANT#<merchantId>` | Store-registry row — one per physical machine/location, seeded from the roster upload. Carries `contractId` pointing at the `CONTRACT` (payout) row for its brand; 3,865 of 4,066 rows have one (3,630 from the first migration, +235 from the adoption) (see §1b "Deliberately unpaid" for the other 201). |
 | `PARTNER` | `META#<partnerId>` | **Retained but dormant.** The pre-2026-08-07 config + rule row. Nothing reads these any more — the Partners UI and its routes are gone (see §1b) — but the rows are kept on purpose so a migrated `CONTRACT`'s rule can be checked against the original it was copied from (`infra/compare-pipelines.mjs`). Do not delete without asking; do not treat as canonical for anything current. |
@@ -702,6 +722,10 @@ migrated `CONTRACT` rule can be checked against its `PARTNER` source.
 | GET | `/bulk-runs/:id` | Get full bulk run (from S3). |
 | POST | `/bulk-runs/:id/archive` | Lock run (sets `archived: true`). Requires `runCalcs`. Locked runs block DELETE (409). |
 | POST | `/bulk-runs/:id/unarchive` | Remove lock. Requires `admin`. |
+| GET | `/feature-requests` | List them, newest first. Open to any signed-in user. |
+| POST | `/feature-requests` | File one. **No permission beyond being signed in** (§1k). |
+| PUT | `/feature-requests/:id` | Status / note only. Requires `admin`. |
+| DELETE | `/feature-requests/:id` | Requires `admin`. |
 | GET | `/bulk-runs/:id/inputs` | The roster, orders and machine list a run was computed from (§1j). Several MB — fetched only by the download. 409 if the run predates stored inputs. |
 | POST | `/bulk-runs/:id/recompute` | Rebuild a run from its stored inputs and replace it (§1e). Requires `runCalcs`. 409 if archived, or if the run predates stored inputs. |
 | DELETE | `/bulk-runs/:id` | Delete run. Returns 409 if archived. Requires `deleteRuns`. |
