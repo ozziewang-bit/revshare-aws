@@ -807,15 +807,19 @@ const UNIT_MODELS_FALLBACK = ['S5', 'S8', 'M10', 'L20', 'L40'];
 function buildContractGridColumns(models) {
   const codes = (models && models.length ? models : UNIT_MODELS_FALLBACK);
   return [
-    { key: 'merchantName',          label: 'Merchant',      type: 'text',   width: 165 , group: 'id' },
+    { key: 'merchantName',          label: 'Merchant/Brand', type: 'text',  width: 165 , group: 'id' },
     { key: 'merchantType',          label: 'Type',          type: 'select', width: 120 , group: 'id' },
-    { key: 'counterParty',          label: 'Counter party', type: 'text',   width: 175 , group: 'id' },
+    // How many branches this brand has. Set by the weekly upload, which counts the store rows
+    // sharing a merchant label — so it is as current as the last file.
+    { key: 'branchCount',           label: 'Branch',        type: 'number', width: 70  , group: 'id' },
+    { key: 'salesPerson',           label: 'Sales person',  type: 'text',   width: 125 , group: 'contact' },
     { key: 'contactName',           label: 'Contact',       type: 'text',   width: 125 , group: 'contact' },
     { key: 'contactPhone',          label: 'Phone',         type: 'text',   width: 110 , group: 'contact' },
     { key: 'contactEmail',          label: 'Email',         type: 'text',   width: 160 , group: 'contact' },
     { key: 'installedUnits',        label: 'Units',         type: 'computed', width: 55 , group: 'machines' },
     ...codes.map(code => ({ key: `units.${code}`, label: code, type: 'number',
                             width: Math.max(46, 20 + code.length * 9), group: 'machines' })),
+    { key: 'counterParty',          label: 'Contract entity', type: 'text', width: 175 , group: 'contract' },
     { key: 'startDate',             label: 'Start',         type: 'date',   width: 108 , group: 'contract' },
     { key: 'endDate',               label: 'End',           type: 'date',   width: 108 , group: 'contract' },
     { key: 'terminationNoticeDays', label: 'Notice',        type: 'number', width: 84  , group: 'contract', suffix: ' days' },
@@ -1461,13 +1465,15 @@ function gridTemplateColumns(contracts) {
   };
   const col = (group, head2, from, desc) => ({ group, head2, from, desc });
   return [
-    col('Merchant', 'Merchant', c => c.merchantName ?? null,
+    col('Merchant', 'Merchant/Brand', c => c.merchantName ?? null,
       'REQUIRED — the brand name, and the key an upload matches on. An existing name updates that merchant; a new one creates it. '
       + 'Editing a name here therefore ADDS a merchant rather than renaming one. It should also match the "Merchant label" in the '
       + 'ChargeSpot roster, or the brand\u2019s machines will not be found when a run is prepared. A row with this cell empty is skipped.'),
     col('Merchant', 'Type', c => c.merchantType ?? null, 'Category. One of: ' + MERCHANT_TYPES.join(', ') + '.'),
-    col('Merchant', 'Counter party', c => c.counterParty ?? null,
-      'The legal entity named on the contract. Free text; may differ from the brand name.'),
+    col('Merchant', 'Branch', c => c.branchCount ?? null,
+      'How many branches this brand has, counted from the last weekly upload.'),
+
+    col('Contact', 'Sales person', c => c.salesPerson ?? null, 'Who at ChargeSpot owns this relationship.'),
     col('Contact', 'Contact', c => c.contactName ?? null, 'Contact name at the merchant.'),
     col('Contact', 'Phone', c => c.contactPhone ?? null, 'Contact phone. Kept exactly as typed.'),
     col('Contact', 'Email', c => c.contactEmail ?? null, 'Contact email.'),
@@ -1477,6 +1483,8 @@ function gridTemplateColumns(contracts) {
       c => model ? ((c.units || {})[model] ?? null) : null,
       'A machine model. Put the model code in this header row (S5, S8, LL20, S10-A \u2026) and the count below it. '
       + 'Eight slots are provided; blank ones are ignored, so a column with no model code in its header imports nothing.')),
+    col('Contract', 'Contract entity', c => c.counterParty ?? null,
+      'The legal entity named on the contract. Free text; may differ from the brand name.'),
     col('Contract', 'Start', c => c.startDate ?? null, 'Contract start date. YYYY-MM-DD.'),
     col('Contract', 'End', c => c.endDate ?? null, 'Contract end date. YYYY-MM-DD. The app flags rows due or overdue.'),
     col('Contract', 'Notice', c => c.terminationNoticeDays ?? null, 'Termination notice period, in days. A plain number.'),
@@ -1695,8 +1703,7 @@ async function renderContractsScreen() {
         <option value="needs">◆ Needs terms</option>
         <option value="due">⚠ Contract due or overdue</option>
       </select>
-      ${can('manageMerchants') ? '<button type="button" id="ct-new" class="btn btn-primary">+ New merchant</button>' : ''}
-      ${can('manageMerchants') ? '<button type="button" id="ct-file-choose" class="btn">Upload sheet</button><input type="file" id="ct-file" accept=".xlsx" style="display:none">' : ''}
+      ${can('manageMerchants') ? '<button type="button" id="ct-add" class="btn btn-primary">+ Add merchants</button>' : ''}
       <button type="button" id="ct-template" class="btn" title="Download the current merchant list as .xlsx, in the exact format Upload sheet reads — edit it and upload it back">Download sheet</button>
       <span class="muted" id="ct-count"></span>
     </div>
@@ -1725,32 +1732,335 @@ async function renderContractsScreen() {
   });
   el.querySelector('#ct-new')?.addEventListener('click', createContractRow);
   el.querySelector('#ct-template')?.addEventListener('click', downloadMerchantTemplate);
-  el.querySelector('#ct-file-choose')?.addEventListener('click', () => el.querySelector('#ct-file').click());
-  el.querySelector('#ct-file')?.addEventListener('change', async ev => {
-    const file = ev.target.files[0]; if (!file) return;
-    ev.target.value = '';
-    // Import straight in — no match-review step. Rows whose merchant name happens to match
-    // an existing partner record still get that link noted on the row (informational only
-    // — it does not carry terms); the rest simply arrive unlinked. Revenue-share terms are
-    // set per row via Edit terms, so making linking a gate in front of the import only
-    // stood between the user and their data.
-    const btn = el.querySelector('#ct-file-choose');
-    const label = btn ? btn.textContent : '';
-    if (btn) { btn.disabled = true; btn.textContent = 'Importing…'; }
-    try {
-      const { rows, header, groups } = await parseAllMerchantSheet(file);
-      const r = await api('/contracts/import', { method: 'POST', body: JSON.stringify({ rows, header, groups, links: {} }) });
-      await renderContractsScreen();
-      alert(`Imported ${rows.length} rows from the sheet.\n\n`
-          + `${r.created} added, ${r.updated} updated.\n`
-          + `${r.linked} matched an existing partner record by name; ${CONTRACTS.length - r.linked} did not.\n\n`
-          + `Use Edit terms on a row to set its revenue-share terms.`);
-    } catch (err) {
-      alert('Could not import that file: ' + err.message);
-    } finally {
-      if (btn) { btn.disabled = false; btn.textContent = label; }
+  el.querySelector('#ct-add')?.addEventListener('click', openAddMerchants);
+}
+
+// ── Adding merchants ───────────────────────────────────────────────────────
+// Two ways in: one at a time, or a weekly file. The batch path deliberately routes through the
+// same /contracts/import the sheet used, because buildImportPlan already guarantees the thing
+// that matters most here — a field the file does not mention is LEFT ALONE. So a weekly upload
+// carrying only names, types and contacts can never disturb contract dates or revenue-share
+// terms, no matter what a merchant already has.
+//
+// Columns are matched by header NAME with aliases, and the mapping is shown before anything is
+// sent: a file from outside this app will not use our exact wording, and a silently mis-mapped
+// column is far worse than an unrecognised one.
+const WEEKLY_ALIASES = [
+  // The BRAND is the merchant label — the same column a run resolves a roster row by, so a
+  // merchant created here is one a run can actually find. The per-store name is a BRANCH of it:
+  // counted, never stored as a merchant of its own. Reading the store name as the brand is what
+  // would turn 2,357 shops into 2,357 "merchants".
+  { field: 'Merchant/Brand', names: ['merchant label', 'brand', 'merchant/brand', 'ka name', 'ka'] },
+  { field: '_branch',        names: ['merchant name.', 'merchant name', 'store', 'store name', 'branch', 'ชื่อร้าน'] },
+  { field: 'Type',           names: ['type', 'merchant type', 'merchant type.', 'category'] },
+  { field: 'Contract entity',names: ['contract entity', 'counter party', 'counterparty', 'legal entity', 'company'] },
+  { field: 'Sales person',   names: ['sales person', 'salesperson', 'sales', 'sales employee', 'person in charge', 'pic', 'owner'] },
+  { field: 'Contact',        names: ['contact', 'contact person', 'contact name', 'ผู้ติดต่อ'] },
+  { field: 'Phone',          names: ['phone', 'tel', 'telephone', 'contact number', 'mobile', 'เบอร์โทร'] },
+  { field: 'Email',          names: ['email', 'e-mail', 'contact email'] },
+  // Not imported — read only so non-Approved rows can be dropped before anything else happens.
+  { field: '_review',        names: ['merchant review state', 'review state', 'status', 'approval status'] },
+];
+const APPROVED = /^approved$/i;
+const hkey = v => String(v ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
+
+// Find the header row rather than assuming row 1: these files usually carry a title or a blank
+// line or two above the real headers.
+function findHeaderRow(aoa) {
+  let best = { row: -1, hits: 0, map: null };
+  for (let r = 0; r < Math.min(aoa.length, 20); r++) {
+    const map = {};
+    let hits = 0;
+    (aoa[r] || []).forEach((cell, c) => {
+      const k = hkey(cell);
+      if (!k) return;
+      const hit = WEEKLY_ALIASES.find(a => a.names.includes(k));
+      if (hit && !(hit.field in map)) { map[hit.field] = c; hits++; }
+    });
+    if (hits > best.hits) best = { row: r, hits, map };
+  }
+  return best;
+}
+
+async function parseWeeklyMerchantFile(file) {
+  const wb = await readExcel(file);
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, blankrows: false });
+  const { row, hits, map } = findHeaderRow(aoa);
+  // A file with no label column but a name column is taken at its word — the name IS the brand.
+  // Said out loud in the preview, because it changes what a row means.
+  let brandFromBranch = false;
+  if (map && !('Merchant/Brand' in map) && ('_branch' in map)) {
+    map['Merchant/Brand'] = map._branch; brandFromBranch = true;
+  }
+  if (!map || !('Merchant/Brand' in map)) {
+    throw new Error('No merchant column found. The sheet needs a header row with "Merchant label" (the brand), or a merchant/store name column.');
+  }
+  const all = Object.keys(map);
+  const nameAt = map['Merchant/Brand'];
+  const reviewAt = map._review;
+  const body = aoa.slice(row + 1).filter(r => String(r[nameAt] ?? '').trim());
+
+  // Approved only. A file without a review column is taken at face value — every row counts —
+  // rather than silently importing nothing.
+  const kept = reviewAt == null ? body : body.filter(r => APPROVED.test(String(r[reviewAt] ?? '').trim()));
+  const skippedNotApproved = body.length - kept.length;
+
+  // `_review` and `_branch` are working columns, not fields to store.
+  const fields = all.filter(f => f !== '_review' && f !== '_branch');
+  const brandAt = map['Merchant/Brand'];
+  const branchAt = brandFromBranch ? null : map._branch;
+
+  // One row per BRAND. A brand appears once per branch in these files, so the rows are folded:
+  // first value stated for each field wins, and the branches are counted.
+  const byBrand = new Map();
+  for (const r of kept) {
+    const brand = String(r[brandAt] ?? '').trim();
+    if (!brand || brand === '-') continue;
+    const key = brand.toLowerCase();
+    if (!byBrand.has(key)) byBrand.set(key, { vals: fields.map(() => null), branches: new Set() });
+    const acc = byBrand.get(key);
+    fields.forEach((f, i) => { if (acc.vals[i] == null || String(acc.vals[i]).trim() === '') acc.vals[i] = r[map[f]] ?? null; });
+    acc.branches.add(branchAt == null ? brand : String(r[branchAt] ?? '').trim() || brand);
+  }
+  const rows = [...byBrand.values()].map(a2 => a2.vals);
+  const branchCounts = [...byBrand.values()].map(a2 => a2.branches.size);
+
+  return { sheet: wb.SheetNames[0], headerRow: row + 1, hits, fields, rows, branchCounts,
+           brandFromBranch, hasReviewColumn: reviewAt != null, skippedNotApproved,
+           totalRows: body.length, branchRows: kept.length,
+           unmapped: (aoa[row] || []).map(hkey).filter(h => h && !WEEKLY_ALIASES.some(a => a.names.includes(h))) };
+}
+
+// What would actually change, field by field, before anything is written.
+//
+// Only the columns the file carries are compared, and a BLANK cell counts as "not stated" —
+// never as "clear this". That matches how the importer merges, so the preview cannot promise
+// something different from what the import does.
+const WEEKLY_FIELD_KEY = {
+  'Merchant/Brand': 'merchantName', 'Type': 'merchantType', 'Contract entity': 'counterParty',
+  'Sales person': 'salesPerson', 'Contact': 'contactName', 'Phone': 'contactPhone', 'Email': 'contactEmail',
+  'Branch': 'branchCount',
+};
+
+function diffWeeklyRows(parsed, contracts) {
+  const byName = new Map((contracts || []).map(c => [String(c.merchantName || '').toLowerCase().trim(), c]));
+  const added = [], changed = [];
+  let unchanged = 0;
+  const nameIdx = parsed.fields.indexOf('Merchant/Brand');
+
+  for (const row of parsed.rows) {
+    const name = String(row[nameIdx] ?? '').trim();
+    const existing = byName.get(name.toLowerCase());
+    if (!existing) {
+      const vals = {};
+      parsed.fields.forEach((f, i) => { const v = String(row[i] ?? '').trim(); if (v) vals[f] = v; });
+      added.push({ name, vals });
+      continue;
     }
+    const diffs = [];
+    const branches = parsed.branchCounts?.[parsed.rows.indexOf(row)];
+    if (branches != null && Number(existing.branchCount || 0) !== branches) {
+      diffs.push({ field: 'Branch', from: String(existing.branchCount ?? ''), to: String(branches) });
+    }
+    parsed.fields.forEach((f, i) => {
+      const key = WEEKLY_FIELD_KEY[f];
+      if (!key || key === 'merchantName') return;         // the name is the match key, not a change
+      const next = String(row[i] ?? '').trim();
+      if (!next) return;                                   // blank = not stated
+      const now = String(existing[key] ?? '').trim();
+      if (now !== next) diffs.push({ field: f, from: now, to: next });
+    });
+    if (diffs.length) changed.push({ name, diffs }); else unchanged++;
+  }
+  return { added, changed, unchanged };
+}
+
+// Machine file: the platform's Machine List — one row per cabinet, with the store it sits in.
+async function parseMachineCountFile(file) {
+  const wb = await readExcel(file);
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(ws, { defval: null });
+  const name = r => String(pick(r, 'Business name') ?? '').trim();
+  const model = r => parseDeviceModel(pick(r, 'Device Type'));
+  if (!rows.length || !rows.some(name)) throw new Error('No "Business name" column found — is this the Machine List export?');
+  const byStore = new Map();
+  const models = new Set();
+  for (const r of rows) {
+    const n = name(r); const m = model(r);
+    if (!n || !m) continue;
+    if (!byStore.has(n)) byStore.set(n, {});
+    const c = byStore.get(n);
+    c[m] = (c[m] || 0) + 1;
+    models.add(m);
+  }
+  return { byStore, models: [...models], counted: [...byStore.values()].reduce((a, c) => a + Object.values(c).reduce((x, y) => x + y, 0), 0) };
+}
+
+async function openAddMerchants() {
+  const { card, close } = ctModal(640);
+  card.innerHTML = `
+    <h3 style="margin:0 0 4px;">Add merchants</h3>
+    <p class="muted" style="margin:0 0 16px;font-size:12.5px;">
+      Contract dates and revenue-share terms are never touched by an upload — only the merchant,
+      contact and machine columns your file carries.
+    </p>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px;">
+      <button type="button" id="am-one" class="btn btn-primary">Add one merchant</button>
+      <button type="button" id="am-batch" class="btn">Batch — upload my file</button>
+    </div>
+    <div id="am-body"></div>`;
+
+  card.querySelector('#am-one').addEventListener('click', () => { close(); createContractRow(); });
+  card.querySelector('#am-batch').addEventListener('click', () => {
+    card.querySelector('#am-body').innerHTML = `
+      <div style="border-top:1px solid var(--line);padding-top:14px;">
+        <label style="font-size:12.5px;color:var(--ink-soft);display:block;">Merchant list (.xlsx)
+          <p class="muted" style="margin:2px 0 6px;font-size:12px;">
+            Your own weekly file. Columns are matched by name — merchant, type, contract entity,
+            sales person, contact, phone, email. Anything else is ignored.
+          </p>
+          <input type="file" id="am-merchants" accept=".xlsx,.xls" class="input" style="display:block;">
+        </label>
+        <label style="font-size:12.5px;color:var(--ink-soft);display:block;margin-top:14px;">Machine list (.xlsx) — optional
+          <p class="muted" style="margin:2px 0 6px;font-size:12px;">
+            The platform's Machine List export. Updates the machine counts only.
+          </p>
+          <input type="file" id="am-machines" accept=".xlsx,.xls" class="input" style="display:block;">
+        </label>
+        <div id="am-preview" style="margin-top:14px;"></div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;">
+          <button type="button" id="am-cancel" class="btn-ghost">Cancel</button>
+          <button type="button" id="am-import" class="btn-primary" disabled>Import</button>
+        </div>
+      </div>`;
+    card.querySelector('#am-cancel').addEventListener('click', close);
+    let parsed = null, machines = null;
+
+    // Show what was recognised BEFORE anything is written. A file from outside this app will
+    // not use our wording, and a column mapped to the wrong field is worse than one dropped.
+    const preview = async () => {
+      const box = card.querySelector('#am-preview');
+      const mf = card.querySelector('#am-merchants').files[0];
+      const kf = card.querySelector('#am-machines').files[0];
+      if (!mf && !kf) { box.innerHTML = ''; card.querySelector('#am-import').disabled = true; return; }
+      box.innerHTML = 'Reading…';
+      try {
+        parsed = mf ? await parseWeeklyMerchantFile(mf) : null;
+        machines = kf ? await parseMachineCountFile(kf) : null;
+        const d = parsed ? diffWeeklyRows(parsed, CONTRACTS) : null;
+        const row = (label, n, tone) => `<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px;${tone || ''}"><span>${label}</span><strong>${n}</strong></div>`;
+        box.innerHTML = `
+          ${parsed ? `<div style="font-size:13px;">
+            <strong>${parsed.rows.length} merchant/brand(s)</strong> from ${parsed.branchRows.toLocaleString('en-US')} approved store row(s)
+            — sheet “${escape(parsed.sheet)}”, header on row ${parsed.headerRow}.
+            ${parsed.hasReviewColumn
+              ? (parsed.skippedNotApproved ? `<div class="muted" style="font-size:12px;">${parsed.skippedNotApproved.toLocaleString('en-US')} row(s) skipped — not Approved.</div>` : '')
+              : `<div class="muted" style="font-size:12px;">No review-state column found, so every named row is included.</div>`}
+            ${parsed.brandFromBranch ? `<div class="muted" style="font-size:12px;">No “Merchant label” column — the store name is being read as the brand, so each row becomes its own merchant.</div>` : ''}
+            <div style="margin-top:6px;">Columns read: ${parsed.fields.map(f => `<span class="badge badge-neutral">${escape(f)}</span>`).join(' ')}</div>
+            ${parsed.unmapped.length ? `<div class="muted" style="margin-top:4px;font-size:12px;">Ignored: ${parsed.unmapped.slice(0, 8).map(escape).join(', ')}${parsed.unmapped.length > 8 ? '…' : ''}</div>` : ''}
+          </div>
+
+          <div style="margin-top:12px;border:1px solid var(--line);border-radius:8px;padding:10px 12px;">
+            <div style="font-weight:600;font-size:13px;margin-bottom:4px;">What this would change</div>
+            ${row('New merchants to add', d.added.length, 'color:#2b8a3e;')}
+            ${row('Existing merchants with changes', d.changed.length, 'color:#e67700;')}
+            ${row('No change', d.unchanged, 'color:var(--ink-soft);')}
+            ${d.added.length || d.changed.length ? `<button type="button" id="am-detail" class="btn-ghost" style="padding:2px 0;font-size:12.5px;margin-top:4px;">Show the differences</button>
+            <div id="am-detail-box" hidden style="margin-top:8px;max-height:260px;overflow:auto;">
+              ${d.changed.length ? `<table style="font-size:12.5px;width:100%;">
+                <thead><tr><th style="text-align:left;">Merchant</th><th style="text-align:left;">Field</th><th style="text-align:left;">Now</th><th style="text-align:left;">From file</th></tr></thead>
+                <tbody>${d.changed.flatMap(c => c.diffs.map((x, i) => `<tr>
+                  <td>${i === 0 ? escape(c.name) : ''}</td><td>${escape(x.field)}</td>
+                  <td class="muted">${escape(x.from) || '<em>empty</em>'}</td>
+                  <td><strong>${escape(x.to)}</strong></td></tr>`)).join('')}</tbody></table>` : ''}
+              ${d.added.length ? `<div style="margin-top:10px;font-weight:600;font-size:12.5px;">New merchants</div>
+                <ul style="font-size:12.5px;margin:4px 0 0;padding-left:18px;">${d.added.slice(0, 200).map(a2 => `<li>${escape(a2.name)}${a2.vals['Type'] ? ` <span class="muted">— ${escape(a2.vals['Type'])}</span>` : ''}</li>`).join('')}
+                ${d.added.length > 200 ? `<li class="muted">…and ${d.added.length - 200} more</li>` : ''}</ul>` : ''}
+            </div>` : ''}
+            <p class="muted" style="margin:8px 0 0;font-size:11.5px;">
+              Only the columns above are compared. A blank cell means “not stated” and leaves the
+              current value alone; contract dates and revenue-share terms are never touched.
+            </p>
+          </div>` : ''}
+          ${machines ? `<div style="font-size:13px;margin-top:10px;">
+            <strong>${machines.counted} machine(s)</strong> across ${machines.byStore.size} store(s) — models ${machines.models.join(', ')}.
+            <div class="muted" style="font-size:12px;">Machine counts are matched to merchants by store name.</div>
+          </div>` : ''}`;
+        card.querySelector('#am-detail')?.addEventListener('click', (ev) => {
+          const dbox = card.querySelector('#am-detail-box');
+          dbox.hidden = !dbox.hidden;
+          ev.target.textContent = dbox.hidden ? 'Show the differences' : 'Hide the differences';
+        });
+        card.querySelector('#am-import').disabled = false;
+      } catch (e) {
+        box.innerHTML = `<p class="form-error" style="font-size:13px;">${escape(e.message)}</p>`;
+        card.querySelector('#am-import').disabled = true;
+      }
+    };
+    card.querySelector('#am-merchants').addEventListener('change', preview);
+    card.querySelector('#am-machines').addEventListener('change', preview);
+
+    card.querySelector('#am-import').addEventListener('click', async () => {
+      const btn = card.querySelector('#am-import');
+      btn.disabled = true; btn.textContent = 'Importing…';
+      try {
+        let created = 0, updated = 0;
+        if (parsed) {
+          // Sent in the grid shape so the existing importer handles it: header names it already
+          // knows, and no contract or terms columns at all, so those stay untouched.
+          const fields = [...parsed.fields, 'Branch'];
+          const groups = fields.map(f => ['Contact', 'Phone', 'Email', 'Sales person'].includes(f) ? 'Contact' : 'Merchant');
+          const rows = parsed.rows.map((r, i) => [...r, parsed.branchCounts[i]]);
+          const res = await api('/contracts/import', { method: 'POST',
+            body: JSON.stringify({ rows, header: fields, groups, links: {} }) });
+          created += res.created; updated += res.updated;
+        }
+        if (machines) {
+          const r = await importMachineCounts(machines);
+          updated += r;
+        }
+        close();
+        await renderContractsScreen();
+        alert(`${created} merchant(s) added, ${updated} updated.\n\nContract dates and revenue-share terms were not changed.`);
+      } catch (e) {
+        btn.disabled = false; btn.textContent = 'Import';
+        alert('Could not import: ' + e.message);
+      }
+    });
   });
+}
+
+// Machine counts arrive per STORE; a merchant's count is the sum over the stores it owns. Store
+// ownership is whatever the registry already knows, so a store this app has never seen is
+// skipped rather than guessed at.
+async function importMachineCounts(machines) {
+  const merchants = await api('/merchants').catch(() => []);
+  const contractOfStore = new Map();
+  for (const m of merchants) {
+    const k = String(m.name || '').toLowerCase().trim();
+    if (k && m.contractId) contractOfStore.set(k, m.contractId);
+  }
+  const totals = new Map();
+  for (const [store, counts] of machines.byStore) {
+    const cid = contractOfStore.get(store.toLowerCase().trim());
+    if (!cid) continue;
+    const acc = totals.get(cid) || {};
+    for (const [model, n] of Object.entries(counts)) acc[model] = (acc[model] || 0) + n;
+    totals.set(cid, acc);
+  }
+  let n = 0;
+  for (const [cid, units] of totals) {
+    const c = CONTRACTS.find(x => x.contractId === cid);
+    if (!c) continue;
+    const total = Object.values(units).reduce((a, b) => a + b, 0);
+    if (JSON.stringify(Object.entries(c.units || {}).sort()) === JSON.stringify(Object.entries(units).sort())
+        && Number(c.installedUnits || 0) === total) continue;
+    await api(`/contracts/${encodeURIComponent(cid)}`, { method: 'PUT', body: JSON.stringify({ units, installedUnits: total }) });
+    n++;
+  }
+  return n;
 }
 
 // ── Archive ────────────────────────────────────────────────────────────────

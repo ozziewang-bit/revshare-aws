@@ -91,9 +91,14 @@ function headerReader(cells, header) {
 // The old 23-column layout is positional, so it is kept as a fallback: files already in
 // circulation must keep importing. `Link Contract` in column 22 is what tells them apart.
 const GRID_FIELDS = {
-  'merchant': 'merchantName', 'type': 'merchantType', 'merchant type': 'merchantType',
-  'counter party': 'counterParty', 'contact': 'contactName', 'phone': 'contactPhone',
-  'email': 'contactEmail', 'units': 'installedUnits', 'start': 'startDate', 'end': 'endDate',
+  // Both the old and current header wording, so a sheet exported before the 2026-09-03 rename
+  // still imports. Headers are matched by name, which is exactly what makes that cheap.
+  'merchant': 'merchantName', 'merchant/brand': 'merchantName',
+  'type': 'merchantType', 'merchant type': 'merchantType',
+  'counter party': 'counterParty', 'contract entity': 'counterParty',
+  'contact': 'contactName', 'phone': 'contactPhone', 'email': 'contactEmail',
+  'sales person': 'salesPerson', 'salesperson': 'salesPerson', 'branch': 'branchCount',
+  'units': 'installedUnits', 'start': 'startDate', 'end': 'endDate',
   'notice': 'terminationNoticeDays', 'auto-renewal': 'autoRenewal', 'contract': 'contractLink',
 };
 const isLegacySheet = header => /link/i.test(String((header || [])[22] ?? ''));
@@ -134,7 +139,7 @@ function normalizeGridRow(cells, header, groups) {
     }
     const field = GRID_FIELDS[name];
     if (!field) continue;
-    const v = field === 'installedUnits' || field === 'terminationNoticeDays' ? num(at(i))
+    const v = field === 'installedUnits' || field === 'terminationNoticeDays' || field === 'branchCount' ? num(at(i))
             : field === 'startDate' || field === 'endDate' ? toDate(at(i))
             : field === 'autoRenewal' ? autoRenewal(at(i))
             : str(at(i));

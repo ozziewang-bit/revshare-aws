@@ -10,6 +10,10 @@ const WRITABLE = [
   // Contact details are entered in the app, not imported — the source workbook has no
   // contact columns, so the importer never sets these and a re-import never clears them.
   'contactName', 'contactPhone', 'contactEmail',
+  // Who at ChargeSpot owns the relationship. Comes in with the weekly merchant upload.
+  'salesPerson',
+  // Branch count, from the weekly upload's store rows per merchant label.
+  'branchCount',
   // The contract is the payout entity now: it owns the rule, how it aggregates, whether it
   // is paid at all, and in which currency. These were PARTNER fields until 2026-08-07.
   'rule', 'aggregationMode', 'noPayout', 'currency',
