@@ -470,22 +470,35 @@ async function openFeatureRequests() {
 
 function renderNav() {
   const nav = document.getElementById('topnav');
+  // Four destinations. Analytics reads the same runs Run share lists, and Device types / Users
+  // are both configuration, so each pair is one screen with tabs rather than its own nav slot.
+  // Run share is NOT gated on runCalcs: reads are open backend-side, and gating the nav here
+  // was also hiding Analytics from read-only users. Creating a run is still gated, on the
+  // + New run button.
   nav.innerHTML = `
     <button id="nav-contracts" class="nav-btn active">Merchant view</button>
-    ${can('runCalcs') ? '<button id="nav-bulk-runs" class="nav-btn">Run share</button>' : ''}
-    <button id="nav-revshare-path" class="nav-btn">Analytics</button>
-    <button id="nav-device-types" class="nav-btn">Device Types</button>
+    <button id="nav-bulk-runs" class="nav-btn">Run share</button>
     <button id="nav-archived" class="nav-btn">Archived</button>
-    ${can('admin') ? '<button id="nav-users" class="nav-btn">Users</button>' : ''}`;
+    <button id="nav-settings" class="nav-btn">Settings</button>`;
   nav.querySelector('#nav-archived').addEventListener('click', () => { setActiveNav('nav-archived'); renderArchivedScreen(); });
-  nav.querySelector('#nav-bulk-runs')?.addEventListener('click', () => { setActiveNav('nav-bulk-runs'); renderBulkRunsList(); });
-  nav.querySelector('#nav-revshare-path').addEventListener('click', () => { setActiveNav('nav-revshare-path'); renderRevsharePathScreen(); });
-  nav.querySelector('#nav-device-types').addEventListener('click', () => { setActiveNav('nav-device-types'); renderDeviceTypesScreen(); });
+  nav.querySelector('#nav-bulk-runs').addEventListener('click', () => { setActiveNav('nav-bulk-runs'); renderBulkRunsList(); });
   nav.querySelector('#nav-contracts').addEventListener('click', () => { setActiveNav('nav-contracts'); renderContractsScreen(); });
-  nav.querySelector('#nav-users')?.addEventListener('click', () => { setActiveNav('nav-users'); renderUsersScreen(); });
+  nav.querySelector('#nav-settings').addEventListener('click', () => { setActiveNav('nav-settings'); renderSettingsScreen(); });
   // Lives in the brand bar, not the nav, so it survives every screen change.
   const frBtn = document.getElementById('feature-request');
   if (frBtn && !frBtn.dataset.wired) { frBtn.dataset.wired = '1'; frBtn.addEventListener('click', openFeatureRequests); }
+}
+
+// In-screen tabs, shared by Run share and Settings so the two behave identically. The nav
+// button stays active while these switch — they are views of one destination, not new ones.
+function subTabsHtml(tabs, active) {
+  return `<div class="subtabs">${tabs.map(t =>
+    `<button type="button" class="subtab${t.id === active ? ' active' : ''}" data-tab="${t.id}">${escape(t.label)}</button>`).join('')}</div>`;
+}
+
+function wireSubTabs(root, go) {
+  root.querySelectorAll('.subtab').forEach(b =>
+    b.addEventListener('click', () => { if (!b.classList.contains('active')) go(b.dataset.tab); }));
 }
 
 function setActiveNav(id) {
@@ -496,10 +509,27 @@ function setActiveNav(id) {
 }
 
 
-const PERM_LABELS = { editPartners:'Edit partners & rules', runCalcs:'Run calcs', deleteRuns:'Delete runs', manageMerchants:'Manage merchants', manageDeviceTypes:'Device types', admin:'Admin' };
-async function renderUsersScreen() {
+// Configuration, one screen. Users is admin-only, so a non-admin sees Settings with a single
+// tab rather than a nav item that 403s — the tab list is built from what you can actually open.
+async function renderSettingsScreen(tab = 'device-types') {
   const main = document.getElementById('main');
-  main.innerHTML = '<h2>Users</h2><p class="muted">Grant per-feature access. Anyone with a company Google account can sign in (read-only) until granted more.</p><div id="users-out">Loading…</div>';
+  setActiveNav('nav-settings');
+  const tabs = [{ id: 'device-types', label: 'Device types' }];
+  if (can('admin')) tabs.push({ id: 'users', label: 'Users' });
+  if (!tabs.some(t => t.id === tab)) tab = 'device-types';
+  main.innerHTML = `<div class="page-head"><h2>Settings</h2></div>
+    ${subTabsHtml(tabs, tab)}
+    <div id="settings-body">Loading…</div>`;
+  wireSubTabs(main, id => renderSettingsScreen(id));
+  const body = document.getElementById('settings-body');
+  if (tab === 'users') await renderUsersScreen(body);
+  else await renderDeviceTypesScreen(body);
+}
+
+const PERM_LABELS = { editPartners:'Edit partners & rules', runCalcs:'Run calcs', deleteRuns:'Delete runs', manageMerchants:'Manage merchants', manageDeviceTypes:'Device types', admin:'Admin' };
+async function renderUsersScreen(host) {
+  const main = host || document.getElementById('main');
+  main.innerHTML = `${host ? '' : '<h2>Users</h2>'}<p class="muted">Grant per-feature access. Anyone with a company Google account can sign in (read-only) until granted more.</p><div id="users-out">Loading…</div>`;
   const users = await api('/users');
   const keys = Object.keys(PERM_LABELS);
   const rowHtml = u => `<tr data-email="${escape(u.email)}"><td>${escape(u.email)}</td>${keys.map(k => `<td style="text-align:center"><input type="checkbox" data-perm="${k}" ${u.permissions?.[k] ? 'checked' : ''}></td>`).join('')}<td><button class="btn-primary" data-save>Save</button> <button data-del>Remove</button></td></tr>`;
@@ -517,7 +547,7 @@ async function renderUsersScreen() {
   document.getElementById('add-user').onclick = async () => {
     const email = document.getElementById('new-user-email').value.trim().toLowerCase(); if (!email) return;
     await api('/users/' + encodeURIComponent(email), { method: 'PUT', body: JSON.stringify({ permissions: {} }) });
-    renderUsersScreen();
+    renderUsersScreen(host);   // keep the Settings tab strip — a bare call would replace it
   };
 }
 
@@ -575,13 +605,15 @@ function payoutComposition(run, onlyContractId) {
 
 async function renderRevsharePathScreen() {
   const main = document.getElementById('main');
-  main.innerHTML = `<div class="page-head"><h2>Analytics</h2></div>
+  setActiveNav('nav-bulk-runs');
+  main.innerHTML = `${runShareHead('analytics')}
     <div style="max-width:340px;margin-bottom:8px;">
       <input id="rp-search" class="search-input" list="rp-options" placeholder="Search merchant… (or Total)" autocomplete="off">
       <datalist id="rp-options"></datalist>
     </div>
     <div id="rp-title" class="muted" style="margin:4px 0 10px;font-size:13px;"></div>
     <div id="rp-chart">Loading…</div>`;
+  wireRunShareTabs();
 
   const list = await api('/bulk-runs');
   const fulls = await Promise.all(list.map(r => api('/bulk-runs/' + r.runId)));
@@ -636,11 +668,11 @@ async function renderRevsharePathScreen() {
   show('Total');   // default
 }
 
-async function renderDeviceTypesScreen() {
-  const main = document.getElementById('main');
+async function renderDeviceTypesScreen(host) {
+  const main = host || document.getElementById('main');
   main.innerHTML = `
-    <div class="page-head">
-      <h2>Device Types</h2>
+    <div class="page-head" style="margin-bottom:14px;">
+      ${host ? '<div></div>' : '<h2>Device Types</h2>'}
       ${can('manageDeviceTypes') ? '<button id="add-model-btn" class="btn-primary">+ Add device type</button>' : ''}
     </div>
     <div id="model-form-slot"></div>
@@ -827,6 +859,11 @@ function missingFromUpload(contracts, names) {
 // either — so SG merchants showed blank unit counts even when the data was there. Device
 // Types is the source of truth; add a model there and its column appears.
 const UNIT_MODELS_FALLBACK = ['S5', 'S8', 'M10', 'L20', 'L40'];
+// What this screen owns. The rest of the grid mirrors the weekly merchant upload, so it is
+// shown but not typed over — see startCellEdit. `terms` is here because the Edit terms dialog
+// owns it; the cells themselves still open read-only.
+const EDITABLE_GROUPS = new Set(['contract', 'terms']);
+
 function buildContractGridColumns(models) {
   const codes = (models && models.length ? models : UNIT_MODELS_FALLBACK);
   return [
@@ -1141,6 +1178,8 @@ function contractRowHtml(c) {
     else disp = v == null || v === '' ? '' : escape(String(v)) + (col.suffix ? `<span class="ct-unit">${escape(col.suffix)}</span>` : '');
     // The End-date highlight only helps if that column is on screen; the Merchant column is
     // frozen, so the icon rides there and the row stays spottable however far you scroll.
+    // Say why a cell does not open, rather than letting a click do nothing unexplained.
+    const editable = EDITABLE_GROUPS.has(col.group) && col.type !== 'computed';
     if (i === 0) {
       // Two independent row-level flags ride the frozen Merchant column so they stay visible
       // however far right the grid is scrolled: renewal risk, and "this will block a run".
@@ -1161,8 +1200,10 @@ function contractRowHtml(c) {
     if (disp === '') disp = '<span class="ct-empty">–</span>';
     const cls = colClasses(cell, i);
     const flag = col.key === 'endDate' && rf.cls ? ` ${rf.cls}` : '';
-    const tip = col.key === 'endDate' && rf.title ? ` title="${escape(rf.title)}"` : '';
-    return `<td class="ct-cell ${cls}${flag}" data-id="${escape(c.contractId)}" data-key="${col.key}"${tip}>${disp}</td>`;
+    const ro = editable || !can('manageMerchants') ? '' : ' ct-ro';
+    const tip = col.key === 'endDate' && rf.title ? ` title="${escape(rf.title)}"`
+      : (ro ? ' title="From your merchant upload — change it in the file, not here. An import would overwrite an edit made in this cell."' : '');
+    return `<td class="ct-cell ${cls}${flag}${ro}" data-id="${escape(c.contractId)}" data-key="${col.key}"${tip}>${disp}</td>`;
   }).join('');
   // Edit-terms column: the row owns its terms directly now, so this is just a control,
   // never a partner badge.
@@ -1985,6 +2026,9 @@ async function openAddMerchants() {
       try {
         parsed = mf ? await parseWeeklyMerchantFile(mf) : null;
         machines = kf ? await parseMachineCountFile(kf) : null;
+        // Where each machine would actually land. Same matcher the import runs, so a store
+        // reported here as unmatched is exactly a store the import will skip.
+        const mm = machines ? matchMachineStores(machines.byStore, await loadRegistry()) : null;
         const d = diff = parsed ? diffWeeklyRows(parsed, CONTRACTS) : null;
         const row = (label, n, tone) => `<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px;${tone || ''}"><span>${label}</span><strong>${n}</strong></div>`;
         box.innerHTML = `
@@ -2026,10 +2070,35 @@ async function openAddMerchants() {
               current value alone; contract dates and revenue-share terms are never touched.
             </p>
           </div>` : ''}
-          ${machines ? `<div style="font-size:13px;margin-top:10px;">
-            <strong>${machines.counted} machine(s)</strong> across ${machines.byStore.size} store(s) — models ${machines.models.join(', ')}.
-            <div class="muted" style="font-size:12px;">Machine counts are matched to merchants by store name.</div>
+          ${machines ? `<div style="margin-top:12px;border:1px solid var(--line);border-radius:8px;padding:10px 12px;">
+            <div style="font-weight:600;font-size:13px;margin-bottom:4px;">Machine list</div>
+            <div style="font-size:13px;">
+              <strong>${machines.counted} machine(s)</strong> across ${machines.byStore.size} store(s) — models ${machines.models.join(', ')}.
+            </div>
+            ${row('Stores matched to a merchant', `${mm.matchedStores} · ${mm.matchedMachines} machine(s)`, 'color:#2b8a3e;')}
+            ${mm.unknown.length ? row('Store name not in the registry', `${mm.unknown.length} · ${mm.unknown.reduce((a, x) => a + x.machines, 0)} machine(s)`, 'color:#e67700;') : ''}
+            ${mm.unlinked.length ? row('In the registry, but no merchant linked', `${mm.unlinked.length} · ${mm.unlinked.reduce((a, x) => a + x.machines, 0)} machine(s)`, 'color:#e67700;') : ''}
+            ${mm.unknown.length || mm.unlinked.length ? `<button type="button" id="am-mdetail" class="btn-ghost" style="padding:2px 0;font-size:12.5px;margin-top:4px;">Show the stores that would be skipped</button>
+            <div id="am-mdetail-box" hidden style="margin-top:8px;max-height:220px;overflow:auto;">
+              ${[['Store name not in the registry', mm.unknown], ['In the registry, but no merchant linked', mm.unlinked]]
+                .filter(([, list]) => list.length).map(([title, list]) => `
+                <div style="font-weight:600;font-size:12.5px;margin-top:6px;">${title}</div>
+                <ul style="font-size:12.5px;margin:4px 0 0;padding-left:18px;">
+                  ${list.slice(0, 100).map(x => `<li>${escape(x.store)} <span class="muted">— ${x.machines} machine(s)</span></li>`).join('')}
+                  ${list.length > 100 ? `<li class="muted">…and ${list.length - 100} more</li>` : ''}</ul>`).join('')}
+            </div>` : ''}
+            <p class="muted" style="margin:8px 0 0;font-size:11.5px;">
+              Matched by store name through the store registry, which learns store names from run
+              rosters. Skipped stores are never guessed at — nothing is written for them, and
+              nothing is deleted. ⚠ This column counts CABINETS; a payout counts stations, so a
+              4-machine station reads 4 here and 1 in a run.
+            </p>
           </div>` : ''}`;
+        card.querySelector('#am-mdetail')?.addEventListener('click', (ev) => {
+          const mbox = card.querySelector('#am-mdetail-box');
+          mbox.hidden = !mbox.hidden;
+          ev.target.textContent = mbox.hidden ? 'Show the stores that would be skipped' : 'Hide the stores that would be skipped';
+        });
         card.querySelector('#am-detail')?.addEventListener('click', (ev) => {
           const dbox = card.querySelector('#am-detail-box');
           dbox.hidden = !dbox.hidden;
@@ -2081,24 +2150,50 @@ async function openAddMerchants() {
   });
 }
 
+// The store registry: one row per shop, carrying the merchant it belongs to. Several MB, so it
+// is fetched once per dialog and reused by both the preview and the import — the preview would
+// otherwise be a second copy of the same download, or (worse) a second copy of the matching.
+let REGISTRY_CACHE = null;
+async function loadRegistry() {
+  if (!REGISTRY_CACHE) REGISTRY_CACHE = await api('/merchants').catch(() => []);
+  return REGISTRY_CACHE;
+}
+
 // Machine counts arrive per STORE; a merchant's count is the sum over the stores it owns. Store
 // ownership is whatever the registry already knows, so a store this app has never seen is
-// skipped rather than guessed at.
-async function importMachineCounts(machines) {
-  const merchants = await api('/merchants').catch(() => []);
-  const contractOfStore = new Map();
-  for (const m of merchants) {
-    const k = String(m.name || '').toLowerCase().trim();
-    if (k && m.contractId) contractOfStore.set(k, m.contractId);
+// skipped rather than guessed at — but NAMED rather than skipped in silence, which is what this
+// used to do. Two ways to miss, reported apart because they need different fixes:
+//   `unknown`  — no registry row with that store name at all. The registry learns store names
+//                from run rosters, so this is usually a shop that has never been in one.
+//   `unlinked` — the shop IS in the registry but its row carries no contractId, so there is no
+//                merchant to add the machines to.
+// Both are dropped either way; the difference is whether the shop or the link is missing.
+function matchMachineStores(byStore, merchants) {
+  const linkedOf = new Map(), known = new Set();
+  for (const m of merchants || []) {
+    const k = String(m.name ?? '').toLowerCase().trim();
+    if (!k) continue;
+    known.add(k);
+    if (m.contractId && !linkedOf.has(k)) linkedOf.set(k, m.contractId);
   }
   const totals = new Map();
-  for (const [store, counts] of machines.byStore) {
-    const cid = contractOfStore.get(store.toLowerCase().trim());
-    if (!cid) continue;
+  const unknown = [], unlinked = [];
+  let matchedStores = 0, matchedMachines = 0;
+  for (const [store, counts] of byStore) {
+    const n = Object.values(counts).reduce((a, b) => a + b, 0);
+    const k = String(store ?? '').toLowerCase().trim();
+    const cid = linkedOf.get(k);
+    if (!cid) { (known.has(k) ? unlinked : unknown).push({ store, machines: n }); continue; }
+    matchedStores++; matchedMachines += n;
     const acc = totals.get(cid) || {};
-    for (const [model, n] of Object.entries(counts)) acc[model] = (acc[model] || 0) + n;
+    for (const [model, c] of Object.entries(counts)) acc[model] = (acc[model] || 0) + c;
     totals.set(cid, acc);
   }
+  return { totals, matchedStores, matchedMachines, unknown, unlinked };
+}
+
+async function importMachineCounts(machines) {
+  const { totals } = matchMachineStores(machines.byStore, await loadRegistry());
   let n = 0;
   for (const [cid, units] of totals) {
     const c = CONTRACTS.find(x => x.contractId === cid);
@@ -2244,6 +2339,11 @@ function startCellEdit(td) {
   // and the Edit terms dialog owns editing (same tree editor as the Rule tab), both
   // writing PUT /contracts/:id like every other cell here.
   if (col.type && col.type.startsWith('term-')) return;
+  // Only the CONTRACT and share-terms columns are editable here (user, 2026-09-03). Everything
+  // else on this grid — merchant, type, branches, contacts, machine counts — arrives from the
+  // weekly merchant upload, and typing over it just loses the edit at the next import: the
+  // importer merges the file over the row, so a stated cell wins. Fix those in the file.
+  if (!EDITABLE_GROUPS.has(col.group)) return;
   if (!can('manageMerchants')) return;
   const c = CONTRACTS.find(x => x.contractId === id);
   const cur = cellValue(c, key);
@@ -2370,9 +2470,25 @@ async function parseKaExcel(file) {
   return { partners: Object.values(partnerMap), merchants, warnings };
 }
 
+// Run share owns two views of the same runs: the list (the month at a glance) and Analytics
+// (the trend and what the payout is made of). One header, one tab strip — see §1i for what
+// belongs on which. The run DETAIL is not a tab: it is a place you go from the list.
+function runShareHead(tab) {
+  return `<div class="page-head"><h2>Run share</h2>${
+    tab === 'runs' && can('runCalcs') ? '<button id="new-bulk-run" class="btn-primary">+ New run</button>' : ''
+  }</div>${subTabsHtml([{ id: 'runs', label: 'Runs' }, { id: 'analytics', label: 'Analytics' }], tab)}`;
+}
+
+function wireRunShareTabs() {
+  wireSubTabs(document.getElementById('main'),
+    id => id === 'analytics' ? renderRevsharePathScreen() : renderBulkRunsList());
+}
+
 async function renderBulkRunsList() {
   const main = document.getElementById('main');
-  main.innerHTML = `<div class="page-head"><h2>Run share</h2>${can('runCalcs') ? '<button id="new-bulk-run" class="btn-primary">+ New run</button>' : ''}</div><div id="bulk-runs-out">Loading…</div>`;
+  setActiveNav('nav-bulk-runs');
+  main.innerHTML = `${runShareHead('runs')}<div id="bulk-runs-out">Loading…</div>`;
+  wireRunShareTabs();
   document.getElementById('new-bulk-run')?.addEventListener('click', renderNewBulkRunForm);
   const runs = await api('/bulk-runs');
   const out = document.getElementById('bulk-runs-out');

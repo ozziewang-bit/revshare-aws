@@ -203,6 +203,24 @@ form input:focus, form select:focus {
 }
 form > div:last-child { display: flex; gap: 8px; margin-top: 14px; }
 
+/* ============ IN-SCREEN TABS ============ */
+/* Views of ONE destination (Run share's list/Analytics, Settings' device types/users). Quieter
+   than the topbar's pill nav on purpose: the nav says where you are, these say which view. */
+.subtabs {
+  display: flex; gap: 20px;
+  border-bottom: 1px solid var(--border);
+  margin: -8px 0 20px;
+}
+.subtab {
+  padding: 8px 1px 10px;
+  background: none; border: none; border-radius: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--ink-soft); font-size: 13.5px; font-weight: 500;
+  margin-bottom: -1px;
+}
+.subtab:hover { background: none; border-color: transparent; color: var(--ink); }
+.subtab.active { color: var(--ink); font-weight: 600; border-bottom-color: var(--ink); }
+
 /* ============ TABLES ============ */
 table.ts {
   width: 100%;
@@ -902,6 +920,9 @@ body:has(#main.main-wide) .topbar { width: 100vw; left: 0; }
 .ct-ghead-stub { min-width: 0; padding: 0; }
 
 .ct-cell { padding: 7px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+/* Mirrors the weekly merchant upload — shown, not typed over. Only contract and share-terms
+   columns are editable here, so these must not invite a click that silently does nothing. */
+.ct-ro { cursor: default; }
 .ct-r { text-align: right; }
 .ct-c { text-align: center; }
 .ct-empty { color: var(--ink-faint); }
