@@ -2,7 +2,7 @@
 
 Last updated: 2026-09-03 (the merchant list is curated from your own upload: what a file omits is
 marked rather than deleted, and a run no longer writes to the merchant table — §1m).
-Service-worker `CACHE_VERSION` is at `revshare-v147` (bump on every shell change).
+Service-worker `CACHE_VERSION` is at `revshare-v150` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
 end-to-end before touching anything. The codebase is the ultimate source of
@@ -38,6 +38,15 @@ moved off `PARTNER` onto `CONTRACT` on 2026-08-07 — see §5). The SG standalon
 CloudFront (`E1ALROWEFJOG3Q`) is deprecated — the unified site lives on
 `d2t76jfby056ul`.
 
+**Nav is four items (2026-09-03):** **Merchant view · Run share · Archived · Settings**. Two
+pairs were folded into one screen each, with an in-screen tab strip (`subTabsHtml`/`wireSubTabs`):
+**Analytics is Run share's second tab** (it reads the same runs), and **Device types + Users are
+Settings tabs** (Users is built only for admins, so a non-admin sees Settings with one tab rather
+than a nav item that 403s). The **Run share nav item is deliberately NOT gated on `runCalcs`** —
+reads are open backend-side, and gating it would take Analytics away from read-only users who
+have always had it; `+ New run` carries the gate instead. The sections below still describe each
+screen by its old name.
+
 **UI tabs (frontend/app.js):**
 - **Merchant view** (`nav-contracts`) — the landing screen and, as of 2026-08-07, the only
   place a payout record is edited. One flat, editable grid of every `CONTRACT` row: the
@@ -48,7 +57,11 @@ CloudFront (`E1ALROWEFJOG3Q`) is deprecated — the unified site lives on
   (All / ◆ Needs terms / ⚠ Contract due or overdue / ⦿ Not in latest upload — the last appears
   only once an upload has been recorded, see §1m; counts in the option labels; it replaced
   the merchant-type filter and the sort dropdown, both dropped 2026-08-09 as unused),
-  search, inline cell editing, per-row **Archive** (see below), **+ New merchant** (a full form dialog covering every typeable grid column, generated from `CONTRACT_GRID_COLUMNS` so it cannot drift from the grid; terms are set afterwards), **Upload
+  search, **inline cell editing of the Contract columns only** (2026-09-03: `EDITABLE_GROUPS` =
+  `contract` + `terms`. Merchant/type/branch/contacts/machine counts mirror the weekly upload, and
+  `buildImportPlan` merges the file over the row, so an inline edit there was always reverted at
+  the next import without saying so. Those cells no longer open and explain why on hover; they are
+  NOT greyed — the data is good, only the affordance changes), per-row **Archive** (see below), **+ New merchant** (a full form dialog covering every typeable grid column, generated from `CONTRACT_GRID_COLUMNS` so it cannot drift from the grid; terms are set afterwards), **Upload
   sheet** (imports the `All_Merchant` sheet via `POST /contracts/import` — contract
   fields only, never touches `rule`), and an **Edit terms…** dialog per row for the
   share-terms rule itself (GP%/Electricity/Placement/Others/MG + payout method +
@@ -278,7 +291,7 @@ CSV already handle per_store correctly; this was a config issue, not a code bug.
 default to the lower-paying `whole` branch, which is exactly how 7-Eleven's original
 under-payment happened.
 
-Tests: `npm test` → **215/215** pass (incl. `ddb-util.test.mjs` — Query pagination +
+Tests: `npm test` → **219/219** pass (incl. `ddb-util.test.mjs` — Query pagination +
 BatchWriteItem chunking, §1c; `payout.test.mjs` — `merchantRowChanged` / `ruleHasValue` /
 `contractNeedsTerms` / label resolution; `bulk-runs.test.mjs` — roster-to-contract
 resolution + order-less fixed-fee; `contracts.test.mjs` — sheet-row normalisation, name
@@ -621,7 +634,16 @@ merchant per shop.
 - Columns are matched by header **name** with aliases (`WEEKLY_ALIASES`); unrecognised headers are
   listed as *ignored* rather than dropped in silence. If a real file uses new wording, add an alias.
 - The optional **machine list** updates machine counts only, matched to merchants by store name
-  via the registry; an unknown store is skipped, never guessed at. ⚠ It counts **cabinets**, while
+  via the registry; an unknown store is skipped, never guessed at — and **named** rather than
+  skipped in silence since 2026-09-03. `matchMachineStores` is a pure function used by BOTH the
+  preview and the import, so a store the preview reports as skipped is exactly a store the import
+  skips. It reports the two misses **apart** because they need different fixes: `unknown` (no
+  registry row with that store name — the registry learns names from run rosters) versus
+  `unlinked` (the shop is in the registry but its row carries no `contractId`). Live baseline
+  2026-09-03: 2,492 distinct store names, 2,465 resolvable, 27 unlinked, plus 12 registry rows
+  pointing at a deleted contract and 9 at an archived one. The registry is several MB, so it is
+  fetched once per dialog and shared by preview and import.
+  ⚠ It counts **cabinets**, while
   §1h counts **roster rows** to match the payout — a 4-machine BTS station reads 4 here and 1 in
   the payout. Decide which that column should mean before relying on it.
 
@@ -737,7 +759,7 @@ Account `<YOUR_AWS_ACCOUNT_ID>`, region `ap-northeast-1`. IAM user `<your-iam-us
 | `lambda/revshare-api/code/routes/bulk-runs.mjs` | Bulk run routes. Exports `buildRosterRows` (roster-authoritative row seeding, keyed by `contractId`; its `if (!m.contractId) continue` guard is defence in depth, not a live path — `applyMerchantRoster` always assigns a `contractId` first), `applyMerchantRoster` (resolves roster labels to `CONTRACT` rows, giving any unmatched label a `noPayout: true` stub that since 2026-09-03 is **in-memory only and never saved** — §1m; currency comes from `db.mjs`'s `DEFAULT_CURRENCY`, not a literal), `payoutDecision` (why a contract is/isn't paid; names the merchant in its warning when a sample name is available), `groupOrders` (legacy, order-only grouping, unused in the live route). `createBulkRunRoute` also builds a **`skipped`** list (2026-08-09) — brands that matched roster/order rows but weren't paid — with `skippedCount`/`skippedRevenue`/`totalOrderRevenue` on the run, so revenue never disappears from every total silently; see §1b and Finding 1 of the 2026-08-09 review. `paidBrandCount`/`rosterBrandCount` replace the old overloaded `merchantBrandCount` on the run payload (the `/bulk-runs/prepare` response still uses `merchantBrandCount` for its own, unambiguous meaning: distinct contracts in the roster). |
 | `lambda/revshare-api/code/contracts.mjs` | Contract sheet-row normalisation, name matching (`matchContracts`), import diffing (`buildImportPlan`). Contract fields only — never touches `rule`. |
 | `lambda/revshare-api/code/routes/contracts.mjs` | Contract (`CONTRACT`) CRUD + import routes. `WRITABLE` includes `rule`/`aggregationMode`/`noPayout`/`currency` for direct PUT edits — `CONTRACT` is the payout entity now (§5). |
-| `lambda/revshare-api/tests/` | `engine.test.mjs`, `csv.test.mjs`, `contracts.test.mjs`, `payout.test.mjs`, `bulk-runs.test.mjs`, `ddb-util.test.mjs`, `device-models.test.mjs`, `sheet-grid-shape.test.mjs`, `run-view.test.mjs`, `merchant-upload.test.mjs`, others — `npm test` → 215 total. |
+| `lambda/revshare-api/tests/` | `engine.test.mjs`, `csv.test.mjs`, `contracts.test.mjs`, `payout.test.mjs`, `bulk-runs.test.mjs`, `ddb-util.test.mjs`, `device-models.test.mjs`, `sheet-grid-shape.test.mjs`, `run-view.test.mjs`, `merchant-upload.test.mjs`, others — `npm test` → 219 total. |
 | `frontend/index.html` | SPA shell + pre-paint auth gate. |
 | `frontend/style.css` | All styles (tokenized). |
 | `frontend/app.js` | All app JS: auth, screens, Merchant view grid + terms editor, run flow. |
@@ -777,7 +799,7 @@ Run all tests:
 ```bash
 npm test    # from repo root
 ```
-215/215 should pass.
+219/219 should pass.
 
 ## 5. Data model
 
