@@ -1,7 +1,7 @@
 # revshare-aws — handoff
 
-Last updated: 2026-09-02 (feature requests filed from the header; per-merchant download is an .xlsx statement with order detail).
-Service-worker `CACHE_VERSION` is at `revshare-v142` (bump on every shell change).
+Last updated: 2026-09-03 (weekly merchant upload grouped by Merchant label, with a diff preview; Upload sheet removed).
+Service-worker `CACHE_VERSION` is at `revshare-v145` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
 end-to-end before touching anything. The codebase is the ultimate source of
@@ -583,6 +583,41 @@ in one place.
 - `FEATURE` row family in the existing table (no new IAM), **per region**: a Thai user's request
   lands in the Thai table, which is where the person reading it works. Sorted newest-first by
   ULID sort key.
+
+## 1l. The weekly merchant upload (2026-09-03)
+
+**+ Add merchants** → *Add one merchant* | *Batch — upload my file*. The old **Upload sheet**
+button is **removed**; `Download sheet` remains as an export, and the backend importer it used is
+still there (unreachable from the UI).
+
+**THE BRAND IS `Merchant label`, NEVER THE STORE NAME.** These files carry one row per shop.
+Reading the name column as the brand turns 2,357 shops into 2,357 "merchants" — measured, not
+hypothetical. Rows are **folded by label**: first value stated per field wins, blanks never
+overwrite, store names counted as branches. Real file: **2,357 rows → 260 brands**, and
+**2,288 new merchants → 1**. It also means a merchant created here is one a **run can resolve**,
+since `Merchant label` is what roster resolution matches on. A file with no label column falls
+back to store-as-brand **and says so in the preview** — that is the mode that produces one
+merchant per shop.
+
+- **Approved only.** The review-state column is a gate: read, used to filter, never stored.
+  1,797 of 4,151 rows dropped on the test file. No such column ⇒ every named row counts, stated
+  in the preview.
+- **A diff before anything is written** — new merchants, changed merchants field-by-field (current
+  vs file), unchanged count. Nothing is sent until Import. This is what surfaced the 2,288 above,
+  and it is the reason to keep it.
+- **Contract dates and terms cannot be touched** — structurally. The batch posts to
+  `/contracts/import`, whose merge leaves any field the file does not mention alone, and the file
+  carries no contract or terms columns. **A blank cell means "not stated"**, not "clear it".
+- Columns are matched by header **name** with aliases (`WEEKLY_ALIASES`); unrecognised headers are
+  listed as *ignored* rather than dropped in silence. If a real file uses new wording, add an alias.
+- The optional **machine list** updates machine counts only, matched to merchants by store name
+  via the registry; an unknown store is skipped, never guessed at. ⚠ It counts **cabinets**, while
+  §1h counts **roster rows** to match the payout — a 4-machine BTS station reads 4 here and 1 in
+  the payout. Decide which that column should mean before relying on it.
+
+Grid also gained **Branch** (branch count per brand), renamed **Merchant → Merchant/Brand** and
+**Counter party → Contract entity** (moved into the Contract group), and added **Sales person**.
+`GRID_FIELDS` accepts both old and new header wording so an older exported sheet still imports.
 
 ## 2. Live URLs and resources
 
