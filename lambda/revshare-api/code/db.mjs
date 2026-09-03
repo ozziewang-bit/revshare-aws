@@ -363,3 +363,26 @@ export async function deleteMachineModel(code) {
     Key: { pk: 'CONFIG', sk: `MODEL#${code}` }
   }));
 }
+
+// ── The weekly upload record ──────────────────────────────────────────────
+// The brand names the last weekly merchant file contained, kept as ONE row rather than a
+// per-contract "last seen" stamp. The only question asked of it is "was this merchant in my
+// latest file?", which needs the latest list and nothing else; a per-contract field would mean
+// rewriting all ~260 contracts every upload to record something no payout ever reads.
+// Consequence to know: only the LATEST upload is remembered. There is no per-merchant history,
+// so the grid can say "not in the 3 Sep upload" but never "last seen 12 Aug".
+
+export async function getLastUpload() {
+  const out = await ddb.send(new GetCommand({
+    TableName: TABLE, Key: { pk: 'CONFIG', sk: 'UPLOAD#LATEST' }
+  }));
+  return out.Item ? { at: out.Item.at, names: out.Item.names || [] } : null;
+}
+
+export async function putLastUpload(names) {
+  const rec = { at: new Date().toISOString(), names };
+  await ddb.send(new PutCommand({
+    TableName: TABLE, Item: { pk: 'CONFIG', sk: 'UPLOAD#LATEST', ...rec }
+  }));
+  return rec;
+}

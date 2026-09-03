@@ -1,4 +1,5 @@
-import { listContracts, getContract, putContract, deleteContract, listPartners, ulid } from '../db.mjs';
+import { listContracts, getContract, putContract, deleteContract, listPartners, ulid,
+         getLastUpload, putLastUpload } from '../db.mjs';
 import { normalizeContractRow, buildImportPlan } from '../contracts.mjs';
 
 // Fields a client may write. `sheetTerms` is import-preview data and is not stored;
@@ -36,6 +37,13 @@ export async function listContractsRoute() {
   const items = await listContracts();
   items.sort((a, b) => (a.merchantName || '').localeCompare(b.merchantName || ''));
   return resp(200, items);
+}
+
+// What the last weekly merchant upload contained. Read by the Merchant view so it can mark the
+// contracts that file did NOT mention — an import never deletes, so without this they are
+// invisible.
+export async function lastUploadRoute() {
+  return resp(200, await getLastUpload() || { at: null, names: [] });
 }
 
 export async function createContractRoute(event) {
@@ -87,7 +95,16 @@ export async function importContractsRoute(event) {
     await Promise.all(all.slice(i, i + 10).map(putContract));
   }
 
+  // Only the weekly batch upload is a statement about the WHOLE merchant list. The old sheet
+  // importer and the CLI carry partial lists, so letting them record would mark every merchant
+  // they happened to omit as missing. Opt in explicitly rather than inferring it from the shape.
+  let lastUpload = null;
+  if (body.recordUpload) {
+    lastUpload = await putLastUpload(normalized.map(r => r.merchantName).filter(Boolean));
+  }
+
   return resp(200, {
+    lastUpload,
     created: plan.creates.length,
     updated: plan.updates.length,
     linked: all.filter(c => c.partnerId).length,

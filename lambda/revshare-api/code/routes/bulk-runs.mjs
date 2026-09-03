@@ -1,4 +1,4 @@
-import { listMerchants, putMerchantsBatch, putBulkRun, listBulkRuns, getBulkRun, getBulkRunInputs, deleteBulkRun, listMachineModels, ulid, listContracts, getContract, putContract } from '../db.mjs';
+import { listMerchants, putMerchantsBatch, putBulkRun, listBulkRuns, getBulkRun, getBulkRunInputs, deleteBulkRun, listMachineModels, ulid, listContracts, getContract } from '../db.mjs';
 import * as dbModule from '../db.mjs';
 import { evaluateRun } from '../engine.mjs';
 import { ruleHasValue, contractNeedsTerms, indexContractsByName, resolveLabel, merchantRowChanged, indexOrderAliases } from '../payout.mjs';
@@ -200,14 +200,26 @@ export function indexMachines(machines) {
   return idx;
 }
 
-// A roster row's `Merchant label` is the brand. Resolve it to a Merchant-view row; create
-// one if the brand is new, so a roster upload still onboards merchants. Labels that match
-// nothing are impossible here (we create them) — the unmatched case is the reverse: a
-// store-registry row whose brand has no contract, handled in buildRosterRows.
-// `persist: false` resolves the roster exactly as normal but writes NOTHING — no contract
-// stubs, no store rows. That is what makes infra/rerun-bulk-run.mjs's dry run honest: without
-// it, merely previewing a re-run would mutate the registry. New labels still get an in-memory
-// stub so resolution (and therefore the computed run) is identical either way.
+// A roster row's `Merchant label` is the brand. Resolve it to a Merchant-view row.
+//
+// A RUN NEVER WRITES TO THE MERCHANT TABLE (user, 2026-09-03). The merchant list is curated
+// from the weekly upload on the Merchant view; the platform's roster is a run input and must
+// not edit it. Two write-backs were removed here for that reason:
+//   - the contract stub minted for an unresolvable label (it grew the table to 341 rows
+//     against a curated list of ~260, and every one of them arrived unasked-for)
+//   - the machine-count refresh onto `units`/`installedUnits`, which overwrote typed numbers
+//     with the platform's on every run. No payout is affected: engine.mjs never reads `units`
+//     — flat_per_machine and per-machine MG count ROSTER ROWS at run time. Refreshing those
+//     counts deliberately is still available as infra/refresh-units-from-roster.mjs.
+// An unresolvable label still gets an IN-MEMORY stub, so the run itself is computed exactly as
+// before: its orders match, and its revenue lands in the run's `skipped` list under the brand's
+// own name rather than disappearing into `unmatched` as a set of store names. The stub is never
+// persisted, so the brand does not appear in the Merchant view; `newMerchants` now reports
+// brands the roster has and your table does not.
+//
+// `persist: false` additionally suppresses the store-registry write, which is what makes
+// infra/rerun-bulk-run.mjs's dry run honest: without it, merely previewing a re-run would
+// mutate the registry.
 export async function applyMerchantRoster(merchants, { persist = true } = {}) {
   const [contracts, existingMerchants] = await Promise.all([listContracts(), listMerchants()]);
   let index = indexContractsByName(contracts);
@@ -225,17 +237,18 @@ export async function applyMerchantRoster(merchants, { persist = true } = {}) {
     validRows.push({ src, label });
   }
 
-  await mapPool([...newLabels.values()], 20, async label => {
-    const stub = { contractId: ulid(), merchantName: label, partnerId: null,
+  for (const label of newLabels.values()) {
+    // In-memory only — never written. A roster label with no merchant-view row is a brand
+    // operating in the field that your merchant list does not carry. It is not paid (brands
+    // absent from the merchant list are not paid — user, 2026-08-07) and it is not added to
+    // your table (a run does not edit the merchant list — user, 2026-09-03). Giving it a stub
+    // here keeps its orders matched, so its revenue is reported by brand under `skipped`
+    // instead of scattering across `unmatched` as unrecognised store names.
+    contracts.push({ contractId: ulid(), merchantName: label, partnerId: null,
       units: {}, notes: '', rule: null, aggregationMode: 'per_store',
-      // A roster label with no merchant-view row is a brand operating in the field that the
-      // merchant sheet does not list. Record it so it is visible, but flagged not-paid: the
-      // user decided (2026-08-07) that brands absent from the sheet are not paid. Flip the
-      // flag in the Merchant view to start paying one.
-      noPayout: true, currency: DEFAULT_CURRENCY };
-    contracts.push(persist ? await putContract(stub) : stub);
+      noPayout: true, currency: DEFAULT_CURRENCY });
     newMerchants.push(label);
-  });
+  }
   index = indexContractsByName(contracts);
 
   // Resolve every roster row first, writing nothing: this loop is pure bookkeeping, so it
@@ -265,10 +278,10 @@ export async function applyMerchantRoster(merchants, { persist = true } = {}) {
   }
   if (toWrite.length && persist) await putMerchantsBatch(toWrite);
 
-  // Refresh the Merchant view's machine counts from what the roster actually contains. Only
-  // contracts whose counts really changed are written, so a re-run writes nothing.
+  // Machine counts the roster DIFFERS from what each contract stores. Reported so step 2 can
+  // say so, and deliberately NOT written — see the note at the top of this function. To apply
+  // them, run infra/refresh-units-from-roster.mjs.
   const changedUnits = unitsChanged(Object.values(seen), rosterUnitCounts(roster));
-  if (changedUnits.length && persist) await mapPool(changedUnits, 20, c => putContract(c));
 
   const merchantsNeedingTerms = Object.values(seen)
     .filter(contractNeedsTerms)
@@ -276,7 +289,7 @@ export async function applyMerchantRoster(merchants, { persist = true } = {}) {
 
   // Built here because this is where the full contract list is already loaded.
   return { roster, merchantsNeedingTerms, unassigned, newMerchants,
-           unitsUpdated: changedUnits.map(c => ({ contractId: c.contractId, merchantName: c.merchantName, units: c.units, installedUnits: c.installedUnits })),
+           unitsDiffer: changedUnits.map(c => ({ contractId: c.contractId, merchantName: c.merchantName, units: c.units, installedUnits: c.installedUnits })),
            aliasIndex: indexOrderAliases(contracts) };
 }
 
@@ -308,9 +321,9 @@ export async function prepareBulkRunRoute(event) {
   const body = JSON.parse(event.body || '{}');
   const merchants = Array.isArray(body.merchants) ? body.merchants : [];
   if (!merchants.length) return resp(400, { error: 'no_merchants' });
-  const { roster, merchantsNeedingTerms, unassigned, newMerchants, unitsUpdated } = await applyMerchantRoster(merchants);
+  const { roster, merchantsNeedingTerms, unassigned, newMerchants, unitsDiffer } = await applyMerchantRoster(merchants);
   const merchantBrandCount = new Set(roster.map(r => r.contractId)).size;
-  return resp(200, { rosterCount: roster.length, merchantBrandCount, newMerchants, unassigned, merchantsNeedingTerms, unitsUpdated });
+  return resp(200, { rosterCount: roster.length, merchantBrandCount, newMerchants, unassigned, merchantsNeedingTerms, unitsDiffer });
 }
 
 // Why a contract is or is not paid, as a pure decision — so the ordering of these rules is

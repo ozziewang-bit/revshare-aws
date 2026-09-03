@@ -797,6 +797,29 @@ let CONTRACTS = [];
 // Managed device-types list ({code, displayName}), loaded once with the grid and
 // cached module-scope — the per-model popover must not re-fetch on every open.
 let MACHINE_MODELS_CACHE = [];
+// What the last weekly merchant upload contained: `{ at, names[] }`, or null before any upload.
+// An import never deletes, so a merchant that has dropped off your list stays here silently —
+// this is what lets the grid mark it. Recomputed into MISSING_UPLOAD (contractIds) on paint.
+let LAST_UPLOAD = null;
+let MISSING_UPLOAD = new Set();
+
+// Merchants that exist here but were NOT in the latest uploaded file. Same lowercase-trim name
+// match `diffWeeklyRows` uses, so the import preview's count and the grid's can never disagree.
+// Archived contracts are never included — an ended contract is not expected in a merchant list,
+// and marking it would be noise on a screen that already excludes it.
+// "3 Sep" — short enough to sit in a tooltip and a filter label without wrapping.
+function uploadLabel() {
+  if (!LAST_UPLOAD?.at) return 'latest';
+  const d = new Date(LAST_UPLOAD.at);
+  return isNaN(d) ? 'latest' : d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+}
+
+function missingFromUpload(contracts, names) {
+  if (!names || !names.length) return [];
+  const inFile = new Set(names.map(n => String(n ?? '').toLowerCase().trim()).filter(Boolean));
+  return (contracts || []).filter(c =>
+    !c.archived && !inFile.has(String(c.merchantName ?? '').toLowerCase().trim()));
+}
 
 // The per-model unit columns are built from the REGION's configured machine models, not a
 // fixed list. They used to be hardcoded to S5/S8/M10/L20/L40, which matched neither region:
@@ -1123,6 +1146,11 @@ function contractRowHtml(c) {
       // however far right the grid is scrolled: renewal risk, and "this will block a run".
       if (needsTerms(c)) {
         disp = '<span class="ct-alert ct-alert-terms" title="No terms that pay anything — this merchant will block Step 4 of a run until its terms are set, or it is marked None">◆</span>' + disp;
+      }
+      // Third row-level flag: your latest merchant file did not mention this merchant. Nothing
+      // is deleted by an import, so this is the only trace that it has dropped off the list.
+      if (MISSING_UPLOAD.has(c.contractId)) {
+        disp = `<span class="ct-alert ct-alert-missing" title="Not in the ${escape(uploadLabel())} upload — nothing was deleted, but your latest merchant file does not mention this merchant">⦿</span>` + disp;
       }
       if (rf.cls) {
         disp = `<span class="ct-alert ${rf.cls === 'ct-expired' ? 'ct-alert-over' : 'ct-alert-soon'}" title="${escape(rf.title)}">⚠</span>` + disp;
@@ -1688,11 +1716,15 @@ async function renderContractsScreen() {
   const el = document.getElementById('main');
   el.classList.add('main-wide');   // also covers the boot path, which doesn't go via setActiveNav
   el.innerHTML = '<h1>Merchant view</h1><p class="muted">Loading…</p>';
-  const [contracts, machineModels] = await Promise.all([
-    api('/contracts'), api('/machine-models')
+  const [contracts, machineModels, lastUpload] = await Promise.all([
+    api('/contracts'), api('/machine-models'),
+    // Never fatal: the grid is worth showing without the marks, so an older backend or a
+    // failed read just means no ⦿ column-marker this paint.
+    api('/contracts/last-upload').catch(() => null)
   ]);
   CONTRACTS = contracts;
   MACHINE_MODELS_CACHE = machineModels;
+  LAST_UPLOAD = lastUpload && lastUpload.names && lastUpload.names.length ? lastUpload : null;
   refreshContractGridColumns();
   el.innerHTML = `
     <h1>Merchant view</h1>
@@ -1702,6 +1734,7 @@ async function renderContractsScreen() {
         <option value="">All merchants</option>
         <option value="needs">◆ Needs terms</option>
         <option value="due">⚠ Contract due or overdue</option>
+        ${LAST_UPLOAD ? '<option value="missing">⦿ Not in latest upload</option>' : ''}
       </select>
       ${can('manageMerchants') ? '<button type="button" id="ct-add" class="btn btn-primary">+ Add merchants</button>' : ''}
       <button type="button" id="ct-template" class="btn" title="Download the current merchant list as .xlsx, in the exact format Upload sheet reads — edit it and upload it back">Download sheet</button>
@@ -1873,7 +1906,11 @@ function diffWeeklyRows(parsed, contracts) {
     });
     if (diffs.length) changed.push({ name, diffs }); else unchanged++;
   }
-  return { added, changed, unchanged };
+  // The fourth bucket: merchants that exist here and are not in this file. An import never
+  // deletes them, so this is the only place they would otherwise be visible. Same helper the
+  // grid marks with, so the number shown before importing is the number marked after.
+  const missing = missingFromUpload(contracts, parsed.rows.map(r => r[nameIdx]));
+  return { added, changed, unchanged, missing };
 }
 
 // Machine file: the platform's Machine List — one row per cabinet, with the store it sits in.
@@ -1935,7 +1972,7 @@ async function openAddMerchants() {
         </div>
       </div>`;
     card.querySelector('#am-cancel').addEventListener('click', close);
-    let parsed = null, machines = null;
+    let parsed = null, machines = null, diff = null;
 
     // Show what was recognised BEFORE anything is written. A file from outside this app will
     // not use our wording, and a column mapped to the wrong field is worse than one dropped.
@@ -1948,7 +1985,7 @@ async function openAddMerchants() {
       try {
         parsed = mf ? await parseWeeklyMerchantFile(mf) : null;
         machines = kf ? await parseMachineCountFile(kf) : null;
-        const d = parsed ? diffWeeklyRows(parsed, CONTRACTS) : null;
+        const d = diff = parsed ? diffWeeklyRows(parsed, CONTRACTS) : null;
         const row = (label, n, tone) => `<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px;${tone || ''}"><span>${label}</span><strong>${n}</strong></div>`;
         box.innerHTML = `
           ${parsed ? `<div style="font-size:13px;">
@@ -1967,7 +2004,8 @@ async function openAddMerchants() {
             ${row('New merchants to add', d.added.length, 'color:#2b8a3e;')}
             ${row('Existing merchants with changes', d.changed.length, 'color:#e67700;')}
             ${row('No change', d.unchanged, 'color:var(--ink-soft);')}
-            ${d.added.length || d.changed.length ? `<button type="button" id="am-detail" class="btn-ghost" style="padding:2px 0;font-size:12.5px;margin-top:4px;">Show the differences</button>
+            ${row('In your list, not in this file', d.missing.length, 'color:var(--accent);')}
+            ${d.added.length || d.changed.length || d.missing.length ? `<button type="button" id="am-detail" class="btn-ghost" style="padding:2px 0;font-size:12.5px;margin-top:4px;">Show the differences</button>
             <div id="am-detail-box" hidden style="margin-top:8px;max-height:260px;overflow:auto;">
               ${d.changed.length ? `<table style="font-size:12.5px;width:100%;">
                 <thead><tr><th style="text-align:left;">Merchant</th><th style="text-align:left;">Field</th><th style="text-align:left;">Now</th><th style="text-align:left;">From file</th></tr></thead>
@@ -1978,6 +2016,10 @@ async function openAddMerchants() {
               ${d.added.length ? `<div style="margin-top:10px;font-weight:600;font-size:12.5px;">New merchants</div>
                 <ul style="font-size:12.5px;margin:4px 0 0;padding-left:18px;">${d.added.slice(0, 200).map(a2 => `<li>${escape(a2.name)}${a2.vals['Type'] ? ` <span class="muted">— ${escape(a2.vals['Type'])}</span>` : ''}</li>`).join('')}
                 ${d.added.length > 200 ? `<li class="muted">…and ${d.added.length - 200} more</li>` : ''}</ul>` : ''}
+              ${d.missing.length ? `<div style="margin-top:10px;font-weight:600;font-size:12.5px;">In your list, not in this file</div>
+                <p class="muted" style="margin:2px 0 4px;font-size:12px;">Kept exactly as they are. After importing they are marked ⦿ in the grid, and the status filter lists just these.</p>
+                <ul style="font-size:12.5px;margin:4px 0 0;padding-left:18px;">${d.missing.slice(0, 200).map(m => `<li>${escape(m.merchantName || '')}${m.branchCount ? ` <span class="muted">— ${m.branchCount} branch(es)</span>` : ''}</li>`).join('')}
+                ${d.missing.length > 200 ? `<li class="muted">…and ${d.missing.length - 200} more</li>` : ''}</ul>` : ''}
             </div>` : ''}
             <p class="muted" style="margin:8px 0 0;font-size:11.5px;">
               Only the columns above are compared. A blank cell means “not stated” and leaves the
@@ -2006,7 +2048,7 @@ async function openAddMerchants() {
       const btn = card.querySelector('#am-import');
       btn.disabled = true; btn.textContent = 'Importing…';
       try {
-        let created = 0, updated = 0;
+        let created = 0, updated = 0, missed = 0;
         if (parsed) {
           // Sent in the grid shape so the existing importer handles it: header names it already
           // knows, and no contract or terms columns at all, so those stay untouched.
@@ -2014,8 +2056,12 @@ async function openAddMerchants() {
           const groups = fields.map(f => ['Contact', 'Phone', 'Email', 'Sales person'].includes(f) ? 'Contact' : 'Merchant');
           const rows = parsed.rows.map((r, i) => [...r, parsed.branchCounts[i]]);
           const res = await api('/contracts/import', { method: 'POST',
-            body: JSON.stringify({ rows, header: fields, groups, links: {} }) });
+            body: JSON.stringify({ rows, header: fields, groups, links: {}, recordUpload: true }) });
           created += res.created; updated += res.updated;
+          // Only the weekly batch sets this — see importContractsRoute. Taking it from the
+          // response means the grid repaints marked without a second round trip.
+          if (res.lastUpload?.names?.length) LAST_UPLOAD = res.lastUpload;
+          missed = diff ? diff.missing.length : 0;
         }
         if (machines) {
           const r = await importMachineCounts(machines);
@@ -2023,7 +2069,10 @@ async function openAddMerchants() {
         }
         close();
         await renderContractsScreen();
-        alert(`${created} merchant(s) added, ${updated} updated.\n\nContract dates and revenue-share terms were not changed.`);
+        alert(`${created} merchant(s) added, ${updated} updated.`
+          + (missed ? `\n\n${missed} merchant(s) in your list were not in this file. Nothing was `
+                    + `deleted — they are marked ⦿ in the grid, and the status filter lists them.` : '')
+          + `\n\nContract dates and revenue-share terms were not changed.`);
       } catch (e) {
         btn.disabled = false; btn.textContent = 'Import';
         alert('Could not import: ' + e.message);
@@ -2159,18 +2208,23 @@ function paintContracts() {
   // count here is over `live` for the same reason: an ended contract should not appear in a
   // total that describes work to do.
   const live = CONTRACTS.filter(c => !c.archived);
+  // Recomputed here rather than cached at load: a merchant renamed in the grid stops (or starts)
+  // matching the uploaded list on the very next paint, with no refetch.
+  MISSING_UPLOAD = new Set(missingFromUpload(live, LAST_UPLOAD?.names).map(c => c.contractId));
   let rows = live.filter(c =>
     (!q || (c.merchantName || '').toLowerCase().includes(q)) &&
-    (status !== 'needs' || needsTerms(c)) &&
-    (status !== 'due'   || !!renewalFlag(c).cls));
+    (status !== 'needs'   || needsTerms(c)) &&
+    (status !== 'due'     || !!renewalFlag(c).cls) &&
+    (status !== 'missing' || MISSING_UPLOAD.has(c.contractId)));
   rows.sort((a, b) => (a.merchantName || '').localeCompare(b.merchantName || ''));
   body.innerHTML = rows.map(contractRowHtml).join('');
   document.getElementById('ct-count').textContent = `${rows.length} of ${live.length}`;
   // Counts live in the option labels — they move as terms get set and contracts renew, so
   // they are recomputed on every paint rather than baked into the markup once.
   if (statusSel) {
-    const counts = { needs: live.filter(needsTerms).length,
-                     due:   live.filter(c => renewalFlag(c).cls).length };
+    const counts = { needs:   live.filter(needsTerms).length,
+                     due:     live.filter(c => renewalFlag(c).cls).length,
+                     missing: MISSING_UPLOAD.size };
     for (const opt of statusSel.options) {
       if (opt.value in counts) {
         opt.textContent = opt.textContent.replace(/ \(\d+\)$/, '') + ` (${counts[opt.value]})`;
@@ -2433,9 +2487,14 @@ function renderNewBulkRunForm() {
           <div id="wiz-ml-status" style="margin-top:10px;"></div>
           ${step2Done ? `<div style="margin-top:10px;padding:12px 16px;background:#ebfbee;border:1px solid #8ce99a;border-radius:8px;font-size:13.5px;">
             <strong>Roster loaded:</strong> ${wiz.prepare.rosterCount} machines · ${wiz.prepare.merchantBrandCount} merchants
-            ${wiz.prepare.newMerchants?.length ? `· <span style="color:#2b8a3e;">${wiz.prepare.newMerchants.length} new merchant(s) created</span>` : ''}
+            ${wiz.prepare.newMerchants?.length ? `· <span style="color:#e67700;" title="${escape(wiz.prepare.newMerchants.slice(0, 40).join(', '))}">${wiz.prepare.newMerchants.length} brand(s) not in your merchant list</span>` : ''}
             ${wiz.prepare.unassigned?.length ? `· <span style="color:#e67700;">${wiz.prepare.unassigned.length} unassigned store(s)</span>` : ''}
-            ${wiz.prepare.unitsUpdated?.length ? `· <span style="color:#1971c2;">machine counts refreshed on ${wiz.prepare.unitsUpdated.length} merchant(s)</span>` : ''}
+            ${wiz.prepare.unitsDiffer?.length ? `· <span style="color:var(--ink-soft);">machine counts differ on ${wiz.prepare.unitsDiffer.length} merchant(s)</span>` : ''}
+            <div class="muted" style="margin-top:4px;font-size:12px;">
+              A run never changes your merchant list — it reads each merchant's terms and nothing
+              else. Brands above that you don't carry are not paid and not added; their revenue is
+              reported under Skipped on the run.
+            </div>
           </div>` : ''}
           `}
         </div>

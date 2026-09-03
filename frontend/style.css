@@ -1006,3 +1006,6 @@ body:has(#main.main-wide) .topbar { width: 100vw; left: 0; }
 .ct-terms { color: var(--accent); cursor: pointer; }
 .ct-terms:hover { text-decoration: underline; }
 .ct-alert-terms { color: var(--warn); }
+/* "not in the latest merchant upload" — informational, not a warning: nothing is wrong with
+   the row, it just isn't in your current list. Deliberately cooler than the ◆ / ⚠ flags. */
+.ct-alert-missing { color: var(--accent); }

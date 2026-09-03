@@ -56,8 +56,9 @@ test('buildRosterRows groups by contractId, not partnerId', () => {
 });
 
 // This exercises the `if (!m.contractId) continue` guard directly, but that guard is not a
-// live path in production: applyMerchantRoster auto-creates a noPayout stub CONTRACT for
-// every roster label, so no real roster row ever reaches buildRosterRows without a
+// live path in production: applyMerchantRoster gives every unresolvable roster label a noPayout
+// stub contract — in memory only since 2026-09-03, but still assigned, so no real roster row
+// reaches buildRosterRows without a
 // contractId. It's defence in depth for a caller that skips applyMerchantRoster (e.g. this
 // test). It does NOT model "the 436 case" (brands with no CONTRACT before a roster upload) —
 // those get a contractId assigned during applyMerchantRoster and are skipped-but-matched at
@@ -384,4 +385,38 @@ test('the run can total what the review flag is costing', () => {
   const flagged = out.filter(r => r.reviewState);
   assert.equal(flagged.length, 2);
   assert.equal(flagged.reduce((a, r) => a + r.revenue, 0), 730);
+});
+
+// ── A run does not edit the merchant list (user, 2026-09-03) ──────────────────
+// The merchant list is curated from the weekly upload on the Merchant view. The platform's
+// roster is a run INPUT: a run reads each merchant's terms and writes nothing back. Two
+// write-backs used to break that — a contract stub minted for every unresolvable roster label
+// (which is how the table reached 341 rows against a curated ~260), and a machine-count
+// refresh that overwrote typed `units` with the platform's numbers on every run.
+//
+// Pinned at the import line because that is the only place it cannot be reintroduced by
+// accident: writing a contract from this module requires importing the writer first.
+import { readFileSync } from 'node:fs';
+const bulkRunsSrc = readFileSync(new URL('../code/routes/bulk-runs.mjs', import.meta.url), 'utf8');
+
+test('bulk-runs never imports a contract writer', () => {
+  const importLine = bulkRunsSrc.slice(0, bulkRunsSrc.indexOf('\n'));
+  assert.ok(importLine.includes("from '../db.mjs'"), 'expected the db import on line 1');
+  assert.ok(!/\bputContract\b/.test(bulkRunsSrc),
+    'a run must not write CONTRACT rows — the merchant list is edited on the Merchant view only');
+});
+
+// The counts are still COMPUTED, so step 2 can report that the roster disagrees with what a
+// merchant stores. Applying them is a deliberate act: infra/refresh-units-from-roster.mjs.
+test('unit counts are reported as a difference, not applied', () => {
+  assert.ok(/unitsDiffer/.test(bulkRunsSrc), 'prepare should report unitsDiffer');
+  assert.ok(!/unitsUpdated/.test(bulkRunsSrc), 'nothing is updated any more — do not call it that');
+});
+
+// No payout depends on the stored counts: flat_per_machine and per-machine MG count ROSTER
+// ROWS at run time. This is why dropping the refresh changes no money.
+test('the engine never reads a contract\'s stored unit counts', () => {
+  const engineSrc = readFileSync(new URL('../code/engine.mjs', import.meta.url), 'utf8');
+  assert.ok(!/\bunits\b/.test(engineSrc));
+  assert.ok(!/installedUnits/.test(engineSrc));
 });
