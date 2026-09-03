@@ -1,7 +1,8 @@
 # revshare-aws — handoff
 
-Last updated: 2026-09-03 (weekly merchant upload grouped by Merchant label, with a diff preview; Upload sheet removed).
-Service-worker `CACHE_VERSION` is at `revshare-v145` (bump on every shell change).
+Last updated: 2026-09-03 (the merchant list is curated from your own upload: what a file omits is
+marked rather than deleted, and a run no longer writes to the merchant table — §1m).
+Service-worker `CACHE_VERSION` is at `revshare-v147` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
 end-to-end before touching anything. The codebase is the ultimate source of
@@ -44,7 +45,8 @@ CloudFront (`E1ALROWEFJOG3Q`) is deprecated — the unified site lives on
   collapsed/spread by **clicking its header in the group row above the column labels**
   (2026-08-09; replaced the four toolbar checkboxes, and a collapsed group keeps one narrow
   column so the header that reopens it never disappears with the data) — a **status filter**
-  (All / ◆ Needs terms / ⚠ Contract due or overdue, counts in the option labels; it replaced
+  (All / ◆ Needs terms / ⚠ Contract due or overdue / ⦿ Not in latest upload — the last appears
+  only once an upload has been recorded, see §1m; counts in the option labels; it replaced
   the merchant-type filter and the sort dropdown, both dropped 2026-08-09 as unused),
   search, inline cell editing, per-row **Archive** (see below), **+ New merchant** (a full form dialog covering every typeable grid column, generated from `CONTRACT_GRID_COLUMNS` so it cannot drift from the grid; terms are set afterwards), **Upload
   sheet** (imports the `All_Merchant` sheet via `POST /contracts/import` — contract
@@ -64,7 +66,9 @@ CloudFront (`E1ALROWEFJOG3Q`) is deprecated — the unified site lives on
      label to a Merchant view (`CONTRACT`) row by name — auto-creating one, flagged
      `noPayout: true`, for any label with no existing row (a brand absent from the
      merchant sheet is not paid, by the user's 2026-08-07 decision, but stays visible) —
-     and returns rule-readiness.
+     and returns rule-readiness. **As of 2026-09-03 that stub is in-memory only and is never
+     saved** — a run does not edit the merchant list (§1m). Step 2 reports such labels as
+     "N brand(s) not in your merchant list".
   3. **Review rules** — any resolved merchant whose rule doesn't actually pay anything is
      listed inline, opening the Merchant view's own terms dialog for immediate editing.
      Step 4 is locked until every one has a paying rule (or is `noPayout`). The readiness
@@ -127,8 +131,10 @@ that pays something, not `noPayout`), covering 235 stores — see `infra/adopt-p
 The user ruled: bring those 41 in, carrying their existing rule/aggregation; the other 24
 (no paying rule) stay unpaid as originally decided.
 
-**Corrected 2026-08-09 — the paragraph below used to claim orders against these brands land
-in `unmatched`. That was wrong; here's what actually happens.** `applyMerchantRoster`
+**Corrected twice. 2026-08-09: the paragraph below used to claim orders against these brands land
+in `unmatched`; that was wrong. 2026-09-03: the stub it describes is now created IN MEMORY and
+never saved (§1m) — everything below about ORDER MATCHING and the `skipped` list is unchanged and
+still current, but the brand no longer appears in the Merchant view as a result of a run.** `applyMerchantRoster`
 auto-creates a `CONTRACT` stub (flagged `noPayout: true`) for **every** roster label that
 doesn't already resolve to one — not just when the same brand happens to reappear later. So
 by the time a roster reaches `buildRosterRows`, every row already carries a `contractId`;
@@ -138,9 +144,9 @@ as defence in depth — see the comment at that line). Orders against one of the
 other brand; the brand itself is skipped at payout time by `payoutDecision` because it's
 `noPayout`. That revenue now surfaces in the run's **`skipped`** list (added 2026-08-09,
 Finding 1 of the 2026-08-09 review) instead of silently vanishing from every total on the
-page while still counting inside `orderCount`. The Merchant view still shows the brand as
-visible-but-unpaid from the first roster upload onward; flipping `noPayout` off there (with
-a paying rule) makes it get paid from the next run.
+page while still counting inside `orderCount`. Until 2026-09-03 the Merchant view showed the brand as visible-but-unpaid from the first roster
+upload onward. It no longer does — a run does not add merchants (§1m). To pay one, add it to your
+weekly merchant file, or use the run's **Assign→** / **+ Add merchant** buttons.
 
 **Rule model (NEW — replaces the old leaf-tree editor UX):** a merchant's (`CONTRACT`
 row's) rule is built from **share terms** + a **payout method**. Terms: GP% (percent of revenue),
@@ -272,7 +278,7 @@ CSV already handle per_store correctly; this was a config issue, not a code bug.
 default to the lower-paying `whole` branch, which is exactly how 7-Eleven's original
 under-payment happened.
 
-Tests: `npm test` → **207/207** pass (incl. `ddb-util.test.mjs` — Query pagination +
+Tests: `npm test` → **215/215** pass (incl. `ddb-util.test.mjs` — Query pagination +
 BatchWriteItem chunking, §1c; `payout.test.mjs` — `merchantRowChanged` / `ruleHasValue` /
 `contractNeedsTerms` / label resolution; `bulk-runs.test.mjs` — roster-to-contract
 resolution + order-less fixed-fee; `contracts.test.mjs` — sheet-row normalisation, name
@@ -481,6 +487,10 @@ columns had to be kept forever just to hold their slots.
 
 ## 1h. Machine counts, and stores held back by a review state (2026-08-27)
 
+**SUPERSEDED 2026-09-03 — the roster no longer WRITES these counts (§1m); it reports that they
+differ and `infra/refresh-units-from-roster.mjs` applies them deliberately. Everything below about
+what the counts MEAN still holds, and is the reason the CLI counts roster rows.**
+
 **Uploading the Businessmen list refreshes each merchant's machine counts.** `rosterUnitCounts`
 counts **roster rows** per model — the same unit the payout counts, since `evalFlatPerMachine`
 sums one per roster row and a **minimum guarantee is per station, not per cabinet** (user,
@@ -619,6 +629,78 @@ Grid also gained **Branch** (branch count per brand), renamed **Merchant → Mer
 **Counter party → Contract entity** (moved into the Contract group), and added **Sales person**.
 `GRID_FIELDS` accepts both old and new header wording so an older exported sheet still imports.
 
+(§1l's diff preview gained a fourth bucket on the same day — see §1m.)
+
+## 1m. The merchant list is yours (2026-09-03) — READ BEFORE RE-COUPLING ANYTHING
+
+One decision, two halves: **the merchant table is curated from the weekly upload on the Merchant
+view, and nothing else edits it.** The user stated it plainly — *"the run is an independent task,
+only uses the rev term setting to each brand/merchant"*.
+
+### What an upload omits is MARKED, never deleted
+
+An import has never deleted, which meant a merchant that dropped off your weekly list was
+indistinguishable from one still on it. Now:
+
+- The import preview gains a **fourth bucket** — *"In your list, not in this file"* — with the
+  names listed under **Show the differences**, shown BEFORE anything is written.
+- The grid marks each one **⦿** in the frozen Merchant column (tooltip *"Not in the 3 Sep
+  upload"*), and the status filter gains **⦿ Not in latest upload (N)**, which appears only once
+  an upload has been recorded.
+- `missingFromUpload(contracts, names)` in `app.js` is the single definition, used by BOTH the
+  preview count and the grid marks, so the number shown before importing is the number marked
+  after. Extracted and tested by `tests/merchant-upload.test.mjs`.
+- **Archived contracts are never marked** — an ended contract is not expected in a merchant list,
+  and the Merchant view excludes it anyway, so marking it would put a count on that screen with
+  no row behind it.
+- A merchant that has **never** been in any upload IS marked (user decision): the mark means
+  exactly "your latest file does not mention this". The first import therefore lights up a lot of
+  rows — that is the answer to "what's the difference", and it shrinks each week.
+- Stored as **one** `CONFIG`/`UPLOAD#LATEST` row per region, not a per-contract "last seen" stamp:
+  the only question asked is "was this merchant in my latest file?", and a per-contract field
+  would mean rewriting all ~260 contracts every upload to record something no payout reads. The
+  cost of that choice: **no per-merchant history**.
+- Only the weekly batch records it, via an explicit **`recordUpload: true`** on
+  `POST /contracts/import`. The sheet importer and `infra/import-merchant-sheet.mjs` carry PARTIAL
+  lists — letting them record would mark every merchant they happened to omit. Do not infer this
+  flag from the request shape.
+
+### A run does not write to the merchant table
+
+`applyMerchantRoster` used to do it twice. Both are removed:
+
+1. **The persisted stub.** An unresolvable roster label minted a `noPayout` `CONTRACT`. That is
+   how the table reached **341 rows against a curated list of ~260** — every one of them
+   unasked-for, and each would now arrive pre-marked ⦿ as noise. The label still gets an
+   **in-memory** stub, so the run computes exactly as before: its orders match and its revenue is
+   reported **by brand** under `skipped`, rather than scattering across `unmatched` as
+   unrecognised store names. It is simply never saved. Step 2 reports these as *"N brand(s) not in
+   your merchant list"*; bring one in deliberately with the run's **Assign→** / **+ Add merchant**
+   buttons, or by adding it to your weekly file.
+2. **The machine-count refresh.** Every run overwrote `units`/`installedUnits` with the platform's
+   numbers, replacing typed values silently. Now `unitsChanged` is still computed and returned as
+   **`unitsDiffer`** (prepare reports "machine counts differ on N merchant(s)" — a fact, not an
+   action). Applying them is deliberate: `infra/refresh-units-from-roster.mjs`.
+
+**No payout moved, and this is why:** `engine.mjs` contains no reference to `units` or
+`installedUnits` at all — `flat_per_machine` and per-machine MG count **roster rows at run time**.
+The stored column is reference data. A test asserts this, so a future change that makes the engine
+read it will fail loudly rather than turn §1h's note into a live money bug.
+
+**Made structural, not documented:** `putContract` is gone from `bulk-runs.mjs`'s imports
+entirely, and `bulk-runs.test.mjs` asserts it cannot return — writing a `CONTRACT` from that module
+requires re-adding the import first. Three tests pin this half (no contract writer, `unitsDiffer`
+not `unitsUpdated`, engine reads no units).
+
+**What deliberately still writes:** the store-registry `MERCHANT` rows (`putMerchantsBatch`). That
+is the shop-level index behind the Merchant view's machine-list upload (store name → merchant) and
+the **Assign→** button — not the merchant grid. Freeze it and both break quietly as new shops stop
+resolving. `persist: false` still suppresses it, which is what keeps `infra/rerun-bulk-run.mjs`'s
+dry run honest.
+
+**The reverse direction cannot be fully severed and is not meant to be:** a run READS each
+contract's terms — that is the thing it pays. What it no longer does is write back.
+
 ## 2. Live URLs and resources
 
 - **Site:** https://d2t76jfby056ul.cloudfront.net
@@ -635,7 +717,7 @@ Account `<YOUR_AWS_ACCOUNT_ID>`, region `ap-northeast-1`. IAM user `<your-iam-us
 |---|---|
 | `lambda/revshare-api/code/engine.mjs` | Pure calculation engine. No AWS SDK. Tested via `node:test`. |
 | `lambda/revshare-api/code/csv.mjs` | CSV parser + validation. |
-| `lambda/revshare-api/code/db.mjs` | DynamoDB + S3 wrappers for every row family: Partner, Merchant (store registry), Contract, Run, BulkRun, machine-model Config. Also exports `DEFAULT_CURRENCY` (2026-08-09) — the region's default currency for auto-created contract stubs, `process.env.REVSHARE_CURRENCY` overridable, `'THB'` here. Every list function paginates via `ddb-util.mjs`'s `queryAll` as of 2026-08-24 — do not add one that doesn't (§1c). Also exports `putMerchantsBatch` (BatchWriteItem + `UnprocessedItems` retry) and `merchantItem`, the item builder it shares with `putMerchant`. This file is **never synced between regions**, so the Singapore `db.mjs` must define its own `DEFAULT_CURRENCY` (default `'SGD'`) by hand — see §5/§8. `bulk-runs.mjs` reads it via a namespace import (`import * as dbModule from '../db.mjs'`), not a named one — a named import of a symbol the target `db.mjs` doesn't export is a static ESM error that fails the whole module load, which is exactly what took SG down for ~2 minutes during this fix before the import was changed. Until SG's `db.mjs` gets the mirror, SG silently falls back to `'THB'` (wrong, but non-fatal) rather than crashing. |
+| `lambda/revshare-api/code/db.mjs` | DynamoDB + S3 wrappers for every row family: Partner, Merchant (store registry), Contract, Run, BulkRun, machine-model Config. Also exports `DEFAULT_CURRENCY` (2026-08-09) — the region's default currency for auto-created contract stubs, `process.env.REVSHARE_CURRENCY` overridable, `'THB'` here. Every list function paginates via `ddb-util.mjs`'s `queryAll` as of 2026-08-24 — do not add one that doesn't (§1c). Also exports `putMerchantsBatch` (BatchWriteItem + `UnprocessedItems` retry) and `merchantItem`, the item builder it shares with `putMerchant`. `getLastUpload`/`putLastUpload` (2026-09-03, §1m) are hand-mirrored into SG's copy — `routes/contracts.mjs` is synced and imports them by NAME, so an omission fails the whole module load. This file is **never synced between regions**, so the Singapore `db.mjs` must define its own `DEFAULT_CURRENCY` (default `'SGD'`) by hand — see §5/§8. `bulk-runs.mjs` reads it via a namespace import (`import * as dbModule from '../db.mjs'`), not a named one — a named import of a symbol the target `db.mjs` doesn't export is a static ESM error that fails the whole module load, which is exactly what took SG down for ~2 minutes during this fix before the import was changed. Until SG's `db.mjs` gets the mirror, SG silently falls back to `'THB'` (wrong, but non-fatal) rather than crashing. |
 | `infra/rekey-models.mjs` | Re-key a device code in contract units and per-machine terms (2026-08-27). `REVSHARE_TABLE=… node infra/rekey-models.mjs L40=LL40 [--apply]`. Dry run by default, idempotent. Must be applied together with any parser change, or terms stop matching. |
 | `infra/refresh-units-from-roster.mjs` | Refresh contract machine counts from a Businessmen list without doing a run (2026-08-27, §1h). Dry run by default. Reuses the run's own `rosterUnitCounts`/`unitsChanged`/`resolveLabel` and the frontend's `parseDeviceModel`, extracted from app.js rather than reimplemented, so it writes what step 2 would. |
 | `infra/rekey-sg-ll-models.mjs` | One-off (2026-08-27): re-key SG's `LL20`/`LL40` back to `L20`/`L40` in units and rules after the model split was reverted. Applied — 42 contracts. Idempotent. |
@@ -652,10 +734,10 @@ Account `<YOUR_AWS_ACCOUNT_ID>`, region `ap-northeast-1`. IAM user `<your-iam-us
 | `lambda/revshare-api/code/index.mjs` | Lambda entry: auth gate + route dispatch. |
 | `lambda/revshare-api/code/routes/merchants.mjs` | Store-registry (`MERCHANT`) CRUD routes. |
 | `lambda/revshare-api/code/routes/import.mjs` | POST /import/rev-share — parses KA Excel JSON into partners + merchants. Exports `compileRule`, `parseDeviceType`. Dormant: no frontend caller (see §1b). |
-| `lambda/revshare-api/code/routes/bulk-runs.mjs` | Bulk run routes. Exports `buildRosterRows` (roster-authoritative row seeding, keyed by `contractId`; its `if (!m.contractId) continue` guard is defence in depth, not a live path — `applyMerchantRoster` always assigns a `contractId` first), `applyMerchantRoster` (resolves roster labels to `CONTRACT` rows, auto-creating a `noPayout: true` stub for any unmatched label; currency comes from `db.mjs`'s `DEFAULT_CURRENCY`, not a literal), `payoutDecision` (why a contract is/isn't paid; names the merchant in its warning when a sample name is available), `groupOrders` (legacy, order-only grouping, unused in the live route). `createBulkRunRoute` also builds a **`skipped`** list (2026-08-09) — brands that matched roster/order rows but weren't paid — with `skippedCount`/`skippedRevenue`/`totalOrderRevenue` on the run, so revenue never disappears from every total silently; see §1b and Finding 1 of the 2026-08-09 review. `paidBrandCount`/`rosterBrandCount` replace the old overloaded `merchantBrandCount` on the run payload (the `/bulk-runs/prepare` response still uses `merchantBrandCount` for its own, unambiguous meaning: distinct contracts in the roster). |
+| `lambda/revshare-api/code/routes/bulk-runs.mjs` | Bulk run routes. Exports `buildRosterRows` (roster-authoritative row seeding, keyed by `contractId`; its `if (!m.contractId) continue` guard is defence in depth, not a live path — `applyMerchantRoster` always assigns a `contractId` first), `applyMerchantRoster` (resolves roster labels to `CONTRACT` rows, giving any unmatched label a `noPayout: true` stub that since 2026-09-03 is **in-memory only and never saved** — §1m; currency comes from `db.mjs`'s `DEFAULT_CURRENCY`, not a literal), `payoutDecision` (why a contract is/isn't paid; names the merchant in its warning when a sample name is available), `groupOrders` (legacy, order-only grouping, unused in the live route). `createBulkRunRoute` also builds a **`skipped`** list (2026-08-09) — brands that matched roster/order rows but weren't paid — with `skippedCount`/`skippedRevenue`/`totalOrderRevenue` on the run, so revenue never disappears from every total silently; see §1b and Finding 1 of the 2026-08-09 review. `paidBrandCount`/`rosterBrandCount` replace the old overloaded `merchantBrandCount` on the run payload (the `/bulk-runs/prepare` response still uses `merchantBrandCount` for its own, unambiguous meaning: distinct contracts in the roster). |
 | `lambda/revshare-api/code/contracts.mjs` | Contract sheet-row normalisation, name matching (`matchContracts`), import diffing (`buildImportPlan`). Contract fields only — never touches `rule`. |
 | `lambda/revshare-api/code/routes/contracts.mjs` | Contract (`CONTRACT`) CRUD + import routes. `WRITABLE` includes `rule`/`aggregationMode`/`noPayout`/`currency` for direct PUT edits — `CONTRACT` is the payout entity now (§5). |
-| `lambda/revshare-api/tests/` | `engine.test.mjs`, `csv.test.mjs`, `contracts.test.mjs`, `payout.test.mjs`, `bulk-runs.test.mjs`, `ddb-util.test.mjs`, `device-models.test.mjs`, `sheet-grid-shape.test.mjs`, `run-view.test.mjs`, others — `npm test` → 207 total. |
+| `lambda/revshare-api/tests/` | `engine.test.mjs`, `csv.test.mjs`, `contracts.test.mjs`, `payout.test.mjs`, `bulk-runs.test.mjs`, `ddb-util.test.mjs`, `device-models.test.mjs`, `sheet-grid-shape.test.mjs`, `run-view.test.mjs`, `merchant-upload.test.mjs`, others — `npm test` → 215 total. |
 | `frontend/index.html` | SPA shell + pre-paint auth gate. |
 | `frontend/style.css` | All styles (tokenized). |
 | `frontend/app.js` | All app JS: auth, screens, Merchant view grid + terms editor, run flow. |
@@ -695,7 +777,7 @@ Run all tests:
 ```bash
 npm test    # from repo root
 ```
-207/207 should pass.
+215/215 should pass.
 
 ## 5. Data model
 
@@ -705,6 +787,7 @@ Single DDB table `RevsharePartner`. Five row families:
 |---|---|---|
 | `FEATURE` | `FEATURE#<ulid>` | A feature request (2026-09-02, §1k): title, detail, the screen it was filed from, status, who filed and who resolved it. Per region. |
 | `CONTRACT` | `CONTRACT#<contractId>` | **The payout entity (since 2026-08-07).** Merchant contract terms (type, counter party, unit counts, start/end, etc.) **plus** `rule`, `aggregationMode`, `noPayout`, `currency` — the fields a bulk run actually evaluates. Optional `partnerId` back-link to the `PARTNER` row it was migrated from. Edited entirely from the Merchant view screen. |
+| `CONFIG` | `UPLOAD#LATEST` | The brand names the last weekly merchant upload contained, `{at, names[]}` (2026-09-03, §1m). One row, not a per-contract stamp — only the LATEST upload is remembered, so the grid can say "not in the 3 Sep upload" but never "last seen 12 Aug". Per region. |
 | `MERCHANT` | `MERCHANT#<merchantId>` | Store-registry row — one per physical machine/location, seeded from the roster upload. Carries `contractId` pointing at the `CONTRACT` (payout) row for its brand; 3,865 of 4,066 rows have one (3,630 from the first migration, +235 from the adoption) (see §1b "Deliberately unpaid" for the other 201). |
 | `PARTNER` | `META#<partnerId>` | **Retained but dormant.** The pre-2026-08-07 config + rule row. Nothing reads these any more — the Partners UI and its routes are gone (see §1b) — but the rows are kept on purpose so a migrated `CONTRACT`'s rule can be checked against the original it was copied from (`infra/compare-pipelines.mjs`). Do not delete without asking; do not treat as canonical for anything current. |
 | `RUN#<partnerId>` | `RUN#<runId>` | Legacy single-partner run row (one CSV upload + computed result, `ruleSnapshot` + `csvRaw` + `csvParsed` + `result`). The routes that write/read these (`/partners/:id/runs*`) still exist but have no frontend caller and no dedicated test file (`tests/` has no `runs.test.mjs`) — dormant alongside `PARTNER`. |
@@ -768,7 +851,8 @@ migrated `CONTRACT` rule can be checked against its `PARTNER` source.
 | POST | `/contracts` | Create contract. Requires `manageMerchants`. |
 | PUT | `/contracts/:id` | Update contract fields (partial merge). Requires `manageMerchants`. |
 | DELETE | `/contracts/:id` | Delete contract. Requires `manageMerchants`. |
-| POST | `/contracts/import` | Bulk upsert from the parsed `All_Merchant` sheet, contract fields only. Requires `manageMerchants`. |
+| GET | `/contracts/last-upload` | What the last weekly merchant upload contained (§1m). Open to any signed-in user. |
+| POST | `/contracts/import` | Bulk upsert from the parsed `All_Merchant` sheet, contract fields only. Requires `manageMerchants`. `recordUpload: true` additionally records the brand list as the latest upload — set by the weekly batch only, never by the sheet importer or the CLI, which carry partial lists. Requires `manageMerchants`. |
 
 CORS configured on the API Gateway to allow `*` origin with headers
 `content-type, authorization`. Adjust the `AllowOrigins` once a custom
