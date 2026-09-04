@@ -862,7 +862,39 @@ const UNIT_MODELS_FALLBACK = ['S5', 'S8', 'M10', 'L20', 'L40'];
 // What this screen owns. The rest of the grid mirrors the weekly merchant upload, so it is
 // shown but not typed over — see startCellEdit. `terms` is here because the Edit terms dialog
 // owns it; the cells themselves still open read-only.
-const EDITABLE_GROUPS = new Set(['contract', 'terms']);
+const EDITABLE_GROUPS = new Set(['contract', 'terms', 'finance']);
+
+// Where the payout is actually sent. BOTH regions as of 2026-09-04 — the columns were TH-only
+// for half a day, guarded on REGION, purely because Singapore's Lambda had no such fields in
+// WRITABLE and `pick()` drops an unknown key without erroring: the cell would have opened, taken
+// what you typed, and lost it on the next paint. The guard came off together with the SG deploy
+// that added them, never before it. That ordering is the whole point — if a future field lands
+// here TH-first, guard it again until SG's WRITABLE has caught up.
+//
+// Editable inline (see EDITABLE_GROUPS) because nothing else writes them: the weekly merchant
+// upload has no bank columns, so unlike Contact/Phone/Email these cannot be reverted by an
+// import. The contact here is the FINANCE contact — who the remittance advice goes to, usually
+// AP rather than the operational contact in the Contact group.
+// The prose the download sheet carries for each finance column — as a hover comment on the
+// header cell and a row in the Field guide. Keyed by field so the sheet cannot list a column
+// the grid does not have, or vice versa.
+const FINANCE_SHEET_DESC = {
+  bankName:            'Bank the payout is transferred to. Free text, as written on the account.',
+  bankAccountName:     'Account holder name, exactly as the bank has it \u2014 a mismatch is what bounces a transfer. '
+                     + 'May differ from both the brand and the contract entity.',
+  bankAccountNumber:   'Bank account number. Kept exactly as typed, so leading zeros and dashes survive.',
+  financeContactName:  'Who to contact about payment \u2014 usually accounts payable, NOT the operational contact '
+                     + 'in the Contact group.',
+  financeContactEmail: 'Where the remittance advice is sent.',
+};
+
+const FINANCE_COLUMNS = [
+  { key: 'bankName',             label: 'Bank',            type: 'text', width: 145, group: 'finance' },
+  { key: 'bankAccountName',      label: 'Account name',    type: 'text', width: 170, group: 'finance' },
+  { key: 'bankAccountNumber',    label: 'Account no.',     type: 'text', width: 145, group: 'finance' },
+  { key: 'financeContactName',   label: 'Finance contact', type: 'text', width: 135, group: 'finance' },
+  { key: 'financeContactEmail',  label: 'Finance email',   type: 'text', width: 175, group: 'finance' },
+];
 
 function buildContractGridColumns(models) {
   const codes = (models && models.length ? models : UNIT_MODELS_FALLBACK);
@@ -885,6 +917,7 @@ function buildContractGridColumns(models) {
     { key: 'terminationNoticeDays', label: 'Notice',        type: 'number', width: 84  , group: 'contract', suffix: ' days' },
     { key: 'autoRenewal',           label: 'Auto-renewal',  type: 'select', width: 135 , group: 'contract' },
     { key: 'contractLink',          label: 'Contract',      type: 'url',    width: 80  , group: 'contract' },
+    ...FINANCE_COLUMNS,
     { key: 'term.method',      label: 'Mode',         type: 'term-mode',    width: 130, group: 'terms' },
     { key: 'term.summary',     label: 'Rev terms',    type: 'term-summary', width: 230, group: 'terms' },
   ];
@@ -932,15 +965,31 @@ const CONTRACT_GROUPS = [
   { key: 'contact',  label: 'Contact'  },
   { key: 'machines', label: 'Machines' },
   { key: 'contract', label: 'Contract' },
+  { key: 'finance',  label: 'Finance Information' },
   { key: 'terms',    label: 'Share terms' },
 ];
+// The screen OPENS COLLAPSED (2026-09-04). Six groups spread is ~2,900px, well past a laptop,
+// so the honest default is the compact list — merchant, type, branch, and one narrow stub per
+// group, each of which reopens it. Someone who wants a column spends one click, instead of
+// everyone paying a horizontal scrollbar.
+//
+// The storage key is VERSIONED because the old default was all-open and was already saved in
+// every returning browser — keeping the key would have shipped a new default that nobody using
+// the screen could see. The cost is one deliberate reset of a low-stakes preference; choices
+// made from here on persist as before.
+const CT_GROUPS_KEY = 'rs_ct_groups_v2';
 let CONTRACT_GROUPS_ON = (() => {
   try {
-    const saved = JSON.parse(localStorage.getItem('rs_ct_groups') || 'null');
+    const saved = JSON.parse(localStorage.getItem(CT_GROUPS_KEY) || 'null');
     if (saved && typeof saved === 'object') return saved;
-  } catch { /* corrupt or unavailable storage — fall through to all-on */ }
-  return Object.fromEntries(CONTRACT_GROUPS.map(g => [g.key, true]));
+  } catch { /* corrupt or unavailable storage — fall through to all-collapsed */ }
+  return Object.fromEntries(CONTRACT_GROUPS.map(g => [g.key, false]));
 })();
+// One definition of "is this group open", used by the layout AND the toggle. They disagreed in
+// the obvious way when the default flipped: a group that is open unless explicitly false, and a
+// toggle that opens only what is explicitly false, leaves an absent key rendering as closed and
+// clicking to closed — a dead header. Open means exactly `true`.
+const groupOpen = key => CONTRACT_GROUPS_ON[key] === true;
 // The grid's columns as contiguous groups, in render order. `id` is not toggleable — the
 // merchant is what identifies the row, so there must always be something to read.
 function contractLayout() {
@@ -951,7 +1000,7 @@ function contractLayout() {
     if (!seg || seg.key !== key) {
       const g = CONTRACT_GROUPS.find(x => x.key === key);
       segs.push(seg = { key, label: g ? g.label : '', toggleable: !!g,
-                        open: !g || CONTRACT_GROUPS_ON[key] !== false, cols: [] });
+                        open: !g || groupOpen(key), cols: [] });
     }
     seg.cols.push(col);
   }
@@ -1013,8 +1062,8 @@ function contractHeadHtml() {
 }
 
 function toggleContractGroup(key) {
-  CONTRACT_GROUPS_ON = { ...CONTRACT_GROUPS_ON, [key]: CONTRACT_GROUPS_ON[key] === false };
-  try { localStorage.setItem('rs_ct_groups', JSON.stringify(CONTRACT_GROUPS_ON)); } catch { /* private mode */ }
+  CONTRACT_GROUPS_ON = { ...CONTRACT_GROUPS_ON, [key]: !groupOpen(key) };
+  try { localStorage.setItem(CT_GROUPS_KEY, JSON.stringify(CONTRACT_GROUPS_ON)); } catch { /* private mode */ }
   const thead = document.querySelector('.ct-table thead');
   if (thead) thead.innerHTML = contractHeadHtml();   // header and body must be rebuilt together
   paintContracts();
@@ -1496,7 +1545,12 @@ const EXAMPLE_ROW = {
   contractLink: 'https://drive.google.com/file/d/EXAMPLE/view',
   contactName: 'Somchai P.',
   contactPhone: '+66 2 123 4567',
-  contactEmail: 'finance@example.com',
+  contactEmail: 'ops@example.com',
+  bankName: 'Kasikornbank',
+  bankAccountName: 'Example Holdings Co., Ltd.',
+  bankAccountNumber: '123-4-56789-0',
+  financeContactName: 'Nutcha S.',
+  financeContactEmail: 'ap@example.com',
   // Shown so the sample demonstrates the Rev terms format, which is the one column people
   // most need an example of.
   rule: { type: 'sum', _method: 'hybrid', children: [
@@ -1559,6 +1613,12 @@ function gridTemplateColumns(contracts) {
     col('Contract', 'Notice', c => c.terminationNoticeDays ?? null, 'Termination notice period, in days. A plain number.'),
     col('Contract', 'Auto-renewal', c => c.autoRenewal ?? null, 'Whether the contract renews automatically.'),
     col('Contract', 'Contract', c => c.contractLink ?? null, 'Link to the signed contract. A full https:// URL.'),
+    // Derived from FINANCE_COLUMNS, not retyped: the header a download writes is exactly the
+    // label the grid shows, and GRID_FIELDS in the importer is keyed on that same text. Retyping
+    // it here would be a third place for the wording to drift, and a drifted header imports
+    // nothing in silence.
+    ...FINANCE_COLUMNS.map(f =>
+      col('Finance Information', f.label, c => c[f.key] ?? null, FINANCE_SHEET_DESC[f.key])),
     col('Share terms', 'Mode', c => (!c.noPayout && c.rule && isRepresentable(c.rule)) ? methodToName(terms(c).method) : null,
       'How the terms below combine. Default = a single term, just pay it. Hybrid = add every term together. '
       + 'Whichever is higher = pay the best of each comparable term against the MG. Hybrid-higher = pay the best of the '

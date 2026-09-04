@@ -1,8 +1,9 @@
 # revshare-aws — handoff
 
-Last updated: 2026-09-03 (the merchant list is curated from your own upload: what a file omits is
-marked rather than deleted, and a run no longer writes to the merchant table — §1m).
-Service-worker `CACHE_VERSION` is at `revshare-v150` (bump on every shell change).
+Last updated: 2026-09-04 (Merchant view gained a **Finance Information** column group — bank
+details + finance contact, editable inline, in the download sheet, **both regions**; and the
+screen now opens with **every column group collapsed** — §1n).
+Service-worker `CACHE_VERSION` is at `revshare-v153` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
 end-to-end before touching anything. The codebase is the ultimate source of
@@ -53,7 +54,10 @@ screen by its old name.
   contact/machines/contract/share-terms column groups from the old Contracts tab — each
   collapsed/spread by **clicking its header in the group row above the column labels**
   (2026-08-09; replaced the four toolbar checkboxes, and a collapsed group keeps one narrow
-  column so the header that reopens it never disappears with the data) — a **status filter**
+  column so the header that reopens it never disappears with the data). **Every group starts
+  COLLAPSED as of 2026-09-04** — six groups spread is ~2,900px, past any laptop — so the screen
+  opens as merchant/type/branch plus one stub per group; your own choices persist under
+  `rs_ct_groups_v2` (§1n) — a **status filter**
   (All / ◆ Needs terms / ⚠ Contract due or overdue / ⦿ Not in latest upload — the last appears
   only once an upload has been recorded, see §1m; counts in the option labels; it replaced
   the merchant-type filter and the sort dropdown, both dropped 2026-08-09 as unused),
@@ -722,6 +726,69 @@ dry run honest.
 
 **The reverse direction cannot be fully severed and is not meant to be:** a run READS each
 contract's terms — that is the thing it pays. What it no longer does is write back.
+
+## 1n. Finance Information — Thailand only, on purpose (2026-09-04)
+
+A sixth column group on the Merchant view, between **Contract** and **Share terms**: **Bank ·
+Account name · Account no. · Finance contact · Finance email** (`bankName`, `bankAccountName`,
+`bankAccountNumber`, `financeContactName`, `financeContactEmail`). Where the payout is sent, and
+who the remittance advice goes to.
+
+- **It is a SEPARATE contact from the Contact group.** That one is the operational contact and
+  comes in with the weekly upload; this one is AP, typed here.
+- **Inline-editable, unlike Contact.** `EDITABLE_GROUPS` gained `finance` because no upload file
+  carries bank columns — so unlike Merchant/Type/Branch/Contacts (§1b), an import cannot silently
+  revert what is typed. That is the whole test for whether a group belongs in `EDITABLE_GROUPS`:
+  does anything else write it?
+- **BOTH regions.** It shipped TH-only for half a day behind a `REGION` guard and the guard came
+  off the same day, together with the SG deploy that gave `revshare-api-sg` the fields. **That
+  ordering is the rule, not the anecdote:** the frontend is ONE shared site, and `pick()` drops an
+  unknown key without erroring, so a column whose region cannot store it opens, takes what you
+  type, and loses it on the next paint. A future field that lands TH-first gets guarded again
+  until SG's `WRITABLE` has caught up. `routes/contracts.mjs` is synced TH→SG by
+  `deploy-lambda-all.sh`, which is what carried it — there is nothing to hand-mirror here
+  (unlike `db.mjs`, §8).
+- **In the merchant sheet too** (added the same day, on request). `gridTemplateColumns` emits the
+  five columns under a `Finance Information` category, **derived from `FINANCE_COLUMNS`** rather
+  than retyped — the header a download writes is exactly the grid's label, which is what
+  `GRID_FIELDS` is keyed on. Same `REGION === 'th'` guard as the grid. Descriptions live in
+  `FINANCE_SHEET_DESC` (one per field), surfaced as the header hover comment and a Field guide row.
+- **The import leg came with it, deliberately.** `GRID_FIELDS` learned the five headers (plus
+  hand-typed variants: `bank name`, `account no`, `account number`, `bank account number`). A
+  column that exports but cannot be read back loses an edit in silence — you fix a bank number in
+  Excel, upload, and nothing happens. `POST /contracts/import` writes through `buildImportPlan` →
+  `putContract`, NOT through `WRITABLE`, so this half needs no `WRITABLE` entry and works in both
+  regions. A blank cell still states nothing, so an upload can never clear a bank account.
+- **The weekly upload (§1l) is unaffected** — those files carry no bank columns, so the fields are
+  simply never mentioned and stay as typed.
+- ⚠ **`parseAllMerchantSheet` has no caller** — the Upload-sheet button went with §1l, so the
+  in-app path from a downloaded file back into the app does not currently exist. The round trip is
+  pinned by tests, not exercised by the UI. If it is ever re-enabled, note that its `isGrid` test
+  is `/rev terms/i` against header row 2, and the download writes no such header (`Rev terms` is a
+  grid label, not a sheet one) — a grid-shaped download would fall through to the LEGACY anchor
+  check and be rejected. Pre-existing, unrelated to the finance columns; fixing it is a one-line
+  change to that detector, not to the sheet.
+**The Merchant view opens collapsed (same day).** `CONTRACT_GROUPS_ON` now defaults to every
+group `false`, and the storage key is **versioned to `rs_ct_groups_v2`** — the old key already held
+an all-open object in every returning browser, so keeping it would have shipped a default only a
+brand-new browser could see. The cost is one deliberate reset of a low-stakes preference.
+`groupOpen(key)` (`=== true`) is the single predicate, used by BOTH `contractLayout` and
+`toggleContractGroup`: with the default flipped, a layout reading "not explicitly false" beside a
+toggle that only opens what IS explicitly false leaves an absent key rendering closed and toggling
+to closed — a header that does nothing when clicked. `tests/contract-grid-groups.test.mjs` (6)
+pins the default, that a saved choice still wins, and that both callers go through `groupOpen`.
+
+- `infra/import-merchant-sheet.mjs` still hard-requires the legacy anchors (`h2[22]` matching
+  `/link/`), so it reads only pre-2026-08-27 workbooks. Unchanged by this — a grid download already
+  failed that check before the finance columns existed.
+- The **+ New merchant** form picked the section up for free: it is generated from
+  `CONTRACT_GRID_COLUMNS` and groups by runs of the same `group` key, which is why the five
+  columns must stay contiguous.
+- Tests: `tests/finance-columns.test.mjs` pins both regions, the position between Contract
+  and Share terms, editability, and that **every finance key exists in `WRITABLE`** — the
+  frontend/backend halves drifting is the silent failure here, not a loud one. Four more cover the
+  sheet: the importer reads back every header the download writes, an account number keeps its
+  leading zeros, a blank cell clears nothing, and the sheet derives its columns from the grid.
 
 ## 2. Live URLs and resources
 

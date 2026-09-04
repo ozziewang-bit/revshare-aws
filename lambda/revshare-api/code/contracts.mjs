@@ -100,6 +100,16 @@ const GRID_FIELDS = {
   'sales person': 'salesPerson', 'salesperson': 'salesPerson', 'branch': 'branchCount',
   'units': 'installedUnits', 'start': 'startDate', 'end': 'endDate',
   'notice': 'terminationNoticeDays', 'auto-renewal': 'autoRenewal', 'contract': 'contractLink',
+  // Finance Information (2026-09-04). The keys are the grid's own column labels lowercased,
+  // which is what the download writes; the spelled-out variants are for a sheet someone has
+  // retyped by hand. Region-neutral on purpose: only the UI is TH-only, and a sheet that
+  // exported a column it could not read back would lose an edit in silence.
+  'bank': 'bankName', 'bank name': 'bankName',
+  'account name': 'bankAccountName',
+  'account no.': 'bankAccountNumber', 'account no': 'bankAccountNumber',
+  'account number': 'bankAccountNumber', 'bank account number': 'bankAccountNumber',
+  'finance contact': 'financeContactName',
+  'finance email': 'financeContactEmail',
 };
 const isLegacySheet = header => /link/i.test(String((header || [])[22] ?? ''));
 

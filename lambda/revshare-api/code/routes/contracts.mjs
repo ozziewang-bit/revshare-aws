@@ -15,6 +15,13 @@ const WRITABLE = [
   'salesPerson',
   // Branch count, from the weekly upload's store rows per merchant label.
   'branchCount',
+  // Where the payout is sent, plus the finance contact it is advised to — Merchant view's
+  // "Finance Information" group. Entered in the app only: no upload file carries bank columns,
+  // so an import can never overwrite or clear these. TH-only in the UI for now (the grid group
+  // is guarded on REGION); the fields are region-neutral, so mirroring this list into the SG
+  // repo is all Singapore needs.
+  'bankName', 'bankAccountName', 'bankAccountNumber',
+  'financeContactName', 'financeContactEmail',
   // The contract is the payout entity now: it owns the rule, how it aggregates, whether it
   // is paid at all, and in which currency. These were PARTNER fields until 2026-08-07.
   'rule', 'aggregationMode', 'noPayout', 'currency',
