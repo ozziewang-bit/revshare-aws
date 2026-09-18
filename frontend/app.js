@@ -853,6 +853,66 @@ function missingFromUpload(contracts, names) {
     !c.archived && !inFile.has(String(c.merchantName ?? '').toLowerCase().trim()));
 }
 
+// The Reconcile tab's comparison key. NFKC first because the merchant list mixes Thai, English
+// and full-width characters, and 'ｇｌｏｗ' must not read as a different brand from 'glow'.
+// missingFromUpload's plain lower/trim is left alone — it is load-bearing for the ⦿ marks and
+// this must not change what those mark.
+function reconcileKey(s) {
+  return String(s ?? '').normalize('NFKC').toLowerCase().trim();
+}
+
+// Revenue a run did NOT pay, by brand. Read from the run's own frozen `skipped` list, so the
+// figure is one the run page also shows — nothing here recomputes a payout.
+function skippedByName(run) {
+  const m = new Map();
+  for (const s of (run?.skipped || [])) {
+    const k = reconcileKey(s.merchantName);
+    if (k) m.set(k, (m.get(k) || 0) + (Number(s.revenue) || 0));
+  }
+  return m;
+}
+
+// Every difference between the app's merchant list and the last upload, as flat items the page
+// groups by type. Pure: the caller supplies the contracts, the stored upload, the latest run and
+// the dismissals. Archived contracts are excluded from "not in your file" for the reason §1m
+// gives — an ended contract is not expected in a merchant list — but they are the SUBJECT of
+// `archived-in-file`, which is the opposite question and the one nothing asked before.
+function classifyDifferences(opts) {
+  const { contracts, upload, run, dismissals } = opts;
+  const names = (upload?.names || []).map(reconcileKey).filter(Boolean);
+  const inFile = new Set(names);
+  const live = (contracts || []).filter(c => c && c.merchantName);
+  const byKey = new Map(live.map(c => [reconcileKey(c.merchantName), c]));
+  const money = skippedByName(run);
+  const out = [];
+
+  for (const c of live) {
+    const k = reconcileKey(c.merchantName);
+    if (c.archived) {
+      if (inFile.has(k)) {
+        out.push({ type: 'archived-in-file', key: k, names: [c.merchantName],
+                   contractIds: [c.contractId], money: money.get(k) || 0,
+                   detail: 'Contract archived, but this brand is on your merchant list.' });
+      }
+      continue;                     // an archived row is never "missing from the file"
+    }
+    if (!inFile.has(k)) {
+      out.push({ type: 'in-app-not-in-file', key: k, names: [c.merchantName],
+                 contractIds: [c.contractId], money: 0, detail: '' });
+    }
+  }
+
+  for (const k of inFile) {
+    if (byKey.has(k)) continue;
+    const name = (upload.names || []).find(n => reconcileKey(n) === k);
+    out.push({ type: 'in-file-no-row', key: k, names: [name], contractIds: [],
+               money: money.get(k) || 0, detail: '' });
+  }
+
+  const silenced = new Set((dismissals || []).map(d => `${d.type}::${d.key}`));
+  return out.filter(i => !silenced.has(`${i.type}::${i.key}`));
+}
+
 // The per-model unit columns are built from the REGION's configured machine models, not a
 // fixed list. They used to be hardcoded to S5/S8/M10/L20/L40, which matched neither region:
 // Thailand's S10/T8/T10/T20/T35 had no column, and Singapore's S10-A/LL20/LL40 had none
