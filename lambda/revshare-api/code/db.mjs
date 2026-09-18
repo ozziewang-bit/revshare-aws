@@ -376,13 +376,40 @@ export async function getLastUpload() {
   const out = await ddb.send(new GetCommand({
     TableName: TABLE, Key: { pk: 'CONFIG', sk: 'UPLOAD#LATEST' }
   }));
-  return out.Item ? { at: out.Item.at, names: out.Item.names || [] } : null;
+  if (!out.Item) return null;
+  const { pk, sk, ...rec } = out.Item;
+  return { at: rec.at, names: rec.names || [], s3Key: rec.s3Key || null, counts: rec.counts || null };
 }
 
-export async function putLastUpload(names) {
-  const rec = { at: new Date().toISOString(), names };
+export async function putLastUpload(names, extra = {}) {
+  const rec = { at: new Date().toISOString(), names, ...extra };
   await ddb.send(new PutCommand({
     TableName: TABLE, Item: { pk: 'CONFIG', sk: 'UPLOAD#LATEST', ...rec }
   }));
   return rec;
+}
+
+// One document per RECORDED weekly upload — the folded brand rows the import already built,
+// kept so the Reconcile tab can compare field by field long after the dialog closed. It goes
+// to S3 rather than DynamoDB for the same reason bulk runs do: 260 brands of contact detail
+// is comfortably past the 400KB item limit. RUNS_BUCKET is region-specific and defined at the
+// top of this file, which is exactly why this function cannot be synced.
+export async function putUploadDoc(doc) {
+  const key = `uploads/${ulid()}.json`;
+  await s3.send(new PutObjectCommand({
+    Bucket: RUNS_BUCKET, Key: key,
+    Body: JSON.stringify(doc), ContentType: 'application/json'
+  }));
+  return { key, at: doc.at };
+}
+
+export async function getUploadDoc(key) {
+  if (!key) return null;
+  try {
+    const obj = await s3.send(new GetObjectCommand({ Bucket: RUNS_BUCKET, Key: key }));
+    return JSON.parse(await obj.Body.transformToString());
+  } catch (e) {
+    if (e.name === 'NoSuchKey') return null;   // pointer outlived the object; not an error
+    throw e;
+  }
 }
