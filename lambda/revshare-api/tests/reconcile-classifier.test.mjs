@@ -190,3 +190,20 @@ test('a single branch row is a rename question, not a branch group', () => {
   assert.equal(items.filter(i => i.type === 'brand-has-branches').length, 0);
   assert.equal(items.filter(i => i.type === 'likely-rename').length, 1);
 });
+
+// --- Task 8: the machine-list misses ---
+
+test('the two machine-list misses stay apart, because they need different fixes', () => {
+  // §1l: `unknown` = no registry row with that store name; `unlinked` = in the registry but its
+  // row carries no contractId. Merging them into one list would hide which fix each needs.
+  const items = classifyDifferences({
+    contracts: [], upload: { names: [], machineMisses:
+      { unknown: ['Shop A'], unknownTotal: 1, unlinked: ['Shop B'], unlinkedTotal: 9 } },
+    run: null, dismissals: [] });
+  const m = items.filter(i => i.type === 'machine-list-miss');
+  assert.equal(m.length, 2);
+  assert.match(m.find(i => i.key === 'unknown').detail, /not in the store registry/i);
+  assert.match(m.find(i => i.key === 'unlinked').detail, /no merchant/i);
+  assert.equal(m.find(i => i.key === 'unlinked').names.length, 1);
+  assert.equal(m.find(i => i.key === 'unlinked').count, 9);   // the total survives the cap
+});

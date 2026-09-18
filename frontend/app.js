@@ -1048,6 +1048,22 @@ function classifyDifferences(opts) {
     }
   }
 
+  // The optional machine-list upload matches each shop to a merchant through the store registry.
+  // Two different failures need two different fixes (§1l): `unknown` usually resolves itself
+  // once the next run's roster teaches the registry the name; `unlinked` needs a person to link
+  // the shop to a merchant. Keeping them apart is the point — merging them would hide which fix
+  // each name needs. Name lists are capped at 200 by the backend, so `count` carries the exact
+  // total rather than `names.length`.
+  const mm = upload?.machineMisses;
+  if (mm?.unknownTotal) out.push({ type: 'machine-list-miss', key: 'unknown',
+    names: mm.unknown || [], contractIds: [], money: 0, count: mm.unknownTotal,
+    detail: 'These shops are not in the store registry. The registry learns store names from run '
+          + 'rosters, so they usually resolve after the next run.' });
+  if (mm?.unlinkedTotal) out.push({ type: 'machine-list-miss', key: 'unlinked',
+    names: mm.unlinked || [], contractIds: [], money: 0, count: mm.unlinkedTotal,
+    detail: 'These shops are in the registry but belong to no merchant, so their machines were '
+          + 'not counted anywhere.' });
+
   const silenced = new Set((dismissals || []).map(d => `${d.type}::${d.key}`));
   return out.filter(i => !silenced.has(`${i.type}::${i.key}`));
 }
