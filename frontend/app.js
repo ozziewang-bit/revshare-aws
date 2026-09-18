@@ -1887,7 +1887,13 @@ const WEEKLY_ALIASES = [
   { field: 'Merchant/Brand', names: ['merchant label', 'brand', 'merchant/brand', 'ka name', 'ka'] },
   { field: '_branch',        names: ['merchant name.', 'merchant name', 'store', 'store name', 'branch', 'ชื่อร้าน'] },
   { field: 'Type',           names: ['type', 'merchant type', 'merchant type.', 'category'] },
-  { field: 'Contract entity',names: ['contract entity', 'counter party', 'counterparty', 'legal entity', 'company'] },
+  // NO 'Contract entity' alias, on purpose (2026-09-18). It was the one column that both a file
+  // and the app could write: an editable grid cell in the Contract group AND a recognised weekly
+  // header, so a file carrying it silently won over what someone had typed. The legal entity on
+  // the contract is maintained here, not in the platform export, so the app owns it outright and
+  // a file mentioning it is listed as ignored rather than applied. Everything else this list
+  // names is read-only in the grid — that is the rule these two halves keep:
+  // a column is writable by a file, or by hand, never both. Pinned by tests/weekly-upload-ownership.test.mjs.
   { field: 'Sales person',   names: ['sales person', 'salesperson', 'sales', 'sales employee', 'person in charge', 'pic', 'owner'] },
   { field: 'Contact',        names: ['contact', 'contact person', 'contact name', 'ผู้ติดต่อ'] },
   { field: 'Phone',          names: ['phone', 'tel', 'telephone', 'contact number', 'mobile', 'เบอร์โทร'] },
@@ -1972,7 +1978,7 @@ async function parseWeeklyMerchantFile(file) {
 // never as "clear this". That matches how the importer merges, so the preview cannot promise
 // something different from what the import does.
 const WEEKLY_FIELD_KEY = {
-  'Merchant/Brand': 'merchantName', 'Type': 'merchantType', 'Contract entity': 'counterParty',
+  'Merchant/Brand': 'merchantName', 'Type': 'merchantType',
   'Sales person': 'salesPerson', 'Contact': 'contactName', 'Phone': 'contactPhone', 'Email': 'contactEmail',
   'Branch': 'branchCount',
 };
@@ -2055,8 +2061,10 @@ async function openAddMerchants() {
       <div style="border-top:1px solid var(--line);padding-top:14px;">
         <label style="font-size:12.5px;color:var(--ink-soft);display:block;">Merchant list (.xlsx)
           <p class="muted" style="margin:2px 0 6px;font-size:12px;">
-            Your own weekly file. Columns are matched by name — merchant, type, contract entity,
-            sales person, contact, phone, email. Anything else is ignored.
+            Your own weekly file. Columns are matched by name — merchant, type, sales person,
+            contact, phone, email. Anything else is ignored, including contract entity, contract
+            dates and revenue-share terms: those are yours to edit here and an upload never
+            touches them.
           </p>
           <input type="file" id="am-merchants" accept=".xlsx,.xls" class="input" style="display:block;">
         </label>

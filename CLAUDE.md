@@ -2,8 +2,9 @@
 
 Last updated: 2026-09-04 (Merchant view gained a **Finance Information** column group — bank
 details + finance contact, editable inline, in the download sheet, **both regions**; and the
-screen now opens with **every column group collapsed** — §1n).
-Service-worker `CACHE_VERSION` is at `revshare-v153` (bump on every shell change).
+screen now opens with **every column group collapsed** — §1n. 2026-09-18: `Contract entity` is no
+longer read from the weekly file — a column is writable by a file or by hand, never both — §1l).
+Service-worker `CACHE_VERSION` is at `revshare-v154` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
 end-to-end before touching anything. The codebase is the ultimate source of
@@ -637,6 +638,17 @@ merchant per shop.
   carries no contract or terms columns. **A blank cell means "not stated"**, not "clear it".
 - Columns are matched by header **name** with aliases (`WEEKLY_ALIASES`); unrecognised headers are
   listed as *ignored* rather than dropped in silence. If a real file uses new wording, add an alias.
+- **THE OWNERSHIP RULE (2026-09-18): a column is writable by a FILE or by HAND, never both.** It is
+  why the Merchant/Contact/Machines columns do not open for editing — a file writes them, so typing
+  there would be reverted at the next upload with nothing said. `Contract entity` broke the rule in
+  the other direction: it was an editable Contract-group cell AND a weekly alias (`contract entity`,
+  `counter party`, `legal entity`, `company`), so a file carrying that column silently won over
+  what someone had typed. **The alias is gone** — the legal entity is maintained in the app, not in
+  the platform export, and a file still carrying the column is now reported as an *ignored* header.
+  `WEEKLY_FIELD_KEY` dropped it too, so the diff preview cannot claim a field the parser can no
+  longer produce. `tests/weekly-upload-ownership.test.mjs` (4) pins **both** directions and fails
+  loudly on a new overlap; when it fires, the fix is to move the column to one side or the other,
+  never to update an expected list.
 - The optional **machine list** updates machine counts only, matched to merchants by store name
   via the registry; an unknown store is skipped, never guessed at — and **named** rather than
   skipped in silence since 2026-09-03. `matchMachineStores` is a pure function used by BOTH the
