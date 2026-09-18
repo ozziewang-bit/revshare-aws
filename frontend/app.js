@@ -872,6 +872,23 @@ function skippedByName(run) {
   return m;
 }
 
+// Dice coefficient over character bigrams. Chosen over edit distance because it is
+// length-insensitive: 'Andamanda' vs 'Andamanda Phuket' scores on shared substance rather than
+// being penalised for the added word, which is the exact shape a brand rename takes here.
+function similarity(a, b) {
+  const grams = (s) => {
+    const t = reconcileKey(s).replace(/\s+/g, ' ');
+    const g = new Map();
+    for (let i = 0; i < t.length - 1; i++) g.set(t.slice(i, i + 2), (g.get(t.slice(i, i + 2)) || 0) + 1);
+    return g;
+  };
+  const A = grams(a), B = grams(b);
+  let total = 0, shared = 0;
+  for (const n of A.values()) total += n;
+  for (const [g, n] of B) { total += n; shared += Math.min(n, A.get(g) || 0); }
+  return total ? (2 * shared) / total : 0;
+}
+
 // Every difference between the app's merchant list and the last upload, as flat items the page
 // groups by type. Pure: the caller supplies the contracts, the stored upload, the latest run and
 // the dismissals. Archived contracts are excluded from "not in your file" for the reason §1m
@@ -879,6 +896,7 @@ function skippedByName(run) {
 // `archived-in-file`, which is the opposite question and the one nothing asked before.
 function classifyDifferences(opts) {
   const { contracts, upload, run, dismissals } = opts;
+  const RENAME_MIN = 0.55;   // below this, 'Somsak'/'Jims Burger' start pairing. Measured, not guessed.
   const names = (upload?.names || []).map(reconcileKey).filter(Boolean);
   const inFile = new Set(names);
   const live = (contracts || []).filter(c => c && c.merchantName);
@@ -907,6 +925,32 @@ function classifyDifferences(opts) {
     const name = (upload.names || []).find(n => reconcileKey(n) === k);
     out.push({ type: 'in-file-no-row', key: k, names: [name], contractIds: [],
                money: money.get(k) || 0, detail: '' });
+  }
+
+  // Pair the two orphan sets: a file name with no row, against merchants the file omits. One
+  // candidate is a suggestion; two or more is a question, and the page must ask it rather than
+  // pick. `Classic` matches two live rows, so picking the top one would be wrong half the time.
+  const orphanContracts = out.filter(i => i.type === 'in-app-not-in-file');
+  for (const item of [...out]) {
+    if (item.type !== 'in-file-no-row') continue;
+    const scored = orphanContracts
+      .map(o => ({ o, score: similarity(item.names[0], o.names[0]) }))
+      .filter(x => x.score >= RENAME_MIN)
+      .sort((a, b) => b.score - a.score);
+    if (!scored.length) continue;
+    const i = out.indexOf(item);
+    if (scored.length === 1) {
+      const { o, score } = scored[0];
+      out[i] = { type: 'likely-rename', key: item.key,
+                 names: [o.names[0], item.names[0]], contractIds: [...o.contractIds],
+                 money: item.money, detail: `${Math.round(score * 100)}% match` };
+      out.splice(out.indexOf(o), 1);
+    } else {
+      out[i] = { type: 'ambiguous-rename', key: item.key,
+                 names: [item.names[0], ...scored.map(s => s.o.names[0])],
+                 contractIds: scored.flatMap(s => s.o.contractIds),
+                 money: item.money, detail: `${scored.length} merchants could be this` };
+    }
   }
 
   const silenced = new Set((dismissals || []).map(d => `${d.type}::${d.key}`));

@@ -15,7 +15,8 @@ const grab = (n) => {
   }
 };
 const { classifyDifferences } = new Function(
-  grab('reconcileKey') + '\n' + grab('skippedByName') + '\n' + grab('classifyDifferences') +
+  grab('reconcileKey') + '\n' + grab('skippedByName') + '\n' + grab('similarity') + '\n' +
+  grab('classifyDifferences') +
   '\nreturn { classifyDifferences };')();
 
 const of = (items, type) => items.filter(i => i.type === type);
@@ -59,4 +60,51 @@ test('a dismissal silences exactly its own item', () => {
   assert.equal(classifyDifferences({ ...base, dismissals: [] }).length, 1);
   assert.equal(classifyDifferences({ ...base,
     dismissals: [{ type: 'in-app-not-in-file', key: 'somsak' }] }).length, 0);
+});
+
+test('a 1:1 near match is proposed as a rename', () => {
+  // Real pair: the app has 'Andamanda', the 3 Sep file says 'Andamanda Phuket'.
+  const items = classifyDifferences({
+    contracts: [{ contractId: 'c1', merchantName: 'Andamanda' }],
+    upload: { names: ['Andamanda Phuket'] },
+    run: { skipped: [{ merchantName: 'Andamanda Phuket', revenue: 4300 }] }, dismissals: [] });
+  const r = items.filter(i => i.type === 'likely-rename');
+  assert.equal(r.length, 1);
+  assert.deepEqual(r[0].names, ['Andamanda', 'Andamanda Phuket']);
+  assert.deepEqual(r[0].contractIds, ['c1']);
+  assert.equal(r[0].money, 4300);
+});
+
+test('a name matching two merchants is ambiguous, never auto-paired', () => {
+  // Two candidates, neither a prefix-with-space of the file name — so this stays a rename
+  // question rather than becoming Task 6's brand-with-branches grouping. (The real 'Classic'
+  // case, where the app holds 'Classic Camp' AND 'Classic Cafe & Bar Srinakarin', is a BRAND
+  // with two branch rows and is classified there instead; see Task 6.)
+  const items = classifyDifferences({
+    contracts: [{ contractId: 'c1', merchantName: 'DRINK Bar & Restaurant' },
+                { contractId: 'c2', merchantName: 'DINK Bar and Restaurant' }],
+    upload: { names: ['DINK Bar & Restaurant'] }, run: null, dismissals: [] });
+  assert.equal(items.filter(i => i.type === 'likely-rename').length, 0);
+  const a = items.filter(i => i.type === 'ambiguous-rename');
+  assert.equal(a.length, 1);
+  assert.deepEqual(a[0].contractIds.sort(), ['c1', 'c2']);
+});
+
+test('a near-identical pair is still only a suggestion', () => {
+  // 'DINK Bar & Restaurant' vs 'DRINK Bar & Restaurant' is a TYPO, not a rename — 98% similar.
+  // The classifier cannot tell those apart, so it proposes and the human decides. What it must
+  // never do is apply it.
+  const items = classifyDifferences({
+    contracts: [{ contractId: 'c1', merchantName: 'DRINK Bar & Restaurant' }],
+    upload: { names: ['DINK Bar & Restaurant'] }, run: null, dismissals: [] });
+  const r = items.filter(i => i.type === 'likely-rename');
+  assert.equal(r.length, 1, 'one candidate, so it is a suggestion and not an ambiguity');
+  assert.ok(!('applied' in r[0]), 'a suggestion is data, never an action already taken');
+});
+
+test('unrelated names are not paired', () => {
+  const items = classifyDifferences({
+    contracts: [{ contractId: 'c1', merchantName: 'Somsak' }],
+    upload: { names: ['Jims Burger'] }, run: null, dismissals: [] });
+  assert.equal(items.filter(i => i.type.includes('rename')).length, 0);
 });
