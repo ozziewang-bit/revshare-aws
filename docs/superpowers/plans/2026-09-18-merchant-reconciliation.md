@@ -562,12 +562,14 @@ test('a 1:1 near match is proposed as a rename', () => {
 });
 
 test('a name matching two merchants is ambiguous, never auto-paired', () => {
-  // Real trap: the file says 'Classic'; the app holds BOTH 'Classic Camp' and
-  // 'Classic Cafe & Bar Srinakarin'. Picking the top match would be wrong half the time.
+  // Two candidates, neither a prefix-with-space of the file name — so this stays a rename
+  // question rather than becoming Task 6's brand-with-branches grouping. (The real 'Classic'
+  // case, where the app holds 'Classic Camp' AND 'Classic Cafe & Bar Srinakarin', is a BRAND
+  // with two branch rows and is classified there instead; see Task 6.)
   const items = classifyDifferences({
-    contracts: [{ contractId: 'c1', merchantName: 'Classic Camp' },
-                { contractId: 'c2', merchantName: 'Classic Cafe & Bar Srinakarin' }],
-    upload: { names: ['Classic'] }, run: null, dismissals: [] });
+    contracts: [{ contractId: 'c1', merchantName: 'DRINK Bar & Restaurant' },
+                { contractId: 'c2', merchantName: 'DINK Bar and Restaurant' }],
+    upload: { names: ['DINK Bar & Restaurant'] }, run: null, dismissals: [] });
   assert.equal(items.filter(i => i.type === 'likely-rename').length, 0);
   const a = items.filter(i => i.type === 'ambiguous-rename');
   assert.equal(a.length, 1);
@@ -582,7 +584,7 @@ test('a near-identical pair is still only a suggestion', () => {
     contracts: [{ contractId: 'c1', merchantName: 'DRINK Bar & Restaurant' }],
     upload: { names: ['DINK Bar & Restaurant'] }, run: null, dismissals: [] });
   const r = items.filter(i => i.type === 'likely-rename');
-  assert.equal(r.length, 1);
+  assert.equal(r.length, 1, 'one candidate, so it is a suggestion and not an ambiguity');
   assert.ok(!('applied' in r[0]), 'a suggestion is data, never an action already taken');
 });
 
@@ -800,7 +802,13 @@ function merchantHead(active) {
 }
 ```
 
-`RECONCILE_COUNT` is a module-scope number, set when the tab last computed its items, so the badge survives a repaint without refetching.
+`RECONCILE_COUNT` is a module-scope `let RECONCILE_COUNT = 0;` declared beside `LAST_UPLOAD`,
+set when the tab last computed its items, so the badge survives a repaint without refetching.
+
+Also define `reconcileRowHtml(item)` — one row showing `item.names` (the app's name and the
+file's, where both exist), `item.detail`, and `item.money` when non-zero. **No buttons in this
+phase:** Phase 2 is read-only and the actions are Task 14. A row that cannot be acted on yet
+should still say what the fix will be, in words.
 
 - [ ] **Step 2: Render the groups**
 
@@ -824,10 +832,15 @@ async function renderReconcileTab() {
   main.innerHTML = `${merchantHead('reconcile')}<div id="rc-out">Loading…</div>`;
   wireSubTabs(main, id => id === 'merchants' ? renderContractsScreen() : renderReconcileTab());
 
-  const [upload, runs] = await Promise.all([
+  // BOTH halves: `names` lives on the cheap CONFIG row (read on every Merchant view paint for
+  // the ⦿ marks), while `brands` and `machineMisses` live in the S3 document. Fetching only the
+  // pointer would leave the machine-list section permanently empty — its test would still pass.
+  const [ptr, doc, runs] = await Promise.all([
     api('/contracts/last-upload').catch(() => null),
+    api('/contracts/last-upload/rows').catch(() => null),
     api('/bulk-runs').catch(() => []),
   ]);
+  const upload = ptr ? { ...ptr, ...(doc || {}) } : null;
   const latest = runs.length
     ? await api('/bulk-runs/' + runs.sort((a, b) => (b.periodStart || '').localeCompare(a.periodStart || ''))[0].runId)
     : null;
