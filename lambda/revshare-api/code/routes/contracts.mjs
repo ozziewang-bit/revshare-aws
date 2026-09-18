@@ -1,5 +1,5 @@
 import { listContracts, getContract, putContract, deleteContract, listPartners, ulid,
-         getLastUpload, putLastUpload, putUploadDoc } from '../db.mjs';
+         getLastUpload, putLastUpload, putUploadDoc, getUploadDoc } from '../db.mjs';
 import { normalizeContractRow, buildImportPlan, uploadDocFrom } from '../contracts.mjs';
 
 // Fields a client may write. `sheetTerms` is import-preview data and is not stored;
@@ -51,6 +51,18 @@ export async function listContractsRoute() {
 // invisible.
 export async function lastUploadRoute() {
   return resp(200, await getLastUpload() || { at: null, names: [] });
+}
+
+// The Reconcile tab's other half. Separate from lastUploadRoute above because that one is read
+// on every Merchant view paint for the ⦿ marks and must stay a single small DynamoDB read —
+// this one fetches an S3 object and is wanted only when the tab is open. Returns a literal JSON
+// `null` (not an empty body — `resp`'s null-means-204-empty-body shortcut doesn't apply here)
+// when there is no stored document: a pointer recorded before this feature carries no `s3Key`,
+// and that is a normal state for the frontend to treat as "no field-level data yet", not an error.
+export async function lastUploadRowsRoute() {
+  const ptr = await getLastUpload();
+  const doc = ptr?.s3Key ? await getUploadDoc(ptr.s3Key) : null;
+  return { statusCode: 200, body: JSON.stringify(doc) };
 }
 
 export async function createContractRoute(event) {

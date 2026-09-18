@@ -43,6 +43,10 @@ test('requiredPermission: contract reads are open', () => {
   assert.equal(requiredPermission('GET', '/contracts/abc'), null);
 });
 
+test('reading the stored upload needs no permission beyond being signed in', () => {
+  assert.equal(requiredPermission('GET', '/contracts/last-upload/rows'), null);
+});
+
 test('requiredPermission: contract writes need manageMerchants', () => {
   assert.equal(requiredPermission('POST', '/contracts'), 'manageMerchants');
   assert.equal(requiredPermission('PUT', '/contracts/abc'), 'manageMerchants');
