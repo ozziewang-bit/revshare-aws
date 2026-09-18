@@ -889,6 +889,19 @@ function similarity(a, b) {
   return total ? (2 * shared) / total : 0;
 }
 
+// A term set, compared by value rather than by identity. DynamoDB does not preserve map key
+// order, so a plain JSON.stringify of two equal rules can differ — the same trap §1h hit with
+// `units`. Sorting keys is what makes "do these branches agree?" answerable at all.
+function termSignature(c) {
+  if (c?.noPayout) return 'NO_PAYOUT';
+  if (!c?.rule) return 'NONE';
+  const sort = (v) => Array.isArray(v) ? v.map(sort)
+    : (v && typeof v === 'object')
+      ? Object.fromEntries(Object.keys(v).sort().map(k => [k, sort(v[k])]))
+      : v;
+  return JSON.stringify([sort(c.rule), c.aggregationMode || null]);
+}
+
 // Every difference between the app's merchant list and the last upload, as flat items the page
 // groups by type. Pure: the caller supplies the contracts, the stored upload, the latest run and
 // the dismissals. Archived contracts are excluded from "not in your file" for the reason §1m
@@ -925,6 +938,27 @@ function classifyDifferences(opts) {
     const name = (upload.names || []).find(n => reconcileKey(n) === k);
     out.push({ type: 'in-file-no-row', key: k, names: [name], contractIds: [],
                money: money.get(k) || 0, detail: '' });
+  }
+
+  // One file tag, several merchant rows whose names start with it. This is the brand-vs-branch
+  // split: the roster labels every machine with the brand tag, so the branch rows can never be
+  // reached by a run however good their terms are.
+  for (const item of [...out]) {
+    if (item.type !== 'in-file-no-row') continue;
+    const members = out.filter(o => o.type === 'in-app-not-in-file'
+      && reconcileKey(o.names[0]).startsWith(item.key + ' '));
+    if (members.length < 2) continue;
+    const byId = new Map(live.map(c => [c.contractId, c]));
+    const sigs = new Set(members.flatMap(m => m.contractIds).map(id => termSignature(byId.get(id))));
+    out[out.indexOf(item)] = {
+      type: 'brand-has-branches', key: item.key,
+      names: [item.names[0], ...members.map(m => m.names[0])],
+      contractIds: members.flatMap(m => m.contractIds),
+      money: item.money, sameTerms: sigs.size === 1,
+      detail: sigs.size === 1 ? 'terms identical on all rows'
+                              : `${sigs.size} different term sets — a merge must choose`,
+    };
+    for (const m of members) out.splice(out.indexOf(m), 1);
   }
 
   // Pair the two orphan sets: a file name with no row, against merchants the file omits. Every

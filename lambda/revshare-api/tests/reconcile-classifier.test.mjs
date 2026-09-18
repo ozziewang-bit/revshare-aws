@@ -16,6 +16,7 @@ const grab = (n) => {
 };
 const { classifyDifferences } = new Function(
   grab('reconcileKey') + '\n' + grab('skippedByName') + '\n' + grab('similarity') + '\n' +
+  grab('termSignature') + '\n' +
   grab('classifyDifferences') +
   '\nreturn { classifyDifferences };')();
 
@@ -151,4 +152,41 @@ test('Jharoka clears the rename threshold — pins the tightest real margin', ()
   assert.equal(r.length, 1);
   assert.deepEqual(r[0].names, ['Jharoka', 'Jharoka by Indus']);
   assert.deepEqual(r[0].contractIds, ['c1']);
+});
+
+// --- Task 6: a file tag that has branch rows, not a rename candidate ---
+
+test('one file tag with several app rows is grouped, and says whether terms agree', () => {
+  // Real: the file says 'Citadines'; the app holds three soi rows, all 25% GP.
+  const gp = (p) => ({ type: 'percent', _t: 'gp', _method: 'default', rows: [{ model: 'ALL', percent: p }] });
+  const items = classifyDifferences({
+    contracts: [{ contractId: 'c1', merchantName: 'Citadines Sukhumvit soi 8', rule: gp(25), aggregationMode: 'whole' },
+                { contractId: 'c2', merchantName: 'Citadines Sukhumvit soi 11', rule: gp(25), aggregationMode: 'whole' },
+                { contractId: 'c3', merchantName: 'Citadines Sukhumvit soi 16', rule: gp(25), aggregationMode: 'whole' }],
+    upload: { names: ['Citadines'] }, run: null, dismissals: [] });
+  const b = items.filter(i => i.type === 'brand-has-branches');
+  assert.equal(b.length, 1);
+  assert.equal(b[0].contractIds.length, 3);
+  assert.equal(b[0].sameTerms, true);
+});
+
+test('differing terms among the branches are flagged, because a merge must then choose', () => {
+  // Real: Central Ladprao / Eastville / Westgate carry three different rules.
+  const gp = (p) => ({ type: 'percent', _t: 'gp', _method: 'default', rows: [{ model: 'ALL', percent: p }] });
+  const items = classifyDifferences({
+    contracts: [{ contractId: 'c1', merchantName: 'Central Ladprao', rule: gp(30), aggregationMode: 'whole' },
+                { contractId: 'c2', merchantName: 'Central Eastville', rule: gp(35), aggregationMode: 'whole' }],
+    upload: { names: ['Central'] }, run: { skipped: [{ merchantName: 'Central', revenue: 51495 }] },
+    dismissals: [] });
+  const b = items.filter(i => i.type === 'brand-has-branches')[0];
+  assert.equal(b.sameTerms, false);
+  assert.equal(b.money, 51495);
+});
+
+test('a single branch row is a rename question, not a branch group', () => {
+  const items = classifyDifferences({
+    contracts: [{ contractId: 'c1', merchantName: 'Jharoka' }],
+    upload: { names: ['Jharoka by Indus'] }, run: null, dismissals: [] });
+  assert.equal(items.filter(i => i.type === 'brand-has-branches').length, 0);
+  assert.equal(items.filter(i => i.type === 'likely-rename').length, 1);
 });
