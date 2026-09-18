@@ -834,6 +834,10 @@ let MACHINE_MODELS_CACHE = [];
 // this is what lets the grid mark it. Recomputed into MISSING_UPLOAD (contractIds) on paint.
 let LAST_UPLOAD = null;
 let MISSING_UPLOAD = new Set();
+// How many reconcile items the tab last computed, so the Reconcile(N) badge survives a repaint
+// (e.g. switching back from Reconcile to Merchants and looking at the tab strip again) without
+// a refetch. Stays 0 — no badge — until the tab has actually been opened once.
+let RECONCILE_COUNT = 0;
 
 // Merchants that exist here but were NOT in the latest uploaded file. Same lowercase-trim name
 // match `diffWeeklyRows` uses, so the import preview's count and the grid's can never disagree.
@@ -2008,10 +2012,25 @@ async function parseAllMerchantSheet(file) {
   return { rows, header: header2, groups: groups1, skipped: body.length - rows.length };
 }
 
+// Merchant view owns two views of the same merchant list (the grid, and the read-only
+// reconciliation of that list against your last weekly upload) — same in-screen-tabs pattern
+// Run share and Settings already use. The nav button stays "Merchant view"/active for both.
+function merchantHead(active) {
+  return subTabsHtml([{ id: 'merchants', label: 'Merchants' },
+                      { id: 'reconcile', label: `Reconcile${RECONCILE_COUNT ? ` (${RECONCILE_COUNT})` : ''}` }],
+                     active);
+}
+
+function wireMerchantTabs() {
+  wireSubTabs(document.getElementById('main'),
+    id => id === 'reconcile' ? renderReconcileTab() : renderContractsScreen());
+}
+
 async function renderContractsScreen() {
   const el = document.getElementById('main');
   el.classList.add('main-wide');   // also covers the boot path, which doesn't go via setActiveNav
-  el.innerHTML = '<h1>Merchant view</h1><p class="muted">Loading…</p>';
+  el.innerHTML = `<h1>Merchant view</h1>${merchantHead('merchants')}<p class="muted">Loading…</p>`;
+  wireMerchantTabs();
   const [contracts, machineModels, lastUpload] = await Promise.all([
     api('/contracts'), api('/machine-models'),
     // Never fatal: the grid is worth showing without the marks, so an older backend or a
@@ -2024,6 +2043,7 @@ async function renderContractsScreen() {
   refreshContractGridColumns();
   el.innerHTML = `
     <h1>Merchant view</h1>
+    ${merchantHead('merchants')}
     <div class="ct-toolbar">
       <input id="ct-search" class="input" placeholder="Search merchant…" style="max-width:240px">
       <select id="ct-status" class="input" style="max-width:230px">
@@ -2038,6 +2058,7 @@ async function renderContractsScreen() {
     </div>
     <div class="ct-scroll"><table class="ct-table"><thead>${contractHeadHtml()}</thead>
       <tbody id="ct-body"></tbody></table></div>`;
+  wireMerchantTabs();
   ['ct-search', 'ct-status'].forEach(id =>
     el.querySelector('#' + id).addEventListener('input', paintContracts));
   // Delegated on <thead>, which survives its own innerHTML being replaced on every toggle.
@@ -2062,6 +2083,164 @@ async function renderContractsScreen() {
   el.querySelector('#ct-new')?.addEventListener('click', createContractRow);
   el.querySelector('#ct-template')?.addEventListener('click', downloadMerchantTemplate);
   el.querySelector('#ct-add')?.addEventListener('click', openAddMerchants);
+}
+
+// ── Reconcile tab ────────────────────────────────────────────────────────────
+// READ-ONLY (Phase 2 of the reconciliation feature). classifyDifferences (above) does the actual
+// comparison work; this section only renders what it returns. No action buttons anywhere here —
+// the corrections (rename, merge, dismiss, link) are Task 14/Phase 3, which may never be built,
+// so every row states the fix in WORDS rather than half-building a button that does nothing yet.
+//
+// Ordered by money, not by count: the four archived-and-earning brands matter more than the 65
+// quiet ones. Each group is collapsed to its heading until opened — the same discipline the run
+// detail settled on (§1i), one job per screen.
+const RECONCILE_GROUPS = [
+  { type: 'archived-in-file',   title: 'Archived, but still in your file and still earning' },
+  { type: 'likely-rename',      title: 'Looks renamed' },
+  { type: 'ambiguous-rename',   title: 'Could be a rename — more than one merchant fits' },
+  { type: 'brand-has-branches', title: 'One brand tag, several merchant rows' },
+  { type: 'in-file-no-row',     title: 'In your file, no merchant row' },
+  { type: 'in-app-not-in-file', title: 'In your app, not in your file' },
+  // Populated starting Task 8 (machine-list-miss items carry `count`, not `names`/`contractIds`
+  // the way every other type does) — the group renders, just empty, until then.
+  { type: 'machine-list-miss',  title: 'Stores the machine list could not place' },
+];
+
+// The two seeding batches big enough to have a name of their own — see §11's duplicate-name
+// note and §1b's migration/adoption history. Everything else in this group is just "unknown"
+// or a genuine week-to-week miss.
+const RECONCILE_KNOWN_BATCHES = {
+  '2026-08-07': 'merchant-view migration',
+  '2026-08-09': 'payable-brand adoption',
+};
+
+// What the fix will be, in words. Phase 2 has no buttons, so this sentence is the only thing
+// telling someone what to actually do about a row — an empty row with no explanation would read
+// as broken, not as "not built yet".
+function reconcileFix(item) {
+  switch (item.type) {
+    case 'archived-in-file':
+      return 'Fix: unarchive it if the contract is genuinely still live, or ask for the brand to be dropped from next week’s file if it really ended.';
+    case 'likely-rename':
+      return 'Fix: rename this merchant to match the file — not yet an action here, do it from Merchants → Edit.';
+    case 'ambiguous-rename':
+      return 'Fix: more than one name could be right — needs a person to pick, not automatable.';
+    case 'brand-has-branches':
+      return item.sameTerms
+        ? 'Fix: these rows share identical terms and could merge into one brand-level merchant.'
+        : 'Fix: these rows disagree on terms — merging needs a person to choose which one wins.';
+    case 'in-file-no-row':
+      return 'Fix: add this merchant — or check the "in your app, not in your file" list below for a rename first.';
+    case 'in-app-not-in-file':
+      return 'Fix: nothing was deleted — confirm it’s still active, or leave it if it’s just missing from this week’s file.';
+    case 'machine-list-miss':
+      return 'Fix: link the store to a merchant, once linking ships.';
+    default:
+      return '';
+  }
+}
+
+// One difference, one row: the app's name and the file's (where both exist — some types only
+// ever have one side), the detail classifyDifferences already computed, the money at stake, and
+// the fix in words. No buttons — see the section comment above.
+function reconcileRowHtml(item) {
+  const names = (item.names || []).filter(Boolean);
+  return `<div class="rc-item">
+    <span class="rc-item-names">${names.map(escape).join(' <span class="rc-arrow">↔</span> ')}</span>
+    ${item.money ? `<span class="rc-item-money">${fmt2(item.money)} ${escape(CCY)}</span>` : ''}
+    ${item.detail ? `<div class="rc-item-detail muted">${escape(item.detail)}</div>` : ''}
+    <div class="rc-item-fix muted">${escape(reconcileFix(item))}</div>
+  </div>`;
+}
+
+// Spec §5 type 5: the "in your app, not in your file" rows group by the day the contract row was
+// created, because that is the axis along which this app's duplicates were created (38 from the
+// 7 Aug migration, 21 from the 9 Aug adoption, a handful since). No string metric pairs 'UDON
+// Cher' with 'เฌอ' — this grouping plus a human eye IS the detection mechanism for those.
+function groupByAddedDay(items, contracts) {
+  const byId = new Map((contracts || []).map(c => [c.contractId, c]));
+  const days = new Map();
+  for (const it of items) {
+    const c = byId.get(it.contractIds[0]);
+    const day = (c?.createdAt || '').slice(0, 10) || 'unknown';
+    if (!days.has(day)) days.set(day, []);
+    days.get(day).push(it);
+  }
+  return [...days.entries()].sort((a, b) => b[0].localeCompare(a[0]));
+}
+
+function reconcileDayGroupsHtml(rows) {
+  return groupByAddedDay(rows, CONTRACTS).map(([day, items]) => {
+    const label = day === 'unknown' ? 'Unknown date'
+      : new Date(day).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+    const known = RECONCILE_KNOWN_BATCHES[day] ? ` (${RECONCILE_KNOWN_BATCHES[day]})` : '';
+    return `<div class="rc-day"><h4>${escape(label)} — ${items.length}${escape(known)}</h4>
+      ${items.map(reconcileRowHtml).join('')}</div>`;
+  }).join('');
+}
+
+// The heading states the upload date and the run the money comes from, because both are facts
+// the reader needs to trust a number.
+function reconcileHtml(items, upload, run) {
+  if (!upload) return '<p class="muted">No weekly upload has been recorded yet. '
+    + 'Upload your merchant file from <strong>+ Add merchants</strong> and this page will fill in.</p>';
+  const when = upload.at ? new Date(upload.at).toLocaleDateString('en-GB',
+    { day: 'numeric', month: 'short', year: 'numeric' }) : 'your last upload';
+  const period = run?.periodStart ? periodMonth(run.periodStart) : null;
+  const head = `<p class="muted" style="margin:0 0 14px;">Compared against your <strong>${escape(when)}</strong> upload`
+    + (period ? ` · money shown is revenue that paid nothing in the ${escape(period)} run` : '')
+    + `.</p>`;
+  if (!items.length) return head + '<p class="muted">Nothing to reconcile — your list and your file agree.</p>';
+  return `<div class="rc-wrap">${head}` + RECONCILE_GROUPS.map(g => {
+    const rows = items.filter(i => i.type === g.type);
+    if (!rows.length) return '';
+    const money = rows.reduce((s, r) => s + (r.money || 0), 0);
+    const body = g.type === 'in-app-not-in-file' ? reconcileDayGroupsHtml(rows) : rows.map(reconcileRowHtml).join('');
+    return `<section class="rc-group">
+      <h3>${escape(g.title)} <span class="rc-count">${rows.length}</span>
+        ${money ? `<span class="rc-money">${fmt2(money)} ${escape(CCY)}</span>` : ''}</h3>
+      <details><summary>${rows.length} to review</summary>${body}</details>
+    </section>`;
+  }).join('') + '</div>';
+}
+
+async function renderReconcileTab() {
+  const main = document.getElementById('main');
+  setActiveNav('nav-contracts');
+  main.innerHTML = `<h1>Merchant view</h1>${merchantHead('reconcile')}<div id="rc-out"><p class="muted">Loading…</p></div>`;
+  wireMerchantTabs();
+
+  // BOTH halves: `names` lives on the cheap CONFIG row (the same one read on every Merchant view
+  // paint for the ⦿ marks), while `brands`/`machineMisses` live in the S3 document. Fetching only
+  // the pointer would leave the machine-list section permanently empty — its test would still pass.
+  // The run payload (~900KB) is fetched ONLY here, when the tab is actually opened — never from
+  // the Merchants tab.
+  const [ptr, doc, runs] = await Promise.all([
+    api('/contracts/last-upload').catch(() => null),
+    api('/contracts/last-upload/rows').catch(() => null),
+    api('/bulk-runs').catch(() => []),
+  ]);
+  // /contracts/last-upload always returns an object — {at:null, names:[]} before any upload was
+  // ever recorded, same as GET /me-style "empty but present" responses elsewhere in this API — so
+  // "has an upload happened" is `upload.at`, never plain truthiness of `upload` itself. Mirrors
+  // renderContractsScreen's own `lastUpload.names.length` check for LAST_UPLOAD, above.
+  const merged = ptr ? { ...ptr, ...(doc || {}) } : null;
+  const upload = merged?.at ? merged : null;
+  const latest = runs.length
+    ? await api('/bulk-runs/' + runs.slice().sort((a, b) => (b.periodStart || '').localeCompare(a.periodStart || ''))[0].runId).catch(() => null)
+    : null;
+  // GET /contracts/dismissals doesn't exist yet (Task 13) — never let its absence blank the page.
+  const dismissals = await api('/contracts/dismissals').catch(() => ({ items: [] }));
+  // No upload yet ⇒ nothing to compare against, so don't ask classifyDifferences to treat every
+  // live merchant as "not in your file" — that would badge the tab with a big, misleading number
+  // right when the page itself says there's nothing to reconcile.
+  const items = upload ? classifyDifferences({ contracts: CONTRACTS, upload, run: latest,
+                                               dismissals: dismissals.items || [] }) : [];
+  RECONCILE_COUNT = items.length;
+  // Repaint the tab strip so the (N) badge reflects what was just computed, without a refetch.
+  const strip = main.querySelector('.subtabs');
+  if (strip) { strip.outerHTML = merchantHead('reconcile'); wireMerchantTabs(); }
+  document.getElementById('rc-out').innerHTML = reconcileHtml(items, upload, latest);
 }
 
 // ── Adding merchants ───────────────────────────────────────────────────────

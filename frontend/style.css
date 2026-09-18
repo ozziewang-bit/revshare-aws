@@ -1030,3 +1030,41 @@ body:has(#main.main-wide) .topbar { width: 100vw; left: 0; }
 /* "not in the latest merchant upload" — informational, not a warning: nothing is wrong with
    the row, it just isn't in your current list. Deliberately cooler than the ◆ / ⚠ flags. */
 .ct-alert-missing { color: var(--accent); }
+
+/* ============ RECONCILE TAB ============ */
+/* The tab sits under #main.main-wide (same nav item as the grid), but its content reads as
+   prose/lists, not a wide table — so it gets its own readable column instead of using the
+   grid's full width. */
+.rc-wrap { max-width: 880px; }
+.rc-group { margin: 0 0 22px; }
+.rc-group h3 {
+  display: flex; align-items: baseline; gap: 10px;
+  margin: 0 0 8px; font-size: 15px;
+}
+.rc-count {
+  font-size: 11.5px; font-weight: 600; color: var(--ink-soft);
+  background: var(--surface-muted); border-radius: 999px; padding: 1px 9px;
+}
+.rc-money { font-size: 13px; font-weight: 600; color: var(--ink-soft); margin-left: auto; }
+.rc-group > details > summary {
+  cursor: pointer; color: var(--accent); font-size: 12.5px; list-style: none;
+}
+.rc-group > details > summary::-webkit-details-marker { display: none; }
+.rc-group > details > summary::before { content: '▸ '; }
+.rc-group > details[open] > summary::before { content: '▾ '; }
+.rc-group > details[open] > summary { margin-bottom: 8px; }
+.rc-item {
+  padding: 9px 12px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--surface); margin-bottom: 6px;
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px;
+}
+.rc-item-names { font-weight: 600; font-size: 13.5px; }
+.rc-arrow { color: var(--ink-faint); font-weight: 400; }
+.rc-item-detail { font-size: 12.5px; flex-basis: 100%; }
+.rc-item-fix { font-size: 12px; flex-basis: 100%; }
+.rc-item-money { font-size: 13px; font-weight: 600; margin-left: auto; }
+.rc-day { margin: 4px 0 14px; }
+.rc-day h4 {
+  font-size: 12.5px; font-weight: 600; color: var(--ink-soft);
+  margin: 0 0 6px; text-transform: none;
+}
