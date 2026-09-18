@@ -927,29 +927,86 @@ function classifyDifferences(opts) {
                money: money.get(k) || 0, detail: '' });
   }
 
-  // Pair the two orphan sets: a file name with no row, against merchants the file omits. One
-  // candidate is a suggestion; two or more is a question, and the page must ask it rather than
-  // pick. `Classic` matches two live rows, so picking the top one would be wrong half the time.
+  // Pair the two orphan sets: a file name with no row, against merchants the file omits. Every
+  // score is computed once, up front, against the STATIC lists below — nothing here recomputes
+  // a candidate list from `out` mid-loop, because `out` is what earlier iterations are editing.
+  // (An earlier version did exactly that: a first-come-first-served loop let two file names each
+  // separately claim the SAME orphan contract as a confident 1:1 match — reporting that contract
+  // TWICE — and once the orphan had already been spliced out for the first claim, the second
+  // claim's `out.splice(out.indexOf(orphan), 1)` found `indexOf` returned -1 and silently deleted
+  // the LAST element of `out` instead — an unrelated, genuine finding, gone with no trace.)
+  //
+  // One candidate on either side is a suggestion; two or more on EITHER side is a question the
+  // page must ask rather than pick. `Classic` matching two live rows is the file-name-side shape
+  // of that; two file names each resembling one orphaned `Andamanda` is the same problem from the
+  // contract side, and is resolved the same way — one ambiguous item, not two confident wrong
+  // guesses.
   const orphanContracts = out.filter(i => i.type === 'in-app-not-in-file');
-  for (const item of [...out]) {
-    if (item.type !== 'in-file-no-row') continue;
-    const scored = orphanContracts
-      .map(o => ({ o, score: similarity(item.names[0], o.names[0]) }))
-      .filter(x => x.score >= RENAME_MIN)
-      .sort((a, b) => b.score - a.score);
-    if (!scored.length) continue;
+  const fileItems = out.filter(i => i.type === 'in-file-no-row');
+  // Every splice below goes through this — never trust an `indexOf` result unchecked. Every
+  // call site is provably safe by construction (nothing here removes an item twice), but a -1
+  // from a future edit must fail loudly rather than silently delete `out`'s last element, which
+  // is exactly what the unguarded version did.
+  const removeItem = (item) => {
     const i = out.indexOf(item);
+    if (i < 0) throw new Error('reconcile pairing: tried to remove an item no longer in `out`');
+    out.splice(i, 1);
+  };
+  const scoredFor = new Map(fileItems.map(f => [f,
+    orphanContracts
+      .map(o => ({ o, score: similarity(f.names[0], o.names[0]) }))
+      .filter(x => x.score >= RENAME_MIN)
+      .sort((a, b) => b.score - a.score)]));
+
+  // An orphan for which more than one file name is the ONLY candidate is contested: each of
+  // those file names looks, in isolation, like a confident 1:1 rename — but only one of them can
+  // be right, so this resolves ALL of them first, as one ambiguous-rename per contested orphan,
+  // before any single-candidate file item below is allowed to claim anything.
+  const soleClaimants = new Map();   // orphan item -> file items for which it is the ONLY candidate
+  for (const [f, scored] of scoredFor) {
+    if (scored.length !== 1) continue;
+    const o = scored[0].o;
+    if (!soleClaimants.has(o)) soleClaimants.set(o, []);
+    soleClaimants.get(o).push(f);
+  }
+  const consumedOrphans = new Set();
+  const consumedFiles = new Set();
+  for (const [o, claimants] of soleClaimants) {
+    if (claimants.length < 2) continue;
+    consumedOrphans.add(o);
+    for (const f of claimants) consumedFiles.add(f);
+    const i = out.indexOf(claimants[0]);
+    if (i < 0) throw new Error('reconcile pairing: claimant already removed from `out`');
+    out[i] = { type: 'ambiguous-rename', key: o.key,
+               names: [o.names[0], ...claimants.map(f => f.names[0])],
+               contractIds: [...o.contractIds],
+               money: claimants.reduce((sum, f) => sum + (f.money || 0), 0),
+               detail: `${claimants.length} upload names could be this merchant's rename — pick one` };
+    removeItem(o);
+    for (const f of claimants.slice(1)) removeItem(f);
+  }
+
+  // The plain cases: a file name with exactly one candidate left (now guaranteed to be the only
+  // file name that wants it — any contest was already resolved above) becomes a suggestion; one
+  // with several becomes its own question, unchanged from before.
+  for (const f of fileItems) {
+    if (consumedFiles.has(f)) continue;
+    const scored = scoredFor.get(f).filter(x => !consumedOrphans.has(x.o));
+    if (!scored.length) continue;
+    const i = out.indexOf(f);
+    if (i < 0) throw new Error('reconcile pairing: file item already removed from `out`');
     if (scored.length === 1) {
       const { o, score } = scored[0];
-      out[i] = { type: 'likely-rename', key: item.key,
-                 names: [o.names[0], item.names[0]], contractIds: [...o.contractIds],
-                 money: item.money, detail: `${Math.round(score * 100)}% match` };
-      out.splice(out.indexOf(o), 1);
+      out[i] = { type: 'likely-rename', key: f.key,
+                 names: [o.names[0], f.names[0]], contractIds: [...o.contractIds],
+                 money: f.money, detail: `${Math.round(score * 100)}% match` };
+      removeItem(o);
+      consumedOrphans.add(o);
     } else {
-      out[i] = { type: 'ambiguous-rename', key: item.key,
-                 names: [item.names[0], ...scored.map(s => s.o.names[0])],
+      out[i] = { type: 'ambiguous-rename', key: f.key,
+                 names: [f.names[0], ...scored.map(s => s.o.names[0])],
                  contractIds: scored.flatMap(s => s.o.contractIds),
-                 money: item.money, detail: `${scored.length} merchants could be this` };
+                 money: f.money, detail: `${scored.length} merchants could be this` };
     }
   }
 

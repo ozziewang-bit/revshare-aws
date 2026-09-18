@@ -108,3 +108,47 @@ test('unrelated names are not paired', () => {
     upload: { names: ['Jims Burger'] }, run: null, dismissals: [] });
   assert.equal(items.filter(i => i.type.includes('rename')).length, 0);
 });
+
+// --- fix round 1: reproductions of the double-report / silent-deletion review finding ---
+
+test('two file names competing for one orphan produce exactly one claim on that contract', () => {
+  // Both 'Andamanda Phuket' and 'Andamanda Resort' are, on their own, a confident 1:1 match for
+  // the single orphan 'Andamanda'. A first-come-first-served pairing let each become its own
+  // likely-rename, reporting contract c1 twice. Only one item may ever carry c1.
+  const items = classifyDifferences({
+    contracts: [{ contractId: 'c1', merchantName: 'Andamanda' }],
+    upload: { names: ['Andamanda Phuket', 'Andamanda Resort'] }, run: null, dismissals: [] });
+  assert.equal(items.filter(i => i.type === 'likely-rename').length, 0,
+    'neither file name may be auto-paired while the other is an equally good match');
+  const claims = items.filter(i => (i.contractIds || []).includes('c1'));
+  assert.equal(claims.length, 1, 'contract c1 must be claimed by exactly one item');
+  assert.equal(claims[0].type, 'ambiguous-rename');
+  assert.deepEqual(claims[0].names.slice(1).sort(), ['Andamanda Phuket', 'Andamanda Resort']);
+});
+
+test('resolving a contested orphan does not delete an unrelated finding', () => {
+  // Reproduces the second half of the bug: once the contested orphan's `indexOf` went stale
+  // (already spliced out for the first claim), the second claim's splice deleted whatever
+  // happened to be LAST in `out` — here, an entirely unrelated file name with no candidates at
+  // all. That name must still be reported, untouched, no matter how the Andamanda pair resolves.
+  const items = classifyDifferences({
+    contracts: [{ contractId: 'c1', merchantName: 'Andamanda' }],
+    upload: { names: ['Andamanda Phuket', 'Andamanda Resort', 'Jims Burger'] },
+    run: null, dismissals: [] });
+  const jims = items.find(i => i.type === 'in-file-no-row' && i.names[0] === 'Jims Burger');
+  assert.ok(jims, 'an unrelated file name must not vanish while a contested orphan resolves');
+});
+
+test('Jharoka clears the rename threshold — pins the tightest real margin', () => {
+  // Real pair, 2026-09-18 review: similarity('Jharoka', 'Jharoka by Indus') = 0.571 against
+  // RENAME_MIN 0.55 — a margin of only 0.021, the tightest of any pair checked. Nothing else
+  // in this file would catch a future reconcileKey/bigram tweak that shaved this one below the
+  // line, so it gets its own pin.
+  const items = classifyDifferences({
+    contracts: [{ contractId: 'c1', merchantName: 'Jharoka' }],
+    upload: { names: ['Jharoka by Indus'] }, run: null, dismissals: [] });
+  const r = items.filter(i => i.type === 'likely-rename');
+  assert.equal(r.length, 1);
+  assert.deepEqual(r[0].names, ['Jharoka', 'Jharoka by Indus']);
+  assert.deepEqual(r[0].contractIds, ['c1']);
+});
