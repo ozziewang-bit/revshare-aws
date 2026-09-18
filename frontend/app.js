@@ -2193,7 +2193,8 @@ async function openAddMerchants() {
           const groups = fields.map(f => ['Contact', 'Phone', 'Email', 'Sales person'].includes(f) ? 'Contact' : 'Merchant');
           const rows = parsed.rows.map((r, i) => [...r, parsed.branchCounts[i]]);
           const res = await api('/contracts/import', { method: 'POST',
-            body: JSON.stringify({ rows, header: fields, groups, links: {}, recordUpload: true }) });
+            body: JSON.stringify({ rows, header: fields, groups, links: {}, recordUpload: true,
+                                   machineMisses: machines ? await machineMissNames(machines) : null }) });
           created += res.created; updated += res.updated;
           // Only the weekly batch sets this — see importContractsRoute. Taking it from the
           // response means the grid repaints marked without a second round trip.
@@ -2258,6 +2259,18 @@ function matchMachineStores(byStore, merchants) {
     totals.set(cid, acc);
   }
   return { totals, matchedStores, matchedMachines, unknown, unlinked };
+}
+
+// The store names a machine list could not place, by the two reasons §1l keeps apart: `unknown`
+// (no registry row with that store name) and `unlinked` (in the registry, but its row carries no
+// contractId). They need different fixes, so they must not be merged into one list.
+//
+// matchMachineStores pushes {store, machines} OBJECTS, not strings — mapping String over them
+// would store "[object Object]" 200 times. And loadRegistry is async and several MB, so this
+// reuses the fetch the dialog already made rather than pulling the registry twice.
+async function machineMissNames(machines) {
+  const { unknown, unlinked } = matchMachineStores(machines.byStore, await loadRegistry());
+  return { unknown: (unknown || []).map(x => x.store), unlinked: (unlinked || []).map(x => x.store) };
 }
 
 async function importMachineCounts(machines) {

@@ -1,6 +1,6 @@
 import { listContracts, getContract, putContract, deleteContract, listPartners, ulid,
-         getLastUpload, putLastUpload } from '../db.mjs';
-import { normalizeContractRow, buildImportPlan } from '../contracts.mjs';
+         getLastUpload, putLastUpload, putUploadDoc } from '../db.mjs';
+import { normalizeContractRow, buildImportPlan, uploadDocFrom } from '../contracts.mjs';
 
 // Fields a client may write. `sheetTerms` is import-preview data and is not stored;
 // share terms live on the partner's rule, never on the contract row.
@@ -107,7 +107,15 @@ export async function importContractsRoute(event) {
   // they happened to omit as missing. Opt in explicitly rather than inferring it from the shape.
   let lastUpload = null;
   if (body.recordUpload) {
-    lastUpload = await putLastUpload(normalized.map(r => r.merchantName).filter(Boolean));
+    const doc = uploadDocFrom(normalized, {
+      by: event.auth?.email || body.by || null,
+      machineMisses: body.machineMisses || null,
+    });
+    const { key } = await putUploadDoc(doc);
+    lastUpload = await putLastUpload(normalized.map(r => r.merchantName).filter(Boolean), {
+      s3Key: key,
+      counts: { brands: doc.brands.length, created: plan.creates.length, updated: plan.updates.length },
+    });
   }
 
   return resp(200, {

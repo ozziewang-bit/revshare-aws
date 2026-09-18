@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { normalizeContractRow, matchContracts, buildImportPlan } from '../code/contracts.mjs';
+import { normalizeContractRow, matchContracts, buildImportPlan, uploadDocFrom } from '../code/contracts.mjs';
 
 // Sheet order: No, Merchant, Type, CounterParty, Units, S5, S8, M10, LL20, LL40,
 //              Start, End, Notice, DeclineRenew, AutoRenewal, COC, Mode, Pct,
@@ -317,4 +317,21 @@ test('buildImportPlan ignores the example row entirely', () => {
   const plan = buildImportPlan(rows, [], [], {});
   assert.equal(plan.creates.length, 1);
   assert.equal(plan.creates[0].merchantName, 'Real Merchant');
+});
+
+test('an upload document is built only from a recording import', () => {
+  // The sheet importer and infra/import-merchant-sheet.mjs carry PARTIAL lists. Letting them
+  // record would mark every merchant they happened to omit as missing — the same reason
+  // recordUpload exists at all (CLAUDE.md §1m). The document must follow the same flag.
+  const rows = [{ merchantName: 'Acme', merchantType: 'Retail', branchCount: 3 }];
+  assert.deepEqual(uploadDocFrom(rows, { by: 'me@x.com', at: '2026-09-18T00:00:00Z' }).brands,
+    [{ name: 'Acme', merchantType: 'Retail', counterParty: null, salesPerson: null,
+       contactName: null, contactPhone: null, contactEmail: null, branchCount: 3 }]);
+});
+
+test('the upload document caps the machine-list misses', () => {
+  const misses = { unknown: Array.from({ length: 500 }, (_, i) => 'store' + i), unlinked: [] };
+  const doc = uploadDocFrom([], { by: 'x', at: 'y', machineMisses: misses });
+  assert.equal(doc.machineMisses.unknown.length, 200);
+  assert.equal(doc.machineMisses.unknownTotal, 500);   // the count is never lost, only the list
 });

@@ -307,3 +307,26 @@ export function buildImportPlan(rows, existingContracts, partners, links = {}) {
   }
   return { creates, updates, unmatched };
 }
+
+// The fields the Reconcile tab compares. Deliberately NOT the whole normalized row: contract
+// dates and terms are not in a weekly file at all (§1l), so storing them would invent a
+// comparison the file cannot support.
+const UPLOAD_FIELDS = ['merchantType', 'counterParty', 'salesPerson',
+                       'contactName', 'contactPhone', 'contactEmail', 'branchCount'];
+const MISS_CAP = 200;
+
+export function uploadDocFrom(rows, { by, at, machineMisses } = {}) {
+  const brands = (rows || []).filter(r => r && r.merchantName).map(r => {
+    const out = { name: r.merchantName };
+    for (const f of UPLOAD_FIELDS) out[f] = r[f] ?? null;
+    return out;
+  });
+  const cap = (list) => (list || []).slice(0, MISS_CAP);
+  return {
+    at: at || new Date().toISOString(), by: by || null, brands,
+    machineMisses: {
+      unknown: cap(machineMisses?.unknown), unknownTotal: (machineMisses?.unknown || []).length,
+      unlinked: cap(machineMisses?.unlinked), unlinkedTotal: (machineMisses?.unlinked || []).length,
+    },
+  };
+}
