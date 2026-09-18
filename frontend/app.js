@@ -2156,13 +2156,36 @@ function reconcileFix(item) {
   }
 }
 
+// Pure: a machine-list-miss item's names, as a plain list rather than the ' ↔ ' rename arrow
+// (that separator means "these are the same thing" — wrong for a list of distinct shops), plus a
+// line naming how many were left out when the backend's 200-name cap bit. `count` is the exact
+// total the item carries (§1l) — read it, never `names.length`, or a capped list silently reads
+// as complete. Extracted as its own function so the truncation math has one test rather than
+// being buried in a template string. (2026-09-18, fix round 1 of the Task 8 review.)
+function truncatedNameListHtml(names, count) {
+  const list = (names || []).filter(Boolean);
+  const total = count != null ? count : list.length;
+  const items = list.map(n => `<li>${escape(n)}</li>`).join('');
+  const note = total > list.length
+    ? `<div class="rc-item-detail muted">showing the first ${list.length} of ${total}</div>`
+    : '';
+  return `<ul class="rc-item-list">${items}</ul>${note}`;
+}
+
 // One difference, one row: the app's name and the file's (where both exist — some types only
 // ever have one side), the detail classifyDifferences already computed, the money at stake, and
 // the fix in words. No buttons — see the section comment above.
+//
+// machine-list-miss is the one shape that isn't a rename pair: it can hold up to 200 shop names
+// (the backend's cap) behind a `count` that is the exact total, so it gets its own name rendering
+// via truncatedNameListHtml instead of the arrow-joined `rc-item-names` line below.
 function reconcileRowHtml(item) {
   const names = (item.names || []).filter(Boolean);
+  const namesHtml = item.type === 'machine-list-miss'
+    ? truncatedNameListHtml(names, item.count)
+    : `<span class="rc-item-names">${names.map(escape).join(' <span class="rc-arrow">↔</span> ')}</span>`;
   return `<div class="rc-item">
-    <span class="rc-item-names">${names.map(escape).join(' <span class="rc-arrow">↔</span> ')}</span>
+    ${namesHtml}
     ${item.money ? `<span class="rc-item-money">${fmt2(item.money)} ${escape(CCY)}</span>` : ''}
     ${item.detail ? `<div class="rc-item-detail muted">${escape(item.detail)}</div>` : ''}
     <div class="rc-item-fix muted">${escape(reconcileFix(item))}</div>
@@ -2211,11 +2234,18 @@ function reconcileHtml(items, upload, run) {
     const rows = items.filter(i => i.type === g.type);
     if (!rows.length) return '';
     const money = rows.reduce((s, r) => s + (r.money || 0), 0);
+    // machine-list-miss rows are one item per REASON (unknown / unlinked), not one per shop — the
+    // count that matters here is shops, `rows.length` would read "2" whether 10 or 5,000 could not
+    // be placed. Every other group is still genuinely one item per finding, so `rows.length` stays
+    // right for them.
+    const count = g.type === 'machine-list-miss'
+      ? rows.reduce((s, r) => s + (r.count ?? r.names.length), 0)
+      : rows.length;
     const body = g.type === 'in-app-not-in-file' ? reconcileDayGroupsHtml(rows) : rows.map(reconcileRowHtml).join('');
     return `<section class="rc-group">
-      <h3>${escape(g.title)} <span class="rc-count">${rows.length}</span>
+      <h3>${escape(g.title)} <span class="rc-count">${count}</span>
         ${money ? `<span class="rc-money">${fmt2(money)} ${escape(CCY)}</span>` : ''}</h3>
-      <details><summary>${rows.length} to review</summary>${body}</details>
+      <details><summary>${count} to review</summary>${body}</details>
     </section>`;
   }).join('') + '</div>';
 }

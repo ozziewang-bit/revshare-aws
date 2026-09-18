@@ -20,6 +20,10 @@ const { classifyDifferences } = new Function(
   grab('classifyDifferences') +
   '\nreturn { classifyDifferences };')();
 
+const { truncatedNameListHtml } = new Function(
+  grab('escape') + '\n' + grab('truncatedNameListHtml') +
+  '\nreturn { truncatedNameListHtml };')();
+
 const of = (items, type) => items.filter(i => i.type === type);
 
 test('an archived contract still named in the file is the top finding', () => {
@@ -206,4 +210,30 @@ test('the two machine-list misses stay apart, because they need different fixes'
   assert.match(m.find(i => i.key === 'unlinked').detail, /no merchant/i);
   assert.equal(m.find(i => i.key === 'unlinked').names.length, 1);
   assert.equal(m.find(i => i.key === 'unlinked').count, 9);   // the total survives the cap
+});
+
+// --- Fix round 1: rendering the machine-list-miss shape (not an arrow chain, not silent about
+// the 200-name cap) ---
+
+test('a truncated name list says how many were left out, using the exact total', () => {
+  const html = truncatedNameListHtml(['A', 'B'], 500);
+  assert.match(html, /<li>A<\/li>/);
+  assert.match(html, /<li>B<\/li>/);
+  assert.match(html, /showing the first 2 of 500/);
+});
+
+test('no truncation note when the full list is already shown', () => {
+  const html = truncatedNameListHtml(['A', 'B'], 2);
+  assert.doesNotMatch(html, /showing the first/);
+});
+
+test('a missing count falls back to the length of the list actually shown', () => {
+  const html = truncatedNameListHtml(['A', 'B'], null);
+  assert.doesNotMatch(html, /showing the first/);
+});
+
+test('names are HTML-escaped, because they come from an uploaded spreadsheet', () => {
+  const html = truncatedNameListHtml(['<script>alert(1)</script>'], 1);
+  assert.doesNotMatch(html, /<script>/);
+  assert.match(html, /&lt;script&gt;/);
 });
