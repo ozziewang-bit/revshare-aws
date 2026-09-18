@@ -501,7 +501,18 @@ function wireSubTabs(root, go) {
     b.addEventListener('click', () => { if (!b.classList.contains('active')) go(b.dataset.tab); }));
 }
 
+// Every screen paint takes a token before it awaits anything and abandons the paint if the token
+// is no longer current. Without it, a slow screen finishes into a DOM that belongs to a screen the
+// user has since navigated to: the Reconcile tab's ~900KB run payload landing after a switch back
+// to Merchants found `.subtabs` (which exists under BOTH), repainted it as Reconcile-active, then
+// threw on `getElementById('rc-out').innerHTML` of null — an unhandled rejection, and the strip
+// left lying about which tab you are on. It races in both directions, since the grid awaits too.
+let PAINT_TOKEN = 0;
+function newPaintToken() { return ++PAINT_TOKEN; }
+function paintIsCurrent(token) { return token === PAINT_TOKEN; }
+
 function setActiveNav(id) {
+  newPaintToken();   // navigating away invalidates whatever paint is still in flight
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.id === id));
   // The merchant grid is ~2400px of columns; the app's 1100px content column hides most
   // of them behind a scrollbar. Let this one screen use the whole window.
@@ -925,9 +936,16 @@ function classifyDifferences(opts) {
     const k = reconcileKey(c.merchantName);
     if (c.archived) {
       if (inFile.has(k)) {
+        // BOTH flags travel with the item. `archived` alone has a one-step fix; archived AND
+        // `noPayout` does not, and telling someone to unarchive a noPayout row is advice that
+        // pays them zero again next run (the `Central` case: 51,495 THB). The classifier can
+        // see both, so it says both — see reconcileFix.
         out.push({ type: 'archived-in-file', key: k, names: [c.merchantName],
                    contractIds: [c.contractId], money: money.get(k) || 0,
-                   detail: 'Contract archived, but this brand is on your merchant list.' });
+                   archived: true, noPayout: !!c.noPayout,
+                   detail: c.noPayout
+                     ? 'Contract archived AND marked “no revenue share”, but this brand is on your merchant list.'
+                     : 'Contract archived, but this brand is on your merchant list.' });
       }
       continue;                     // an archived row is never "missing from the file"
     }
@@ -944,25 +962,87 @@ function classifyDifferences(opts) {
                money: money.get(k) || 0, detail: '' });
   }
 
+  // Every splice below goes through this — never trust an `indexOf` result unchecked. Every
+  // call site is provably safe by construction (nothing here removes an item twice), but a -1
+  // from a future edit must fail loudly rather than silently delete `out`'s last element, which
+  // is exactly what an earlier unguarded version did.
+  const removeItem = (item) => {
+    const i = out.indexOf(item);
+    if (i < 0) throw new Error('reconcile pairing: tried to remove an item no longer in `out`');
+    out.splice(i, 1);
+  };
+  const byId = new Map(live.map(c => [c.contractId, c]));
+
   // One file tag, several merchant rows whose names start with it. This is the brand-vs-branch
   // split: the roster labels every machine with the brand tag, so the branch rows can never be
   // reached by a run however good their terms are.
-  for (const item of [...out]) {
-    if (item.type !== 'in-file-no-row') continue;
-    const members = out.filter(o => o.type === 'in-app-not-in-file'
-      && reconcileKey(o.names[0]).startsWith(item.key + ' '));
+  //
+  // This runs over EVERY name in the file, not only tags with no merchant row — which is the
+  // case the whole feature exists for. `Central` HAS a row (archived, noPayout), so a pass that
+  // only looked at rowless tags never fired on it: the page showed `Central` archived in one
+  // group and `Central Ladprao`/`Eastville`/`Westgate` scattered across another, with nothing
+  // linking them. The branch members are ATTACHED to whatever item the tag already has rather
+  // than emitted as a second item, so one brand is one finding (spec §1, §10) and no contract
+  // is ever reported twice. A tag whose row is LIVE and in the file has no item to attach to,
+  // so it gets a `brand-has-branches` item of its own — the branches are just as unreachable.
+  //
+  // A member is WITHHELD when it looks much more like the rename of some OTHER rowless file
+  // name than like a branch of this tag: file `Glow` + `Glow Fis` against rows `Glow Fish` and
+  // `Glow Bar` used to swallow `Glow Fish` into the `Glow` group, so a 93% rename match was
+  // never suggested and left no trace. The bar is deliberately high (0.80 vs RENAME_MIN's
+  // 0.55) — a merchant that is genuinely a branch usually scores well BELOW it against any
+  // other tag, and the brand reading stays the right one for `Citadines`/`Classic` (R2).
+  const BRAND_YIELD_MIN = 0.80;
+  const rowlessFileKeys = [...inFile].filter(k => !byKey.has(k));
+  for (const k of inFile) {
+    const tagged = out.filter(o => o.type === 'in-app-not-in-file'
+      && reconcileKey(o.names[0]).startsWith(k + ' '));
+    const members = tagged.filter(o => !rowlessFileKeys.some(other =>
+      other !== k && similarity(other, o.names[0]) >= BRAND_YIELD_MIN));
     if (members.length < 2) continue;
-    const byId = new Map(live.map(c => [c.contractId, c]));
     const sigs = new Set(members.flatMap(m => m.contractIds).map(id => termSignature(byId.get(id))));
-    out[out.indexOf(item)] = {
-      type: 'brand-has-branches', key: item.key,
-      names: [item.names[0], ...members.map(m => m.names[0])],
-      contractIds: members.flatMap(m => m.contractIds),
-      money: item.money, sameTerms: sigs.size === 1,
-      detail: sigs.size === 1 ? 'terms identical on all rows'
-                              : `${sigs.size} different term sets — a merge must choose`,
+    const branchIds = members.flatMap(m => m.contractIds);
+    const branch = {
+      branchNames: members.map(m => m.names[0]),
+      branchContractIds: branchIds,
+      branchCount: members.length,
+      sameTerms: sigs.size === 1,
+      termSetCount: sigs.size,
     };
-    for (const m of members) out.splice(out.indexOf(m), 1);
+    const termsDetail = sigs.size === 1
+      ? 'terms identical on all rows'
+      : `${sigs.size} different term sets — only one can ever be paid under this tag`;
+    const termsSentence = sigs.size === 1
+      ? 'The rows below carry identical terms.'
+      : `The rows below carry ${sigs.size} different term sets, and only one can ever be paid under this tag.`;
+    const existing = out.find(o => o.key === k
+      && (o.type === 'archived-in-file' || o.type === 'in-file-no-row'));
+    if (existing && existing.type === 'archived-in-file') {
+      // Keep the archived item's own type: "archived and still earning" is the more severe
+      // fact and the group it belongs in. The branches ride along as extra facts on that row.
+      Object.assign(existing, branch, {
+        contractIds: [...existing.contractIds, ...branchIds],
+        // The branch rows themselves are listed under the row, so the detail only adds the one
+        // fact that list cannot show: whether those rows agree on terms.
+        detail: `${existing.detail} ${termsSentence}`,
+      });
+    } else if (existing) {
+      out[out.indexOf(existing)] = {
+        type: 'brand-has-branches', key: k,
+        names: [existing.names[0], ...branch.branchNames],
+        contractIds: [...branchIds], money: existing.money, ...branch, detail: termsDetail };
+    } else {
+      // The tag resolves to a LIVE row that is itself in the file. Nothing is wrong with the
+      // tag; the branch rows below it are still unreachable, so the finding still exists.
+      const tagContract = byKey.get(k);
+      out.push({
+        type: 'brand-has-branches', key: k,
+        names: [tagContract ? tagContract.merchantName : (upload.names || []).find(n => reconcileKey(n) === k),
+                ...branch.branchNames],
+        contractIds: [...(tagContract ? [tagContract.contractId] : []), ...branchIds],
+        money: money.get(k) || 0, ...branch, detail: termsDetail });
+    }
+    for (const m of members) removeItem(m);
   }
 
   // Pair the two orphan sets: a file name with no row, against merchants the file omits. Every
@@ -979,17 +1059,14 @@ function classifyDifferences(opts) {
   // of that; two file names each resembling one orphaned `Andamanda` is the same problem from the
   // contract side, and is resolved the same way — one ambiguous item, not two confident wrong
   // guesses.
+  //
+  // INVARIANT, load-bearing: when this returns, no contractId appears in more than one item.
+  // The badge count, the per-group counts and "this merchant needs one decision" all rest on it.
+  // Every branch below therefore CONSUMES the orphans it names, including the ambiguous one —
+  // listing a contract inside an ambiguous item and ALSO leaving it as its own row showed the
+  // same merchant twice, with contradictory advice, and inflated every count.
   const orphanContracts = out.filter(i => i.type === 'in-app-not-in-file');
   const fileItems = out.filter(i => i.type === 'in-file-no-row');
-  // Every splice below goes through this — never trust an `indexOf` result unchecked. Every
-  // call site is provably safe by construction (nothing here removes an item twice), but a -1
-  // from a future edit must fail loudly rather than silently delete `out`'s last element, which
-  // is exactly what the unguarded version did.
-  const removeItem = (item) => {
-    const i = out.indexOf(item);
-    if (i < 0) throw new Error('reconcile pairing: tried to remove an item no longer in `out`');
-    out.splice(i, 1);
-  };
   const scoredFor = new Map(fileItems.map(f => [f,
     orphanContracts
       .map(o => ({ o, score: similarity(f.names[0], o.names[0]) }))
@@ -1024,28 +1101,46 @@ function classifyDifferences(opts) {
     for (const f of claimants.slice(1)) removeItem(f);
   }
 
-  // The plain cases: a file name with exactly one candidate left (now guaranteed to be the only
-  // file name that wants it — any contest was already resolved above) becomes a suggestion; one
-  // with several becomes its own question, unchanged from before.
-  for (const f of fileItems) {
-    if (consumedFiles.has(f)) continue;
-    const scored = scoredFor.get(f).filter(x => !consumedOrphans.has(x.o));
-    if (!scored.length) continue;
+  // Confident pairs are settled BEFORE ambiguous ones, and to a fixpoint: an ambiguous file name
+  // consuming its candidates could otherwise take the single candidate of a file name that had a
+  // clean 1:1 match, leaving the clean one with nothing to suggest. Each resolution can drop
+  // another file name to one candidate, so this repeats until nothing changes.
+  const remaining = (f) => scoredFor.get(f).filter(x => !consumedOrphans.has(x.o));
+  const pairOne = (f, o, score) => {
     const i = out.indexOf(f);
     if (i < 0) throw new Error('reconcile pairing: file item already removed from `out`');
-    if (scored.length === 1) {
-      const { o, score } = scored[0];
-      out[i] = { type: 'likely-rename', key: f.key,
-                 names: [o.names[0], f.names[0]], contractIds: [...o.contractIds],
-                 money: f.money, detail: `${Math.round(score * 100)}% match` };
-      removeItem(o);
-      consumedOrphans.add(o);
-    } else {
-      out[i] = { type: 'ambiguous-rename', key: f.key,
-                 names: [f.names[0], ...scored.map(s => s.o.names[0])],
-                 contractIds: scored.flatMap(s => s.o.contractIds),
-                 money: f.money, detail: `${scored.length} merchants could be this` };
+    out[i] = { type: 'likely-rename', key: f.key,
+               names: [o.names[0], f.names[0]], contractIds: [...o.contractIds],
+               money: f.money, detail: `${Math.round(score * 100)}% match` };
+    removeItem(o);
+    consumedOrphans.add(o);
+    consumedFiles.add(f);
+  };
+  for (let moved = true; moved; ) {
+    moved = false;
+    for (const f of fileItems) {
+      if (consumedFiles.has(f)) continue;
+      const scored = remaining(f);
+      if (scored.length !== 1) continue;
+      pairOne(f, scored[0].o, scored[0].score);
+      moved = true;
     }
+  }
+
+  // What is left is genuinely ambiguous: several merchants still fit this one file name. The
+  // item names every candidate AND consumes them, so the reader sees this merchant exactly once.
+  for (const f of fileItems) {
+    if (consumedFiles.has(f)) continue;
+    const scored = remaining(f);
+    if (scored.length < 2) continue;
+    const i = out.indexOf(f);
+    if (i < 0) throw new Error('reconcile pairing: file item already removed from `out`');
+    out[i] = { type: 'ambiguous-rename', key: f.key,
+               names: [f.names[0], ...scored.map(s => s.o.names[0])],
+               contractIds: scored.flatMap(s => s.o.contractIds),
+               money: f.money, detail: `${scored.length} merchants could be this` };
+    consumedFiles.add(f);
+    for (const { o } of scored) { removeItem(o); consumedOrphans.add(o); }
   }
 
   // The optional machine-list upload matches each shop to a merchant through the store registry.
@@ -2044,6 +2139,9 @@ function wireMerchantTabs() {
 
 async function renderContractsScreen() {
   const el = document.getElementById('main');
+  // setActiveNav already bumped the token when this came from the nav; the sub-tab and boot paths
+  // do not go through it, so take one here too — the last paint started is the one that wins.
+  const token = newPaintToken();
   el.classList.add('main-wide');   // also covers the boot path, which doesn't go via setActiveNav
   el.innerHTML = `<h1>Merchant view</h1>${merchantHead('merchants')}<p class="muted">Loading…</p>`;
   wireMerchantTabs();
@@ -2056,6 +2154,7 @@ async function renderContractsScreen() {
   CONTRACTS = contracts;
   MACHINE_MODELS_CACHE = machineModels;
   LAST_UPLOAD = lastUpload && lastUpload.names && lastUpload.names.length ? lastUpload : null;
+  if (!paintIsCurrent(token)) return;   // the user is somewhere else now — do not paint over it
   refreshContractGridColumns();
   el.innerHTML = `
     <h1>Merchant view</h1>
@@ -2110,12 +2209,14 @@ async function renderContractsScreen() {
 // Ordered by money, not by count: the four archived-and-earning brands matter more than the 65
 // quiet ones. Each group is collapsed to its heading until opened — the same discipline the run
 // detail settled on (§1i), one job per screen.
+// `money: true` marks the groups whose figures come from the latest run. When that run cannot be
+// loaded those figures are UNKNOWN, not zero, and the heading has to say so — see reconcileRunNote.
 const RECONCILE_GROUPS = [
-  { type: 'archived-in-file',   title: 'Archived, but still in your file and still earning' },
-  { type: 'likely-rename',      title: 'Looks renamed' },
-  { type: 'ambiguous-rename',   title: 'Could be a rename — more than one merchant fits' },
-  { type: 'brand-has-branches', title: 'One brand tag, several merchant rows' },
-  { type: 'in-file-no-row',     title: 'In your file, no merchant row' },
+  { type: 'archived-in-file',   title: 'Archived, but still in your file and still earning', money: true },
+  { type: 'likely-rename',      title: 'Looks renamed', money: true },
+  { type: 'ambiguous-rename',   title: 'Could be a rename — more than one merchant fits', money: true },
+  { type: 'brand-has-branches', title: 'One brand tag, several merchant rows', money: true },
+  { type: 'in-file-no-row',     title: 'In your file, no merchant row', money: true },
   { type: 'in-app-not-in-file', title: 'In your app, not in your file' },
   // Populated starting Task 8 (machine-list-miss items carry `count`, not `names`/`contractIds`
   // the way every other type does) — the group renders, just empty, until then.
@@ -2135,8 +2236,25 @@ const RECONCILE_KNOWN_BATCHES = {
 // as broken, not as "not built yet".
 function reconcileFix(item) {
   switch (item.type) {
-    case 'archived-in-file':
-      return 'Fix: unarchive it if the contract is genuinely still live, or ask for the brand to be dropped from next week’s file if it really ended.';
+    case 'archived-in-file': {
+      // One fault has a one-step fix. TWO do not, and this row is the reason the feature exists:
+      // `Central` is archived AND `noPayout`, with its negotiated terms sitting on branch rows no
+      // roster can reach. “Unarchive it” read as complete advice, and following it pays the brand
+      // zero again — 51,495 THB the next run. So the sentence is built from what is actually true
+      // of THIS row, and a multi-fault row is never handed a single step.
+      if (!item.noPayout && !item.branchCount)
+        return 'Fix: unarchive it if the contract is genuinely still live, or ask for the brand to be dropped from next week’s file if it really ended.';
+      const faults = ['the contract is archived, so a run skips it'];
+      if (item.noPayout)
+        faults.push('it is also marked “no revenue share”, so unarchiving alone would still pay nothing');
+      if (item.branchCount)
+        faults.push(`${item.branchCount} live branch rows start with this name`
+          + (item.sameTerms === false
+              ? `, holding ${item.termSetCount} different term sets — the roster labels their machines with this tag, so only one set could ever be paid`
+              : ', and the roster labels their machines with this tag, so a run never reaches them'));
+      return 'No single fix — ' + faults.join('; ')
+        + '. Check the contract and the rows above before changing anything: unarchiving on its own does not pay this brand.';
+    }
     case 'likely-rename':
       return 'Fix: rename this merchant to match the file — not yet an action here, do it from Merchants → Edit.';
     case 'ambiguous-rename':
@@ -2144,7 +2262,8 @@ function reconcileFix(item) {
     case 'brand-has-branches':
       return item.sameTerms
         ? 'Fix: these rows share identical terms and could merge into one brand-level merchant.'
-        : 'Fix: these rows disagree on terms — merging needs a person to choose which one wins.';
+        : 'Fix: these rows disagree on terms — merging only picks a winner, so it needs a person to choose, '
+          + 'or the roster relabelled per branch (spec §10).';
     case 'in-file-no-row':
       return 'Fix: add this merchant — or check the "in your app, not in your file" list below for a rename first.';
     case 'in-app-not-in-file':
@@ -2184,10 +2303,20 @@ function reconcileRowHtml(item) {
   const namesHtml = item.type === 'machine-list-miss'
     ? truncatedNameListHtml(names, item.count)
     : `<span class="rc-item-names">${names.map(escape).join(' <span class="rc-arrow">↔</span> ')}</span>`;
+  // Branch rows are a LIST, never the ' ↔ ' rename arrow — that separator means "these are the
+  // same thing", which is exactly the claim this screen must not make about a brand and its
+  // branches. Attached to whichever item owns the tag (an archived one keeps its own type), so
+  // `Central` reads as one finding rather than four scattered rows.
+  const branchesHtml = (item.branchNames || []).length
+    ? `<div class="rc-item-detail muted">Merchant rows under this tag, which a roster labelled `
+      + `“${escape(item.names[0])}” never reaches:</div>`
+      + truncatedNameListHtml(item.branchNames, item.branchNames.length)
+    : '';
   return `<div class="rc-item">
     ${namesHtml}
     ${item.money ? `<span class="rc-item-money">${fmt2(item.money)} ${escape(CCY)}</span>` : ''}
     ${item.detail ? `<div class="rc-item-detail muted">${escape(item.detail)}</div>` : ''}
+    ${branchesHtml}
     <div class="rc-item-fix muted">${escape(reconcileFix(item))}</div>
   </div>`;
 }
@@ -2218,22 +2347,46 @@ function reconcileDayGroupsHtml(rows) {
   }).join('');
 }
 
+// Pure: what this page can and cannot say about money, from the state of the latest run fetch.
+// THREE states, never two. The run payload is ~900KB and its fetch used to fall back to `null`
+// on failure, which is indistinguishable from "no run yet" — every money figure silently became
+// 0 and the page read as "nothing is at stake" when the truth was 51,495 THB. On a money screen
+// a silent zero is worse than a visible error, so a failed load says so where the money was.
+function reconcileRunNote(runState) {
+  const period = runState && runState.period ? runState.period : null;
+  switch (runState && runState.state) {
+    case 'ok':
+      return period ? `money shown is revenue that paid nothing in the ${period} run` : '';
+    case 'error':
+      return (period ? `The ${period} run could not be loaded` : 'The latest run could not be loaded')
+        + ', so no money is shown below — this page cannot tell you what is at stake. Reload to try again.';
+    default:
+      return 'No run has been computed yet, so no money figures are available.';
+  }
+}
+
 // The heading states the upload date and the run the money comes from, because both are facts
 // the reader needs to trust a number.
-function reconcileHtml(items, upload, run) {
+function reconcileHtml(items, upload, runState) {
   if (!upload) return '<p class="muted">No weekly upload has been recorded yet. '
     + 'Upload your merchant file from <strong>+ Add merchants</strong> and this page will fill in.</p>';
   const when = upload.at ? new Date(upload.at).toLocaleDateString('en-GB',
     { day: 'numeric', month: 'short', year: 'numeric' }) : 'your last upload';
-  const period = run?.periodStart ? periodMonth(run.periodStart) : null;
-  const head = `<p class="muted" style="margin:0 0 14px;">Compared against your <strong>${escape(when)}</strong> upload`
-    + (period ? ` · money shown is revenue that paid nothing in the ${escape(period)} run` : '')
-    + `.</p>`;
+  const state = (runState && runState.state) || 'none';
+  const note = reconcileRunNote(runState);
+  const head = `<p class="muted" style="margin:0 0 ${state === 'ok' ? 14 : 6}px;">Compared against your `
+    + `<strong>${escape(when)}</strong> upload${state === 'ok' && note ? ` · ${escape(note)}` : ''}.</p>`
+    + (state === 'ok' ? ''
+      : `<p class="${state === 'error' ? 'rc-warn' : 'muted'}" style="margin:0 0 14px;">${escape(note)}</p>`);
   if (!items.length) return head + '<p class="muted">Nothing to reconcile — your list and your file agree.</p>';
   return `<div class="rc-wrap">${head}` + RECONCILE_GROUPS.map(g => {
     const rows = items.filter(i => i.type === g.type);
     if (!rows.length) return '';
     const money = rows.reduce((s, r) => s + (r.money || 0), 0);
+    // Where the money would have been: "unknown" reads as a fault, 0 reads as "nothing at stake".
+    const moneyHtml = g.money && state === 'error'
+      ? '<span class="rc-money rc-warn">money unknown</span>'
+      : money ? `<span class="rc-money">${fmt2(money)} ${escape(CCY)}</span>` : '';
     // machine-list-miss rows are one item per REASON (unknown / unlinked), not one per shop — the
     // count that matters here is shops, `rows.length` would read "2" whether 10 or 5,000 could not
     // be placed. Every other group is still genuinely one item per finding, so `rows.length` stays
@@ -2243,8 +2396,7 @@ function reconcileHtml(items, upload, run) {
       : rows.length;
     const body = g.type === 'in-app-not-in-file' ? reconcileDayGroupsHtml(rows) : rows.map(reconcileRowHtml).join('');
     return `<section class="rc-group">
-      <h3>${escape(g.title)} <span class="rc-count">${count}</span>
-        ${money ? `<span class="rc-money">${fmt2(money)} ${escape(CCY)}</span>` : ''}</h3>
+      <h3>${escape(g.title)} <span class="rc-count">${count}</span>${moneyHtml}</h3>
       <details><summary>${count} to review</summary>${body}</details>
     </section>`;
   }).join('') + '</div>';
@@ -2253,6 +2405,7 @@ function reconcileHtml(items, upload, run) {
 async function renderReconcileTab() {
   const main = document.getElementById('main');
   setActiveNav('nav-contracts');
+  const token = newPaintToken();   // setActiveNav bumped it; this is the paint that owns it
   main.innerHTML = `<h1>Merchant view</h1>${merchantHead('reconcile')}<div id="rc-out"><p class="muted">Loading…</p></div>`;
   wireMerchantTabs();
 
@@ -2264,19 +2417,37 @@ async function renderReconcileTab() {
   const [ptr, doc, runs] = await Promise.all([
     api('/contracts/last-upload').catch(() => null),
     api('/contracts/last-upload/rows').catch(() => null),
-    api('/bulk-runs').catch(() => []),
+    api('/bulk-runs').catch(() => null),
   ]);
+  if (!paintIsCurrent(token)) return;
   // /contracts/last-upload always returns an object — {at:null, names:[]} before any upload was
   // ever recorded, same as GET /me-style "empty but present" responses elsewhere in this API — so
   // "has an upload happened" is `upload.at`, never plain truthiness of `upload` itself. Mirrors
   // renderContractsScreen's own `lastUpload.names.length` check for LAST_UPLOAD, above.
   const merged = ptr ? { ...ptr, ...(doc || {}) } : null;
   const upload = merged?.at ? merged : null;
-  const latest = runs.length
-    ? await api('/bulk-runs/' + runs.slice().sort((a, b) => (b.periodStart || '').localeCompare(a.periodStart || ''))[0].runId).catch(() => null)
-    : null;
+
+  // THREE states, not two. A failed fetch used to collapse to `latest = null`, which is exactly
+  // what "no run has happened yet" looks like — so every money figure became 0 and the page said
+  // nothing was at stake. The summary list carries `periodStart`, so even when the payload fails
+  // the page can still name the run it could not read.
+  const summaries = Array.isArray(runs) ? runs.slice() : [];
+  const newest = summaries.sort((a, b) => (b.periodStart || '').localeCompare(a.periodStart || ''))[0] || null;
+  let latest = null;
+  let state = 'none';
+  if (!Array.isArray(runs)) {
+    state = 'error';                       // the run LIST itself failed; we cannot even name one
+  } else if (newest) {
+    latest = await api('/bulk-runs/' + newest.runId).catch(() => null);
+    if (!paintIsCurrent(token)) return;
+    state = latest ? 'ok' : 'error';
+  }
+  const runState = { state,
+    period: newest?.periodStart ? periodMonth(newest.periodStart) : null };
+
   // GET /contracts/dismissals doesn't exist yet (Task 13) — never let its absence blank the page.
   const dismissals = await api('/contracts/dismissals').catch(() => ({ items: [] }));
+  if (!paintIsCurrent(token)) return;
   // No upload yet ⇒ nothing to compare against, so don't ask classifyDifferences to treat every
   // live merchant as "not in your file" — that would badge the tab with a big, misleading number
   // right when the page itself says there's nothing to reconcile.
@@ -2284,9 +2455,12 @@ async function renderReconcileTab() {
                                                dismissals: dismissals.items || [] }) : [];
   RECONCILE_COUNT = items.length;
   // Repaint the tab strip so the (N) badge reflects what was just computed, without a refetch.
+  // Guarded above: `.subtabs` exists under the Merchants tab too, so repainting it after the user
+  // has switched back would mark the WRONG tab active and then throw on a missing #rc-out.
   const strip = main.querySelector('.subtabs');
   if (strip) { strip.outerHTML = merchantHead('reconcile'); wireMerchantTabs(); }
-  document.getElementById('rc-out').innerHTML = reconcileHtml(items, upload, latest);
+  const outEl = document.getElementById('rc-out');
+  if (outEl) outEl.innerHTML = reconcileHtml(items, upload, runState);
 }
 
 // ── Adding merchants ───────────────────────────────────────────────────────

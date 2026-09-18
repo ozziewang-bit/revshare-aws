@@ -24,7 +24,33 @@ const { truncatedNameListHtml } = new Function(
   grab('escape') + '\n' + grab('truncatedNameListHtml') +
   '\nreturn { truncatedNameListHtml };')();
 
+const { reconcileFix } = new Function(grab('reconcileFix') + '\nreturn { reconcileFix };')();
+const { reconcileRunNote } = new Function(grab('reconcileRunNote') + '\nreturn { reconcileRunNote };')();
+// PAINT_TOKEN is a module-scope `let` the extractor cannot pull, so it is restated here — the two
+// functions are what carries the behaviour, and a drift in the counter itself would fail below.
+const { newPaintToken, paintIsCurrent } = new Function(
+  'let PAINT_TOKEN = 0;\n' + grab('newPaintToken') + '\n' + grab('paintIsCurrent') +
+  '\nreturn { newPaintToken, paintIsCurrent };')();
+
 const of = (items, type) => items.filter(i => i.type === type);
+
+// The invariant the whole page rests on: a merchant is ONE finding. If a contractId appears in
+// two items, the badge count and every group count are inflated and the same merchant is shown
+// twice — historically with contradictory advice, since the two items propose different fixes.
+// Asserted GLOBALLY, across the returned list, not per item type: the defect this caught lived
+// in the seam BETWEEN two passes, where each pass was individually correct.
+const assertOneItemPerContract = (items, why) => {
+  const seen = new Map();
+  for (const i of items) {
+    for (const id of (i.contractIds || [])) {
+      if (seen.has(id)) {
+        throw new assert.AssertionError({ message:
+          `${why}: contract ${id} appears in both a '${seen.get(id)}' and a '${i.type}' item` });
+      }
+      seen.set(id, i.type);
+    }
+  }
+};
 
 test('an archived contract still named in the file is the top finding', () => {
   const items = classifyDifferences({
@@ -236,4 +262,226 @@ test('names are HTML-escaped, because they come from an uploaded spreadsheet', (
   const html = truncatedNameListHtml(['<script>alert(1)</script>'], 1);
   assert.doesNotMatch(html, /<script>/);
   assert.match(html, /&lt;script&gt;/);
+});
+
+
+// --- Final review, finding 1: Central is ONE finding, not four scattered rows ---
+
+const gpRule = (p) => ({ type: 'percent', _t: 'gp', _method: 'default', rows: [{ model: 'ALL', percent: p }] });
+
+const CENTRAL = {
+  contracts: [
+    { contractId: 'c0', merchantName: 'Central', archived: true, noPayout: true },
+    { contractId: 'c1', merchantName: 'Central Ladprao', rule: gpRule(30), aggregationMode: 'whole' },
+    { contractId: 'c2', merchantName: 'Central Eastville', rule: gpRule(35), aggregationMode: 'whole' },
+    { contractId: 'c3', merchantName: 'Central Westgate', rule: gpRule(25), aggregationMode: 'per_store' },
+  ],
+  upload: { at: '2026-09-03T07:33:43Z', names: ['Central'] },
+  run: { skipped: [{ merchantName: 'Central', revenue: 51495 }] },
+  dismissals: [],
+};
+
+test('the Central case renders as one finding: archived tag + its unreachable branch rows', () => {
+  // The case the feature exists for. Before this fix the brand pass only fired on a file tag with
+  // NO contract at all, so the archived `Central` row never grouped: the page showed one archived
+  // item and three separate "in your app, not in your file" rows across two added-day headings,
+  // with nothing linking them and no mention that the three carry different terms.
+  const items = classifyDifferences(CENTRAL);
+  const central = items.filter(i => (i.names || []).some(n => /^Central/.test(n)));
+  assert.equal(central.length, 1, 'Central must be a single finding, not one per row');
+  const it = central[0];
+  assert.equal(it.type, 'archived-in-file', 'archived-and-still-earning stays the headline fact');
+  assert.equal(it.noPayout, true);
+  assert.equal(it.money, 51495);
+  assert.equal(it.branchCount, 3);
+  assert.deepEqual(it.branchNames.slice().sort(),
+    ['Central Eastville', 'Central Ladprao', 'Central Westgate']);
+  assert.equal(it.sameTerms, false);
+  assert.equal(it.termSetCount, 3);
+  assert.deepEqual(it.contractIds.slice().sort(), ['c0', 'c1', 'c2', 'c3']);
+  assert.equal(of(items, 'in-app-not-in-file').length, 0, 'no branch row is also reported alone');
+  assertOneItemPerContract(items, 'Central');
+});
+
+test('the same grouping works when the brand tag row is LIVE, not archived', () => {
+  // Nothing is wrong with the tag row itself here — but the branch rows below it are just as
+  // unreachable, so the finding still has to exist. There is no item to attach to, so it gets
+  // its own.
+  const items = classifyDifferences({
+    contracts: [
+      { contractId: 'c0', merchantName: 'Central', rule: gpRule(20), aggregationMode: 'whole' },
+      { contractId: 'c1', merchantName: 'Central Ladprao', rule: gpRule(30), aggregationMode: 'whole' },
+      { contractId: 'c2', merchantName: 'Central Eastville', rule: gpRule(35), aggregationMode: 'whole' },
+    ],
+    upload: { names: ['Central'] }, run: null, dismissals: [] });
+  const b = of(items, 'brand-has-branches');
+  assert.equal(b.length, 1);
+  assert.equal(b[0].branchCount, 2);
+  assert.equal(b[0].sameTerms, false);
+  assert.deepEqual(b[0].contractIds.slice().sort(), ['c0', 'c1', 'c2'],
+    'the live tag row is named alongside the branches it hides');
+  assert.equal(of(items, 'in-app-not-in-file').length, 0);
+  assertOneItemPerContract(items, 'live brand tag');
+});
+
+// --- Final review, finding 2: the advice must not be a one-step fix for a two-fault row ---
+
+test('an archived-only row keeps its one-step fix', () => {
+  const fix = reconcileFix({ type: 'archived-in-file', names: ['Somsak'], archived: true });
+  assert.match(fix, /unarchive it if the contract is genuinely still live/i);
+});
+
+test('archived AND no-payout never says "just unarchive it"', () => {
+  // Following that advice on Central pays the brand zero again — another 51,495 THB next run.
+  const fix = reconcileFix(classifyDifferences(CENTRAL)[0]);
+  assert.doesNotMatch(fix, /^Fix: unarchive it if/,
+    'a two-fault row must not be handed a single step');
+  assert.match(fix, /no revenue share/i, 'the second fault has to be stated');
+  assert.match(fix, /still pay nothing/i, 'and what following the old advice would do');
+  assert.match(fix, /3 live branch rows/, 'and where the negotiated terms actually sit');
+  assert.match(fix, /No single fix/i);
+});
+
+// --- Final review, finding 3: the invariant, asserted globally on the contested fixtures ---
+
+test('no contract is ever reported in two items — across every contested fixture', () => {
+  const fixtures = {
+    'multi-candidate file name': {
+      contracts: [{ contractId: 'c1', merchantName: 'DRINK Bar & Restaurant' },
+                  { contractId: 'c2', merchantName: 'DINK Bar and Restaurant' }],
+      upload: { names: ['DINK Bar & Restaurant'] }, run: null, dismissals: [] },
+    'two file names contesting one orphan': {
+      contracts: [{ contractId: 'c1', merchantName: 'Andamanda' }],
+      upload: { names: ['Andamanda Phuket', 'Andamanda Resort'] }, run: null, dismissals: [] },
+    'both at once': {
+      contracts: [{ contractId: 'c1', merchantName: 'DRINK Bar & Restaurant' },
+                  { contractId: 'c2', merchantName: 'DINK Bar and Restaurant' },
+                  { contractId: 'c3', merchantName: 'Andamanda' }],
+      upload: { names: ['DINK Bar & Restaurant', 'DINK Bar &  Restaurant',
+                        'Andamanda Phuket', 'Andamanda Resort'] }, run: null, dismissals: [] },
+    'brand tag plus a rename': {
+      contracts: [{ contractId: 'c1', merchantName: 'Citadines Sukhumvit soi 8' },
+                  { contractId: 'c2', merchantName: 'Citadines Sukhumvit soi 11' },
+                  { contractId: 'c3', merchantName: 'Andamanda' }],
+      upload: { names: ['Citadines', 'Andamanda Phuket'] }, run: null, dismissals: [] },
+    Central: CENTRAL,
+  };
+  for (const [why, input] of Object.entries(fixtures)) {
+    assertOneItemPerContract(classifyDifferences(input), why);
+  }
+});
+
+test('an ambiguous item consumes the merchants it names, instead of listing them twice', () => {
+  // The exact reproduction: pass B's multi-candidate branch listed c1 and c2 inside the ambiguous
+  // item and left BOTH as their own in-app-not-in-file rows — each merchant shown in two places,
+  // with contradictory advice, and both group counts and the Reconcile (N) badge inflated.
+  const items = classifyDifferences({
+    contracts: [{ contractId: 'c1', merchantName: 'DRINK Bar & Restaurant' },
+                { contractId: 'c2', merchantName: 'DINK Bar and Restaurant' }],
+    upload: { names: ['DINK Bar & Restaurant'] }, run: null, dismissals: [] });
+  assert.equal(of(items, 'ambiguous-rename').length, 1);
+  assert.equal(of(items, 'in-app-not-in-file').length, 0);
+  assert.equal(items.length, 1, 'one question, one row — nothing else left over');
+});
+
+test('a clean 1:1 rename is not starved by an ambiguous name competing for its merchant', () => {
+  // 'Jharoka by Indus' has exactly one candidate; the ambiguous DINK name has two. Resolving the
+  // confident pair first is what keeps the suggestion — an ambiguity that consumed everything it
+  // touched first could have taken it.
+  const items = classifyDifferences({
+    contracts: [{ contractId: 'c1', merchantName: 'DRINK Bar & Restaurant' },
+                { contractId: 'c2', merchantName: 'DINK Bar and Restaurant' },
+                { contractId: 'c3', merchantName: 'Jharoka' }],
+    upload: { names: ['DINK Bar & Restaurant', 'Jharoka by Indus'] }, run: null, dismissals: [] });
+  const r = of(items, 'likely-rename');
+  assert.equal(r.length, 1);
+  assert.deepEqual(r[0].contractIds, ['c3']);
+  assertOneItemPerContract(items, 'clean pair beside an ambiguity');
+});
+
+// --- Final review, finding 4: a failed run fetch is not "no money at stake" ---
+
+test('the three run states say three different things', () => {
+  assert.match(reconcileRunNote({ state: 'ok', period: 'August 2026' }),
+    /money shown is revenue that paid nothing in the August 2026 run/);
+  assert.match(reconcileRunNote({ state: 'none' }), /No run has been computed yet/i);
+  const err = reconcileRunNote({ state: 'error', period: 'August 2026' });
+  assert.match(err, /could not be loaded/i);
+  assert.match(err, /cannot tell you what is at stake/i);
+  assert.doesNotMatch(err, /paid nothing/,
+    'a failed load must never be phrased as a money figure of its own');
+});
+
+test('a run that failed to load is named even when only the summary survived', () => {
+  assert.match(reconcileRunNote({ state: 'error', period: 'August 2026' }), /August 2026/);
+  assert.match(reconcileRunNote({ state: 'error', period: null }), /The latest run could not be loaded/);
+});
+
+// --- Final review, finding 5: brand grouping must not swallow a strong rename candidate ---
+
+test('a 93% rename match is not eaten by the brand tag that shares its prefix', () => {
+  // File says 'Glow' and 'Glow Fis'; the app holds 'Glow Fish' and 'Glow Bar'. Grouping both rows
+  // under the 'Glow' tag left 'Glow Fis' reported as a bare "in your file, no merchant row" with
+  // no rename suggestion at all — a real rename, silently unsuggested, with no trace.
+  const items = classifyDifferences({
+    contracts: [{ contractId: 'c1', merchantName: 'Glow Fish' },
+                { contractId: 'c2', merchantName: 'Glow Bar' }],
+    upload: { names: ['Glow', 'Glow Fis'] }, run: null, dismissals: [] });
+  const r = of(items, 'likely-rename');
+  assert.ok(r.some(i => i.names[0] === 'Glow Fish' && i.names[1] === 'Glow Fis'),
+    'the strong pair is proposed instead of being swallowed by the tag');
+  assert.equal(of(items, 'brand-has-branches').length, 0,
+    'one member withheld leaves fewer than two, so there is no brand group to claim');
+  // The stated cost of withholding: with only 'Glow Bar' left, the bare 'Glow' tag now reads as a
+  // rename candidate for it. That is a PROPOSAL on a read-only page — a person rejects it in a
+  // glance — where the swallowed rename left no trace at all.
+  assert.ok(r.some(i => i.names[0] === 'Glow Bar' && i.names[1] === 'Glow'));
+  assertOneItemPerContract(items, 'Glow');
+});
+
+test('a genuine branch group is NOT broken up by a weak resemblance elsewhere in the file', () => {
+  // The cost of the rule above, pinned: only a match at 0.80+ withholds a member. 'Citadines
+  // Sukhumvit soi 8' against an unrelated 'Citadines Bangkok' scores below that, so the brand
+  // reading survives — which is the right reading for this data (ruling R2).
+  const items = classifyDifferences({
+    contracts: [{ contractId: 'c1', merchantName: 'Citadines Sukhumvit soi 8' },
+                { contractId: 'c2', merchantName: 'Citadines Sukhumvit soi 11' },
+                { contractId: 'c3', merchantName: 'Citadines Sukhumvit soi 16' }],
+    upload: { names: ['Citadines', 'Citadines Bangkok'] }, run: null, dismissals: [] });
+  const b = of(items, 'brand-has-branches');
+  assert.equal(b.length, 1);
+  assert.equal(b[0].branchCount, 3);
+  assertOneItemPerContract(items, 'Citadines beside a weak match');
+});
+
+// --- Final review, finding 6: the stale-render race ---
+
+test('a paint token goes stale the moment another paint starts', () => {
+  const first = newPaintToken();
+  assert.equal(paintIsCurrent(first), true);
+  const second = newPaintToken();
+  assert.equal(paintIsCurrent(first), false, 'the abandoned paint must not repaint the screen');
+  assert.equal(paintIsCurrent(second), true);
+});
+
+test('renderReconcileTab abandons the paint instead of throwing into a screen it no longer owns', () => {
+  // Source-level, because this is a DOM race with no pure function to call. The ~900KB run
+  // payload landing after the user switched back to Merchants found `.subtabs` (which exists
+  // under BOTH tabs), repainted it as Reconcile-active, then threw on a null #rc-out.
+  const fn = grab('renderReconcileTab');
+  assert.ok(/const token = newPaintToken\(\)/.test(fn), 'it must take a token before awaiting');
+  const guards = fn.match(/if \(!paintIsCurrent\(token\)\) return;/g) || [];
+  const awaits = fn.match(/await /g) || [];
+  assert.ok(guards.length >= awaits.length,
+    `every await needs a guard after it (${awaits.length} awaits, ${guards.length} guards)`);
+  assert.ok(/const outEl = document\.getElementById\('rc-out'\);\s*\n\s*if \(outEl\)/.test(fn),
+    'and the final write is null-checked even so');
+  assert.ok(/if \(!paintIsCurrent\(token\)\) return;[\s\S]*const strip = main\.querySelector/.test(fn),
+    'the tab-strip repaint must sit behind a guard, not in front of one');
+});
+
+test('the merchant grid takes a token too, because the race runs both ways', () => {
+  const fn = grab('renderContractsScreen');
+  assert.ok(/const token = newPaintToken\(\)/.test(fn));
+  assert.ok(/if \(!paintIsCurrent\(token\)\) return;/.test(fn));
 });
