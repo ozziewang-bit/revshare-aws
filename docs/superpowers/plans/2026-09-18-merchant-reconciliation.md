@@ -631,28 +631,37 @@ Then in `classifyDifferences`, after the two loops and before the dismissal filt
   // Pair the two orphan sets: a file name with no row, against merchants the file omits. One
   // candidate is a suggestion; two or more is a question, and the page must ask it rather than
   // pick. `Classic` matches two live rows, so picking the top one would be wrong half the time.
-  const orphanContracts = out.filter(i => i.type === 'in-app-not-in-file');
-  for (const item of [...out]) {
-    if (item.type !== 'in-file-no-row') continue;
-    const scored = orphanContracts
-      .map(o => ({ o, score: similarity(item.names[0], o.names[0]) }))
-      .filter(x => x.score >= RENAME_MIN)
-      .sort((a, b) => b.score - a.score);
-    if (!scored.length) continue;
-    const i = out.indexOf(item);
-    if (scored.length === 1) {
-      const { o, score } = scored[0];
-      out[i] = { type: 'likely-rename', key: item.key,
-                 names: [o.names[0], item.names[0]], contractIds: [...o.contractIds],
-                 money: item.money, detail: `${Math.round(score * 100)}% match` };
-      out.splice(out.indexOf(o), 1);
-    } else {
-      out[i] = { type: 'ambiguous-rename', key: item.key,
-                 names: [item.names[0], ...scored.map(s => s.o.names[0])],
-                 contractIds: scored.flatMap(s => s.o.contractIds),
-                 money: item.money, detail: `${scored.length} merchants could be this` };
-    }
-  }
+```
+
+**DO NOT write this as a single loop that mutates `out` while consuming orphans.** The first
+draft of this plan did, and it shipped two defects that a review reproduced on real shapes:
+
+1. Two file names scoring above the threshold against the SAME orphan each claimed it, so one
+   contract appeared in two `likely-rename` items — the double-report that removing items from
+   their buckets exists to prevent.
+2. On that second claim `out.indexOf(o)` returned `-1`, so `out.splice(-1, 1)` deleted the LAST
+   element of `out` — silently destroying an unrelated, genuine finding. In a reconciliation
+   tool, quietly dropping a real difference is the worst outcome available.
+
+Write it as **two order-independent passes** over static candidate lists (this is what shipped,
+in `frontend/app.js` — read it rather than reconstructing it):
+
+- Score every `in-file-no-row` item against every `in-app-not-in-file` orphan ONCE, from lists
+  captured before any mutation.
+- **Pass A — contested orphans.** Any orphan that is the sole candidate of two or more file
+  items becomes ONE `ambiguous-rename` naming every contender, and is consumed. A person
+  chooses which file name is the rename.
+- **Pass B — the rest.** A file item with exactly one surviving candidate becomes
+  `likely-rename`; one with several becomes `ambiguous-rename`; one with none stays as it is.
+  Track consumed orphans in a `Set` and re-filter before each claim.
+- Route every removal through a helper that THROWS on an `indexOf` miss rather than calling
+  `splice(-1, 1)`. It is unreachable in practice; it exists so a future edit that reintroduces
+  this bug class fails loudly in tests instead of corrupting the page.
+
+**The invariant to test, not just to state: a contract may never appear in more than one item,
+and no unrelated item may disappear.** Both reproductions above are regression tests.
+```js
+  // (see frontend/app.js for the shipped two-pass implementation)
 ```
 
 - [ ] **Step 4: Run the tests**
