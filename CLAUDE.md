@@ -3,8 +3,9 @@
 Last updated: 2026-09-04 (Merchant view gained a **Finance Information** column group — bank
 details + finance contact, editable inline, in the download sheet, **both regions**; and the
 screen now opens with **every column group collapsed** — §1n. 2026-09-18: `Contract entity` is no
-longer read from the weekly file — a column is writable by a file or by hand, never both — §1l).
-Service-worker `CACHE_VERSION` is at `revshare-v154` (bump on every shell change).
+longer read from the weekly file — a column is writable by a file or by hand, never both — §1l;
+and the Merchant view gained a read-only **Reconcile** tab — §1o).
+Service-worker `CACHE_VERSION` is at `revshare-v159` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
 end-to-end before touching anything. The codebase is the ultimate source of
@@ -296,7 +297,7 @@ CSV already handle per_store correctly; this was a config issue, not a code bug.
 default to the lower-paying `whole` branch, which is exactly how 7-Eleven's original
 under-payment happened.
 
-Tests: `npm test` → **219/219** pass (incl. `ddb-util.test.mjs` — Query pagination +
+Tests: `npm test` → **280** pass (incl. `ddb-util.test.mjs` — Query pagination +
 BatchWriteItem chunking, §1c; `payout.test.mjs` — `merchantRowChanged` / `ruleHasValue` /
 `contractNeedsTerms` / label resolution; `bulk-runs.test.mjs` — roster-to-contract
 resolution + order-less fixed-fee; `contracts.test.mjs` — sheet-row normalisation, name
@@ -801,6 +802,68 @@ pins the default, that a saved choice still wins, and that both callers go throu
   frontend/backend halves drifting is the silent failure here, not a loud one. Four more cover the
   sheet: the importer reads back every header the download writes, an account number keeps its
   leading zeros, a blank cell clears nothing, and the sheet derives its columns from the grid.
+
+## 1o. Reconcile — what your list and your file disagree about (2026-09-18)
+
+A **read-only** second tab on the Merchant view (`Merchants | Reconcile (N)`), comparing the
+merchant list against the last weekly upload and explaining each difference **by the money at
+stake**. It writes nothing. Spec + plan:
+[`docs/superpowers/specs/2026-09-18-merchant-reconciliation-design.md`](docs/superpowers/specs/2026-09-18-merchant-reconciliation-design.md)
++ [`docs/superpowers/plans/2026-09-18-merchant-reconciliation.md`](docs/superpowers/plans/2026-09-18-merchant-reconciliation.md).
+**Phases 1-2 are built and deployed; Phase 3 (the corrections — rename, merge, adopt terms,
+dismissals) is specced and planned but NOT built.** Every correction is still done by hand.
+
+**What it found on live TH data (2026-09-18, against the 3 Sep upload):** 314 live contracts vs
+260 names in the file; **4 archived contracts that are still in the file and still earning** —
+`Central` alone had **51,495 THB** pay nothing in the August run while `Central Ladprao` /
+`Eastville` / `Westgate` sit live with three different term sets that a roster labelled `Central`
+can never reach; 11 file names with no row; 65 rows the file omits, created in two seeding
+batches (38 on 7 Aug, 21 on 9 Aug); ~7 cross-script duplicates (`UDON Cher` / `เฌอ`).
+
+- **Storage.** `POST /contracts/import` under the existing `recordUpload: true` now also writes
+  `uploads/<ulid>.json` to the runs bucket — the folded brand rows plus the machine-list misses,
+  names capped at 200 with the totals kept exact. `CONFIG/UPLOAD#LATEST` gained `s3Key`/`counts`;
+  **`names[]` stays**, because §1m's ⦿ marks read it. `db.mjs` gained `putUploadDoc`/`getUploadDoc`
+  — **hand-mirrored into SG**, as that file is never synced (§8).
+- **`classifyDifferences` in `app.js` is the whole brain**, pure and extracted by
+  `tests/reconcile-classifier.test.mjs`. Its passes run in a fixed order and mutate one array:
+  machine misses → brand grouping → contested-orphan renames → confident 1:1 renames (to a
+  fixpoint) → dismissal filter. **Two invariants are load-bearing and tested globally: a contract
+  may never appear in more than one item, and no unrelated item may disappear.** Both were
+  violated by earlier drafts — one silently deleted a genuine finding via `splice(-1, 1)`.
+- **Nothing is ever auto-applied.** On this data a top-1 name match is wrong at least 3 times in
+  5: `DINK`/`DRINK` is a typo, `Classic` matches two rows, `Central` is a chain. One candidate is
+  a suggestion; two or more is a question the page asks.
+- **The brand pass runs over EVERY file name, not only tags with no contract.** That was the bug
+  the final review caught: `Central` has an archived contract, so grouping never fired and the
+  page showed the archived row and its three branches as unrelated findings. One tag is one
+  finding, carrying the contract's state, its branch rows, and whether their terms agree.
+- **A multi-fault row never gets a one-step fix.** `Central` is archived *and* `noPayout`, so
+  "unarchive it" alone would still pay zero — following that advice would have lost another
+  51,495 THB. The row now names every fault it can see and stops short of saying which term set
+  is right, because the app cannot know.
+- **A failed run fetch says so.** The ~900KB payload is fetched only when the tab opens; if it
+  fails, every money slot reads **"money unknown"** and a banner explains. A silent zero on a
+  money screen reads as "nothing at stake".
+- **Known ceiling (accepted, read-only):** to stop brand grouping swallowing a real rename, a
+  member scoring ≥0.80 against another rowless file name is withheld from the group. A long file
+  name sharing a long prefix can breach that — a file carrying both `Citadines` and
+  `Citadines Sukhumvit soi 9` withholds all three soi branches and dissolves the group into one
+  ambiguous rename. No money moves and the invariants hold; **revisit before building the merge
+  UI (Phase 3).**
+- **Also known:** when two file names are ambiguous over the same rows, the first in upload order
+  wins the pairing and the second shows no hint that near-matches existed. And no string metric
+  pairs `UDON Cher` with `เฌอ` — the orphans are grouped **by the day they were added** instead,
+  which is the axis those duplicates were created along.
+- ⚠ **Field-level diffs start from the next upload.** The 3 Sep record stored only names, so
+  name-level differences (including all four archived-and-earning brands) work now; field
+  comparisons light up after the next weekly file.
+- ⚠ **Pre-existing, found while doing this:** `renderBulkRunsList`, `renderSettingsScreen` /
+  `renderUsersScreen` and `renderArchivedScreen` all await and then write `innerHTML` with no
+  paint token, so switching screens mid-fetch can paint the wrong one (`renderBulkRunsList` does
+  not even null-check). The Reconcile tab uses `newPaintToken`/`paintIsCurrent`; the others do not.
+
+Tests: `npm test` → **280**.
 
 ## 2. Live URLs and resources
 
