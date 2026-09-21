@@ -3886,6 +3886,21 @@ function guaranteeInfo(result, ruleSnapshot) {
   };
 }
 
+// The legal entity a payout is settled with. A rev-share file goes to the KA as one company,
+// not to each brand or branch, so this is the column finance reconciles against.
+//
+// It is read from the merchant record AS IT IS TODAY, not from the run. Runs are frozen
+// snapshots of what was paid and have never stored the entity, so there is nothing historical
+// to read — and for its actual use, "who do we send this to now" is the right answer anyway.
+// A merchant deleted since the run, or one that never had an entity typed in, reads "—" rather
+// than guessing.
+function contractEntityFor(contractId) {
+  if (!contractId) return null;
+  const c = CONTRACTS.find(x => x.contractId === contractId);
+  const v = c && typeof c.counterParty === 'string' ? c.counterParty.trim() : '';
+  return v || null;
+}
+
 async function renderBulkRunDetail(runId) {
   const main = document.getElementById('main');
   main.innerHTML = `<div class="page-head">
@@ -3894,6 +3909,9 @@ async function renderBulkRunDetail(runId) {
     </div><div id="br-detail">Loading…</div>`;
   document.getElementById('back').addEventListener('click', renderBulkRunsList);
   const run = await api('/bulk-runs/' + runId);
+  // A run freezes what it PAID (§10.5) — the contract entity is not part of that, so it is
+  // resolved live from the merchant record. See contractEntityFor for what that means.
+  await ensureContractCache().catch(() => {});
   const el = document.getElementById('br-detail');
   const totalRevenue = (run.results || []).reduce((s, r) => s + (r.revenue || 0), 0);
   const totalSharePct = totalRevenue > 0 ? ((run.totalPayout || 0) / totalRevenue * 100).toFixed(1) + '%' : '—';
@@ -3963,8 +3981,13 @@ async function renderBulkRunDetail(runId) {
   el.innerHTML = `
     ${(run.results?.length) ? `<p><a href="#" id="dl-revshare-zip" class="zip-link">↓ ${escape(periodTag(run.periodStart))}_revshare</a></p>` : ''}
 
-    <table class="ts"><thead><tr><th>Merchant</th><th>Stores</th><th>Rentals</th><th>Revenue</th><th>Payout</th><th>Share %</th></tr></thead>
+    <table class="ts"><thead><tr>
+      <th title="The company a payout is settled with, read from the merchant record as it is today — a run does not store it">Contract entity</th>
+      <th>Merchant</th><th>Stores</th><th>Rentals</th><th>Revenue</th><th>Payout</th><th>Share %</th></tr></thead>
     <tbody>${(run.results || []).sort((a,b) => b.payout - a.payout).map(r => `<tr>
+      <td>${contractEntityFor(r.contractId)
+             ? escape(contractEntityFor(r.contractId))
+             : '<span class="muted" title="No contract entity is set for this merchant">—</span>'}</td>
       <td>${escape(r.merchantName)}</td>
       <td>${r.merchantCount}</td>
       <td>${r.rentals}</td>
@@ -3973,7 +3996,7 @@ async function renderBulkRunDetail(runId) {
       <td>${r.revenue > 0 ? (r.payout / r.revenue * 100).toFixed(1) + '%' : '—'}</td>
     </tr>`).join('')}</tbody>
     <tfoot><tr>
-      <td>Total</td><td></td><td></td>
+      <td>Total</td><td></td><td></td><td></td>
       <td>${totalRevenue.toFixed(2)}</td>
       <td>${Number(run.totalPayout || 0).toFixed(2)}</td>
       <td>${totalSharePct}</td>
