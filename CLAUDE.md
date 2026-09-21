@@ -4,8 +4,9 @@ Last updated: 2026-09-04 (Merchant view gained a **Finance Information** column 
 details + finance contact, editable inline, in the download sheet, **both regions**; and the
 screen now opens with **every column group collapsed** — §1n. 2026-09-18: `Contract entity` is no
 longer read from the weekly file — a column is writable by a file or by hand, never both — §1l;
-and the Merchant view gained a read-only **Reconcile** tab — §1o).
-Service-worker `CACHE_VERSION` is at `revshare-v159` (bump on every shell change).
+and the Merchant view gained a read-only **Reconcile** tab, plus a **Review only** upload that
+changes nothing — §1o).
+Service-worker `CACHE_VERSION` is at `revshare-v160` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
 end-to-end before touching anything. The codebase is the ultimate source of
@@ -863,7 +864,27 @@ batches (38 on 7 Aug, 21 on 9 Aug); ~7 cross-script duplicates (`UDON Cher` / `�
   paint token, so switching screens mid-fetch can paint the wrong one (`renderBulkRunsList` does
   not even null-check). The Reconcile tab uses `newPaintToken`/`paintIsCurrent`; the others do not.
 
-Tests: `npm test` → **280**.
+**Review only — change nothing (2026-09-21).** The batch upload dialog has a second button beside
+Import. It parses the file, **records it as your latest upload, and writes NO merchant rows** —
+then opens Reconcile, where every difference is listed. This is the intended weekly flow: see what
+the file says, change nothing, then apply what you want. `POST /contracts/import` takes an explicit
+`dryRun: true` (never inferred from the request shape) and answers `wouldCreate`/`wouldUpdate`
+rather than `created`/`updated`, so a plan cannot be read as an accomplished fact.
+
+- `contractWrites(plan, {dryRun, newId})` in `contracts.mjs` is the whole mechanism: a review
+  returns **no writes and mints no ulid**. Pure, so "a review writes nothing" is a property a test
+  holds rather than a branch someone has to re-read.
+- **Machine counts are merchant data too** — a review does not apply them either, though the shops
+  the machine list could not place still travel with the upload record so Reconcile can report them.
+- Review and Import go through ONE `submit(dryRun)` path in `app.js`. Two handlers would let the
+  review describe an import that is not the one that would run.
+- **The recording is deliberate, not an oversight:** a reviewed file becomes what the ⦿ marks and
+  Reconcile compare against, so the app will say "not in the 21 Sep upload" about a file you have
+  not applied. That is the file's role — it states what the list should be.
+- **Applying from Reconcile is NOT built** (spec Phase 3). Today the choices are Import (all of it)
+  or by hand.
+
+Tests: `npm test` → **287**.
 
 ## 2. Live URLs and resources
 

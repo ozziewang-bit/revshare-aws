@@ -2671,6 +2671,8 @@ async function openAddMerchants() {
         <div id="am-preview" style="margin-top:14px;"></div>
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;">
           <button type="button" id="am-cancel" class="btn-ghost">Cancel</button>
+          <button type="button" id="am-review" class="btn" disabled
+                  title="Record this file and show every difference on the Reconcile tab. Your merchant data is not changed.">Review only — change nothing</button>
           <button type="button" id="am-import" class="btn-primary" disabled>Import</button>
         </div>
       </div>`;
@@ -2767,17 +2769,23 @@ async function openAddMerchants() {
           ev.target.textContent = dbox.hidden ? 'Show the differences' : 'Hide the differences';
         });
         card.querySelector('#am-import').disabled = false;
+        card.querySelector('#am-review').disabled = false;
       } catch (e) {
         box.innerHTML = `<p class="form-error" style="font-size:13px;">${escape(e.message)}</p>`;
         card.querySelector('#am-import').disabled = true;
+        card.querySelector('#am-review').disabled = true;
       }
     };
     card.querySelector('#am-merchants').addEventListener('change', preview);
     card.querySelector('#am-machines').addEventListener('change', preview);
 
-    card.querySelector('#am-import').addEventListener('click', async () => {
-      const btn = card.querySelector('#am-import');
-      btn.disabled = true; btn.textContent = 'Importing…';
+    // Review and Import send the SAME parsed file through the SAME route, differing only by
+    // `dryRun`. Anything else would let the review describe an import that is not what would
+    // actually happen — which is the one thing a review must never do.
+    const submit = async (dryRun) => {
+      const btn = card.querySelector(dryRun ? '#am-review' : '#am-import');
+      const was = btn.textContent;
+      btn.disabled = true; btn.textContent = dryRun ? 'Reading…' : 'Importing…';
       try {
         let created = 0, updated = 0, missed = 0;
         if (parsed) {
@@ -2788,28 +2796,40 @@ async function openAddMerchants() {
           const rows = parsed.rows.map((r, i) => [...r, parsed.branchCounts[i]]);
           const res = await api('/contracts/import', { method: 'POST',
             body: JSON.stringify({ rows, header: fields, groups, links: {}, recordUpload: true,
+                                   dryRun,
                                    machineMisses: machines ? await machineMissNames(machines) : null }) });
-          created += res.created; updated += res.updated;
+          created += dryRun ? res.wouldCreate : res.created;
+          updated += dryRun ? res.wouldUpdate : res.updated;
           // Only the weekly batch sets this — see importContractsRoute. Taking it from the
           // response means the grid repaints marked without a second round trip.
           if (res.lastUpload?.names?.length) LAST_UPLOAD = res.lastUpload;
           missed = diff ? diff.missing.length : 0;
         }
-        if (machines) {
+        // Machine counts are merchant data too, so a review does not write them either. Their
+        // unplaced shops still travel with the upload record, so Reconcile can report them.
+        if (machines && !dryRun) {
           const r = await importMachineCounts(machines);
           updated += r;
         }
         close();
+        if (dryRun) {
+          // Straight to the answer, rather than an alert the reader has to translate into a
+          // reason to go looking.
+          await renderReconcileTab();
+          return;
+        }
         await renderContractsScreen();
         alert(`${created} merchant(s) added, ${updated} updated.`
           + (missed ? `\n\n${missed} merchant(s) in your list were not in this file. Nothing was `
                     + `deleted — they are marked ⦿ in the grid, and the status filter lists them.` : '')
           + `\n\nContract dates and revenue-share terms were not changed.`);
       } catch (e) {
-        btn.disabled = false; btn.textContent = 'Import';
-        alert('Could not import: ' + e.message);
+        btn.disabled = false; btn.textContent = was;
+        alert((dryRun ? 'Could not read that file: ' : 'Could not import: ') + e.message);
       }
-    });
+    };
+    card.querySelector('#am-import').addEventListener('click', () => submit(false));
+    card.querySelector('#am-review').addEventListener('click', () => submit(true));
   });
 }
 

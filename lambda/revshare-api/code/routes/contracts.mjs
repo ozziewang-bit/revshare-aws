@@ -1,6 +1,7 @@
 import { listContracts, getContract, putContract, deleteContract, listPartners, ulid,
          getLastUpload, putLastUpload, putUploadDoc, getUploadDoc } from '../db.mjs';
-import { normalizeContractRow, buildImportPlan, uploadDocFrom } from '../contracts.mjs';
+import { normalizeContractRow, buildImportPlan, uploadDocFrom,
+         contractWrites } from '../contracts.mjs';
 
 // Fields a client may write. `sheetTerms` is import-preview data and is not stored;
 // share terms live on the partner's rule, never on the contract row.
@@ -108,8 +109,12 @@ export async function importContractsRoute(event) {
   const [existing, partners] = await Promise.all([listContracts(), listPartners()]);
   const plan = buildImportPlan(normalized, existing, partners, body.links || {});
 
+  // A review-only upload (`dryRun`) writes NO merchant rows — see contractWrites. Everything
+  // else still happens: the file is parsed, the plan is built, and the upload is recorded, so
+  // the Reconcile tab can say what differs without anything having changed underneath you.
+  const dryRun = body.dryRun === true;
+  const all = contractWrites(plan, { dryRun, newId: ulid });
   // Bounded concurrency — 208 rows would otherwise open 208 sockets at once.
-  const all = [...plan.creates.map(c => ({ ...c, contractId: ulid() })), ...plan.updates];
   for (let i = 0; i < all.length; i += 10) {
     await Promise.all(all.slice(i, i + 10).map(putContract));
   }
@@ -130,13 +135,13 @@ export async function importContractsRoute(event) {
     });
   }
 
-  return resp(200, {
-    lastUpload,
-    created: plan.creates.length,
-    updated: plan.updates.length,
-    linked: all.filter(c => c.partnerId).length,
-    unmatched: plan.unmatched,
-  });
+  // Named `would*` on a review so a caller cannot read a plan as an accomplished fact. A real
+  // import keeps `created`/`updated`, which every existing caller already reads.
+  return resp(200, dryRun
+    ? { lastUpload, dryRun: true, wouldCreate: plan.creates.length,
+        wouldUpdate: plan.updates.length, unmatched: plan.unmatched }
+    : { lastUpload, created: plan.creates.length, updated: plan.updates.length,
+        linked: all.filter(c => c.partnerId).length, unmatched: plan.unmatched });
 }
 
 function resp(statusCode, body) {

@@ -315,6 +315,19 @@ const UPLOAD_FIELDS = ['merchantType', 'counterParty', 'salesPerson',
                        'contactName', 'contactPhone', 'contactEmail', 'branchCount'];
 const MISS_CAP = 200;
 
+// The rows an import would write. A REVIEW-ONLY upload (2026-09-21) returns none of them: the
+// point is to learn what a file says WITHOUT the app's merchant data changing under you, and
+// then apply the parts you want deliberately. Kept pure and separate from the route so "a review
+// writes nothing" is a property a test can hold, rather than a branch someone has to re-read.
+//
+// The upload is still RECORDED either way — the file is your statement of what the list should
+// be, so it becomes the thing the Merchant view's marks and the Reconcile tab compare against.
+export function contractWrites(plan, { dryRun = false, newId } = {}) {
+  if (dryRun) return [];
+  const id = newId || (() => { throw new Error('contractWrites needs newId to create rows'); });
+  return [...(plan.creates || []).map(c => ({ ...c, contractId: id() })), ...(plan.updates || [])];
+}
+
 export function uploadDocFrom(rows, { by, at, machineMisses } = {}) {
   const brands = (rows || []).filter(r => r && r.merchantName).map(r => {
     const out = { name: r.merchantName };
