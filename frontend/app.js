@@ -3649,6 +3649,46 @@ function revsharePathChartSvg(data) {
   </svg></div>`;
 }
 
+// A folder name for a contract entity, or null when there is nothing usable to name one
+// after. Deliberately NOT sanitizeFilename, whose empty-string fallback is the word
+// "merchant" — a folder called "merchant" would look like a real entity.
+function entityFolder(name) {
+  return String(name ?? '').replace(/[\/\\:*?"<>|]/g, '_')
+    .replace(/\s+/g, ' ').replace(/^\.+|\.+$/g, '').trim() || null;
+}
+
+// Where each merchant's .xlsx goes inside the zip, given the run's results already sorted by
+// payout. A rev-share file is settled with a COMPANY, not a brand: when one contract entity
+// covers SEVERAL brands, their files go in a folder named for that entity, so whoever opens
+// the zip finds one folder per company rather than five scattered files.
+//
+// An entity covering a single brand gets NO folder — a folder holding one file is noise — and
+// neither does a merchant with no entity recorded, because there is nothing to group it under.
+// The payout rank stays in the filename either way, so the ordering still reads inside a folder
+// and at the root alike.
+function zipEntryBases(results, entityOf) {
+  const folders = (results || []).map(r => entityFolder(entityOf(r.contractId)));
+  const brands = new Map();
+  folders.forEach((f, i) => {
+    if (!f) return;
+    const set = brands.get(f) || new Set();
+    set.add(String((results[i] || {}).merchantName ?? ''));
+    brands.set(f, set);
+  });
+  const used = new Map();
+  return (results || []).map((r, i) => {
+    // Several brands means several DISTINCT brands: one brand appearing twice in a run is not
+    // a company with a portfolio, and foldering it would bury a single file.
+    const f = folders[i];
+    const dir = f && brands.get(f).size > 1 ? f : '';
+    let base = `${i + 1}) ${sanitizeFilename(r.merchantName)}`;
+    const key = `${dir}/${base}`;
+    if (used.has(key)) base = `${base} (${used.get(key)})`;
+    used.set(key, (used.get(key) || 1) + 1);
+    return dir ? `${dir}/${base}` : base;
+  });
+}
+
 function sanitizeFilename(s) {
   return String(s).replace(/[\/\\:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim() || 'merchant';
 }
@@ -3749,6 +3789,8 @@ const round4 = v => Math.round(Number(v) * 10000) / 10000;
 
 async function downloadRevshareZip(run) {
   const tag = periodTag(run.periodStart);
+  // Entities come from the merchant records, not the run. Harmless if already cached.
+  await ensureContractCache().catch(() => {});
   const results = (run.results || []).slice().sort((a, b) => b.payout - a.payout);
 
   // Orders live in the run's stored inputs, not its payload — one fetch of several MB, only
@@ -3787,14 +3829,14 @@ async function downloadRevshareZip(run) {
     ordersByContract.get(cid).push(o);
   }
 
-  const used = {};
+  // Grouped into a folder per contract entity where that entity covers more than one brand.
+  const bases = zipEntryBases(results, contractEntityFor);
   const files = results.map((r, i) => {
-    const label = `${i + 1}) ${sanitizeFilename(r.merchantName)}`;
-    let base = label;
-    if (used[base]) { base = `${base} (${used[base]++})`; } else { used[base] = 1; }
+    const base = bases[i];
     const wb = XLSX.utils.book_new();
-    // Excel caps a sheet name at 31 characters and rejects \ / ? * [ ] :
-    const sheetName = base.replace(SHEET_SAFE, '-').slice(0, 31);
+    // Excel caps a sheet name at 31 characters and rejects \ / ? * [ ] : — and the base may now
+    // carry a folder, whose slash is exactly one of those.
+    const sheetName = base.split('/').pop().replace(SHEET_SAFE, '-').slice(0, 31);
     XLSX.utils.book_append_sheet(wb, buildPartnerSheet(XLSX, r, orders ? (ordersByContract.get(r.contractId) || []) : null, kaByStore), sheetName);
     return { name: `${base}.xlsx`, data: new Uint8Array(XLSX.write(wb, { bookType: 'xlsx', type: 'array' })) };
   });
