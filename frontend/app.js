@@ -2256,7 +2256,13 @@ function reconcileFix(item) {
         + '. Check the contract and the rows above before changing anything: unarchiving on its own does not pay this brand.';
     }
     case 'likely-rename':
-      return 'Fix: rename this merchant to match the file — not yet an action here, do it from Merchants → Edit.';
+      // Renaming is NOT built (spec Phase 3) and the merchant name is deliberately not an
+      // editable grid cell, so there is no "edit it on the Merchants tab" to point at. Saying
+      // so plainly beats sending someone to look for a control that is not there.
+      return 'If these are the same merchant, it has been renamed in your file. Renaming in place '
+        + 'is not built yet, so nothing here will match it: a run resolves the roster by name, and '
+        + 'importing would ADD the file\u2019s name as a second merchant with no terms, leaving this '
+        + 'one\u2019s terms behind. Leave it for now, or set the terms up on the new merchant deliberately.';
     case 'ambiguous-rename':
       return 'Fix: more than one name could be right — needs a person to pick, not automatable.';
     case 'brand-has-branches':
@@ -2300,9 +2306,19 @@ function truncatedNameListHtml(names, count) {
 // via truncatedNameListHtml instead of the arrow-joined `rc-item-names` line below.
 function reconcileRowHtml(item) {
   const names = (item.names || []).filter(Boolean);
+  // A bare "A ↔ B" does not say which name is yours and which is the file's — and that is
+  // exactly what someone needs before renaming anything. The pair is always [app, file]
+  // (see pairOne in classifyDifferences), so label the sides rather than relying on order
+  // nobody can see. Types carrying a single name are left unlabelled: there is nothing to
+  // confuse them with, and "In your app:" over a one-name row is noise.
+  const sided = (i) => (i === 0 ? 'In your app' : 'In your file');
   const namesHtml = item.type === 'machine-list-miss'
     ? truncatedNameListHtml(names, item.count)
-    : `<span class="rc-item-names">${names.map(escape).join(' <span class="rc-arrow">↔</span> ')}</span>`;
+    : names.length > 1
+      ? `<span class="rc-item-names">${names.map((n, i) =>
+            `<span class="rc-side">${sided(i)}:</span> ${escape(n)}`)
+          .join(' <span class="rc-arrow">↔</span> ')}</span>`
+      : `<span class="rc-item-names">${names.map(escape).join('')}</span>`;
   // Branch rows are a LIST, never the ' ↔ ' rename arrow — that separator means "these are the
   // same thing", which is exactly the claim this screen must not make about a brand and its
   // branches. Attached to whichever item owns the tag (an archived one keeps its own type), so

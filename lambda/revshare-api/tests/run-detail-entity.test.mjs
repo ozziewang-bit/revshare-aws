@@ -56,6 +56,26 @@ test('the entity column comes BEFORE the merchant column', () => {
   assert.ok(entity < merchant, 'Contract entity must be rendered before Merchant');
 });
 
+// ── Reconcile: which name is the app's and which is the file's (2026-09-22) ─────────────────
+// A reader looking at "Jharoka ↔ Jharoka by Indus" asked which side was which. The pair is
+// always [app, file], but an order nobody can see is not an answer — so the row labels sides.
+test('a two-name row says which side is the app and which is the file', () => {
+  const row = grab('reconcileRowHtml');
+  assert.match(row, /In your app/);
+  assert.match(row, /In your file/);
+  assert.ok(row.indexOf('In your app') < row.indexOf('In your file'),
+    'the app side is rendered first, matching the [app, file] pair order');
+});
+
+test('the rename row does not send anyone to a control that does not exist', () => {
+  // merchantName sits in the grid's `id` group, which EDITABLE_GROUPS excludes, so nothing in
+  // the app renames a merchant. The first version of this text said "do it from Merchants →
+  // Edit", which cannot be followed.
+  const fix = grab('reconcileFix');
+  assert.ok(!/Merchants\s*(→|->)\s*Edit/.test(fix), 'no such control exists');
+  assert.match(fix, /not built yet/i, 'it should say so plainly instead');
+});
+
 test('the run-detail total row still spans the right number of columns', () => {
   // Adding a column and forgetting the footer is how a total silently lands under the wrong
   // heading. Count the header cells against the footer's leading blanks.
