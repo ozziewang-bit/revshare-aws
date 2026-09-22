@@ -1032,10 +1032,12 @@ body:has(#main.main-wide) .topbar { width: 100vw; left: 0; }
 .ct-alert-missing { color: var(--accent); }
 
 /* ============ RECONCILE TAB ============ */
-/* The tab sits under #main.main-wide (same nav item as the grid), but its content reads as
-   prose/lists, not a wide table — so it gets its own readable column instead of using the
-   grid's full width. */
-.rc-wrap { max-width: 880px; }
+/* The tab sits under #main.main-wide (the same nav item as the grid), and since 2026-09-22 its
+   content IS a wide table, so it uses the page. The 880px column it used to have was right for
+   the stacked cards and wrong the moment those became rows — it left a third of the window
+   empty. Prose length is controlled per-cell instead (see .rc-fix-text), which is the thing that
+   actually needed limiting. */
+.rc-wrap { max-width: none; }
 .rc-group { margin: 0 0 22px; }
 .rc-group h3 {
   display: flex; align-items: baseline; gap: 10px;
@@ -1096,10 +1098,14 @@ p.rc-warn {
 .rc-table th, .rc-table td { vertical-align: top; }
 .rc-table th { white-space: nowrap; }
 .rc-table col, .rc-table td { word-break: break-word; }
-.rc-c-app, .rc-c-file { width: 17%; }
-.rc-c-why { width: 16%; }
-.rc-c-money { width: 10%; text-align: right; white-space: nowrap; }
-.rc-c-fix { width: 40%; color: var(--ink-soft); font-size: 12.5px; line-height: 1.45; }
+.rc-c-app, .rc-c-file { width: 18%; }
+.rc-c-why { width: 20%; }
+.rc-c-money { width: 9%; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.rc-c-fix { width: 35%; color: var(--ink-soft); font-size: 12.5px; line-height: 1.45; }
+/* The table may now be 2,000px wide; a 700px line of prose is not more readable for it. Cap the
+   MEASURE rather than the table — a fixed table-layout ignores max-width on the cell itself, so
+   it goes on an inline-block inside. */
+.rc-fix-text { display: inline-block; max-width: 68ch; }
 .rc-name { font-weight: 600; }
 .rc-none { color: var(--ink-soft); }
 /* A group heading, inside the table so every finding shares one set of columns. */

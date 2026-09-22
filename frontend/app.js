@@ -2351,7 +2351,7 @@ function reconcileRowHtml(item, moneyUnknown) {
     <td class="rc-c-why">${item.detail ? escape(item.detail) : ''}${
         count ? `${item.detail ? '<br>' : ''}${count} shop(s)` : ''}</td>
     <td class="rc-c-money">${money}</td>
-    <td class="rc-c-fix">${escape(reconcileFix(item))}</td>
+    <td class="rc-c-fix"><span class="rc-fix-text">${escape(reconcileFix(item))}</span></td>
   </tr>`;
 }
 
