@@ -2229,15 +2229,15 @@ async function renderContractsScreen() {
 // `money: true` marks the groups whose figures come from the latest run. When that run cannot be
 // loaded those figures are UNKNOWN, not zero, and the heading has to say so — see reconcileRunNote.
 const RECONCILE_GROUPS = [
-  { type: 'archived-in-file',   title: 'Archived, but still in your file and still earning', money: true },
-  { type: 'likely-rename',      title: 'Looks renamed', money: true },
-  { type: 'ambiguous-rename',   title: 'Could be a rename — more than one merchant fits', money: true },
-  { type: 'brand-has-branches', title: 'One brand tag, several merchant rows', money: true },
-  { type: 'in-file-no-row',     title: 'In your file, no merchant row', money: true },
-  { type: 'in-app-not-in-file', title: 'In your app, not in your file' },
+  { type: 'archived-in-file',   title: 'Archived, but still in your file and still earning', money: true, tone: 'loss' },
+  { type: 'brand-has-branches', title: 'One brand tag, several merchant rows', money: true, tone: 'warn' },
+  { type: 'likely-rename',      title: 'Looks renamed', money: true, tone: 'warn' },
+  { type: 'ambiguous-rename',   title: 'Could be a rename — more than one merchant fits', money: true, tone: 'info' },
+  { type: 'in-file-no-row',     title: 'In your file, no merchant row', money: true, tone: 'info' },
+  { type: 'in-app-not-in-file', title: 'In your app, not in your file', tone: 'quiet' },
   // Populated starting Task 8 (machine-list-miss items carry `count`, not `names`/`contractIds`
   // the way every other type does) — the group renders, just empty, until then.
-  { type: 'machine-list-miss',  title: 'Stores the machine list could not place' },
+  { type: 'machine-list-miss',  title: 'Stores the machine list could not place', tone: 'quiet' },
 ];
 
 // The two seeding batches big enough to have a name of their own — see §11's duplicate-name
@@ -2434,7 +2434,7 @@ function reconcileHtml(items, upload, runState) {
       : money ? `${fmt2(money)} ${escape(CCY)}` : '';
     // Within a group, the largest number at stake first — the order you would work in.
     const sorted = rows.slice().sort((a, b) => (b.money || 0) - (a.money || 0));
-    return `<tr class="rc-grouprow"><td colspan="5">
+    return `<tr class="rc-grouprow rc-tone-${g.tone || 'quiet'}"><td colspan="5">
         <span class="rc-g-title">${escape(g.title)}</span>
         <span class="rc-count">${count}</span>
         <span class="rc-g-money">${moneyHtml}</span></td></tr>`

@@ -1044,6 +1044,9 @@ body:has(#main.main-wide) .topbar { width: 100vw; left: 0; }
   margin: 0 0 8px; font-size: 15px;
 }
 .rc-count {
+  display: inline-block; min-width: 18px; text-align: center;
+  padding: 1px 7px; border-radius: 999px; background: var(--surface);
+  border: 1px solid currentColor;
   font-size: 11.5px; font-weight: 600; color: var(--ink-soft);
   background: var(--surface-muted); border-radius: 999px; padding: 1px 9px;
 }
@@ -1109,7 +1112,27 @@ p.rc-warn {
 .rc-name { font-weight: 600; }
 .rc-none { color: var(--ink-soft); }
 /* A group heading, inside the table so every finding shares one set of columns. */
-.rc-grouprow td { background: var(--bg-soft); font-weight: 600; padding-top: 14px; }
+/* A category heading has to be findable while scrolling a long table, so it carries a colour
+   band as well as weight. The tone says what KIND of finding it is and is not decorative: red
+   is money going missing right now, amber is a decision money is waiting on, blue is ordinary
+   work, grey is "nothing is wrong, here is the list". */
+.rc-grouprow td {
+  font-weight: 600; font-size: 13.5px; padding: 14px 10px 10px;
+  border-top: 1px solid var(--border-strong);
+  border-left: 4px solid var(--border-strong);
+  background: var(--surface-muted);
+}
+.rc-tone-loss  td { background: var(--loss-soft);   border-left-color: var(--loss); }
+.rc-tone-loss  .rc-g-title { color: var(--loss); }
+.rc-tone-warn  td { background: var(--warn-soft);   border-left-color: var(--warn); }
+.rc-tone-warn  .rc-g-title { color: var(--warn); }
+.rc-tone-info  td { background: var(--accent-soft); border-left-color: var(--accent); }
+.rc-tone-info  .rc-g-title { color: var(--accent); }
+.rc-tone-quiet td { background: var(--surface-muted); border-left-color: var(--border-strong); }
+.rc-tone-quiet .rc-g-title { color: var(--ink-soft); }
+/* Findings keep a band in the same column, so a row scrolled away from its heading is still
+   visibly attached to one. */
+.rc-table tbody tr:not(.rc-grouprow) td:first-child { border-left: 4px solid var(--surface-muted); }
 .rc-g-title { margin-right: 8px; }
 .rc-g-money { float: right; font-variant-numeric: tabular-nums; }
 /* Several names in one cell — branch rows, rename candidates, unplaced shops. Capped in height
