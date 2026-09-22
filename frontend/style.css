@@ -1139,3 +1139,13 @@ p.rc-warn {
    so one merchant with 200 shops cannot push the rest of the table off the screen. */
 .rc-cell-list { margin: 0; padding-left: 16px; max-height: 150px; overflow-y: auto; }
 .rc-cell-list li { margin: 0 0 2px; }
+
+/* The column header, repeated under each category heading. Quieter than a page-level thead —
+   it is a reminder of what the columns are, not a second title competing with the category. */
+.rc-colhead th {
+  padding: 7px 10px 5px; text-align: left; font-size: 10.5px; font-weight: 600;
+  letter-spacing: .06em; text-transform: uppercase; color: var(--ink-faint);
+  background: var(--surface); border-bottom: 1px solid var(--border);
+}
+.rc-colhead th.rc-c-money { text-align: right; }
+.rc-colhead th.rc-c-app { border-left: 4px solid var(--surface-muted); }

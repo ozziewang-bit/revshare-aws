@@ -63,10 +63,18 @@ test('the entity column comes BEFORE the merchant column', () => {
 // [app, …file], and a brand group is [tag, …branches], which is not a pair at all. Sides are
 // now explicit fields, and the table gives each one a column.
 test('the table has an app column before a file column', () => {
-  const html = grab('reconcileHtml');
-  const app_i = html.indexOf('In your app'), file_i = html.indexOf('In your file');
+  const head = app.slice(app.indexOf('const RECONCILE_COLHEAD'), app.indexOf('// What the fix will be'));
+  const app_i = head.indexOf('In your app'), file_i = head.indexOf('In your file');
   assert.ok(app_i > 0 && file_i > 0, 'both headers must exist');
   assert.ok(app_i < file_i, 'the app column comes first');
+});
+
+test('every category repeats the column header under its heading', () => {
+  // One header at the top of a long table is a header you have scrolled past.
+  const html = grab('reconcileHtml');
+  assert.match(html, /rc-grouprow[\s\S]{0,400}RECONCILE_COLHEAD/,
+    'the header must follow each group heading row');
+  assert.ok(!/<thead>/.test(html), 'and the single top header is gone, or the first category has two');
 });
 
 test('a row fills those columns from appNames and fileNames, never from name order', () => {

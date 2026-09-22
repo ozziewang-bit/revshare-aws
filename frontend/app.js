@@ -2248,6 +2248,18 @@ const RECONCILE_KNOWN_BATCHES = {
   '2026-08-09': 'payable-brand adoption',
 };
 
+// Repeated under every category heading rather than once at the top of the table: a header you
+// have scrolled past is not a header. Sticky would be the other answer, but this table already
+// sits under a sticky topbar and a sub-tab strip, and stacking a third layer to save a line per
+// category is worse than the line.
+const RECONCILE_COLHEAD = `<tr class="rc-colhead">
+  <th class="rc-c-app">In your app</th>
+  <th class="rc-c-file">In your file</th>
+  <th class="rc-c-why">Why</th>
+  <th class="rc-c-money">Not paid</th>
+  <th class="rc-c-fix">What to do</th>
+</tr>`;
+
 // What the fix will be, in words. Phase 2 has no buttons, so this sentence is the only thing
 // telling someone what to actually do about a row — an empty row with no explanation would read
 // as broken, not as "not built yet".
@@ -2438,17 +2450,12 @@ function reconcileHtml(items, upload, runState) {
         <span class="rc-g-title">${escape(g.title)}</span>
         <span class="rc-count">${count}</span>
         <span class="rc-g-money">${moneyHtml}</span></td></tr>`
+      + RECONCILE_COLHEAD
       + sorted.map(r => reconcileRowHtml(r, moneyUnknown)).join('');
   }).join('');
 
   return `<div class="rc-wrap">${head}
-    <table class="ts rc-table">
-      <thead><tr>
-        <th>In your app</th><th>In your file</th><th>Why</th>
-        <th class="rc-c-money">Not paid</th><th>What to do</th>
-      </tr></thead>
-      <tbody>${body}</tbody>
-    </table></div>`;
+    <table class="ts rc-table"><tbody>${body}</tbody></table></div>`;
 }
 
 async function renderReconcileTab() {
