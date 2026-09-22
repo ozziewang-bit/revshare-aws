@@ -3,16 +3,23 @@
 Last updated: 2026-09-04 (Merchant view gained a **Finance Information** column group — bank
 details + finance contact, editable inline, in the download sheet, **both regions**; and the
 screen now opens with **every column group collapsed** — §1n. 2026-09-18: `Contract entity` is no
-longer read from the weekly file — a column is writable by a file or by hand, never both — §1l;
-and the Merchant view gained a read-only **Reconcile** tab, plus a **Review only** upload that
-changes nothing — §1o).
-Service-worker `CACHE_VERSION` is at `revshare-v160` (bump on every shell change).
+longer read from the weekly file — a column is writable by a file or by hand, never both — §1l.
+2026-09-21/22: the Merchant view gained a read-only **Reconcile** tab and a **Review only**
+upload that changes nothing — §1o; the run detail leads with **Contract entity** and its download
+groups into a folder per entity — §1j.)
+Service-worker `CACHE_VERSION` is at `revshare-v168` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
 end-to-end before touching anything. The codebase is the ultimate source of
 truth — when this doc and the code disagree, the code wins.
 
 ## 1. What this is
+
+**Three purposes, stated by the user 2026-09-21 — worth keeping in this order when deciding
+where something belongs:** (1) a complete merchant information table, (2) contract management,
+(3) rev-share calculation. The Merchant view serves 1 and 2; Run share serves 3; and the things
+that felt like scope creep — Finance Information, Contract entity, Reconcile — are all purpose 1
+catching up with the other two.
 
 A ChargeSpot revenue-share calculator. Finance uploads a merchant roster + an
 order report for a period; the calculator resolves each roster brand (by its
@@ -588,6 +595,18 @@ r n+3   Rental Time · Rental Merchant · Rental KA Name · Return Time · Retur
 - Orders are attributed to a merchant by store name **including the names recovered by machine
   number and manual assignment** (§1d), so a statement is not missing the rows those passes saved.
 
+**A folder per contract entity (2026-09-22).** A rev-share file is settled with a COMPANY, not a
+brand and not a branch, so unzipping gives one folder per contract entity that covers **more than
+one distinct brand**, with that entity's files inside; a single-brand entity and a merchant with
+no entity stay at the root. `zipEntryBases` in `app.js` is pure and tested — a zip has no folders
+of its own, a `/` in an entry name IS the folder, so the whole feature is what the entry names
+are. Two rules the tests pin: a folder name never ends in a dot or space (Windows cannot create
+one, and nearly every entity here ends `Co., Ltd.`), and "several brands" means several DISTINCT
+brands. The run detail's payout table leads with the same **Contract entity** column, resolved
+live from the merchant record via `contractEntityFor` — runs freeze what they PAID and have never
+stored the entity, so a past run shows today's entity, which is the right answer for "who do we
+send this to now". A merchant with no entity reads `—`, never its brand name.
+
 **Two dependencies to know about:**
 - `parseOrderReport` keeps rental/return time, return merchant, duration and status. It discarded
   all of them until 2026-09-01, so **runs made before that have no order detail** — their download
@@ -884,7 +903,51 @@ rather than `created`/`updated`, so a plan cannot be read as an accomplished fac
 - **Applying from Reconcile is NOT built** (spec Phase 3). Today the choices are Import (all of it)
   or by hand.
 
-Tests: `npm test` → **287**.
+**The screen is a TABLE (2026-09-22).** It began as stacked cards — five things per finding, so
+sixty findings were a wall with nothing lined up. Now: `In your app · In your file · Why · Not
+paid · What to do`, a heading row per category, and the column header **repeated under every
+category** (one header at the top of a long table is a header you have scrolled past). Categories
+carry a colour band that means something — red is money going missing now, amber is a decision
+money waits on, blue is ordinary work, grey is "nothing is wrong, here is the list".
+
+- **Sides are stated, never inferred.** Every item carries `appNames`/`fileNames`. Position in
+  `names` had ALREADY diverged — one ambiguous-rename path builds `[file, …app]` and the other
+  `[app, …file]`, and a brand group is `[tag, …branches]`, not a pair — so a positional label was
+  backwards on one path and meaningless on another. Five tests pin the sides per type.
+- **A cell that holds more than it shows says so.** Lists cap at 8 items and add "…and N more",
+  where N comes from the row's exact `count`, never from the names it holds (the backend caps
+  stored names at 200 while totals stay exact). The first version scrolled inside a 150px cell —
+  macOS hides that scrollbar, so a heading saying 50 sat beside a list that looked like 6.
+- **Counts carry a unit where the unit is not obvious** — "50 stores", because 50 read as 50
+  merchants.
+- **The rename row does not send anyone to a control that does not exist.** `merchantName` is in
+  the grid's `id` group, which `EDITABLE_GROUPS` excludes, so NOTHING in the app renames a
+  merchant. The row says so, and says what happens if you import anyway: the file's name arrives
+  as a SECOND merchant with no terms and this one's terms stay behind.
+
+**What the 21 Sep review-only upload actually found (live TH):** 283 brands in the file; **5
+archived contracts still in the file and still earning, 52,440 THB**, `Central` alone at 51,495;
+25 brands the file has and the app does not; 50 stores the machine list could not place.
+
+**Why those 50 could not be placed — the answer is structural, not a bug.** The machine list is
+matched by store NAME against the store registry, and the registry learns names ONLY from run
+rosters (intake by month: May 1,844 · Jun 1,402 · Jul 741 · Aug 2,723 · Sep 12). 46 of the 50 are
+venues added since the August run, so a September run resolves them. 1 is a genuine naming
+mismatch (`4778 - เซเว่น รังสิตภิรมย์` in the machine list vs `4778 - เซเว่นอีเลฟเว่น
+กลางซอยรังสิตภิรมย์` in the registry — same store code, different abbreviation, §1d's
+export-time-name problem). 1 is genuinely unlinked (`วอยด์ คลับ`, in the registry since 29 May
+with no `contractId`). 4 look like test rows in production (`Demo Ozzie`, `Demo Oak`, `Test CP`,
+`เครื่อง Hub Charging WH`).
+
+⚠ **The gap that follows, NOT built:** the weekly merchant file knows shop → brand for every shop
+— `parseWeeklyRows` reads the store-name column as `_branch`, counts distinct branches per brand,
+and **throws the names away** ("a working column, not a field to store"). So the file sitting
+right next to the machine list in the same upload could have placed most of those 46, and does
+not. Keeping those names and consulting them before the registry is the fix; it would place a
+shop in the same week it appears rather than one run later. Note the file is Approved-only, so
+pending/disapproved shops still would not place.
+
+Tests: `npm test` → **314**.
 
 ## 2. Live URLs and resources
 
@@ -909,6 +972,7 @@ Account `<YOUR_AWS_ACCOUNT_ID>`, region `ap-northeast-1`. IAM user `<your-iam-us
 | `infra/backfill-run-excluded.mjs` | Add `excluded` (non-Approved roster rows) to an older run's stored inputs so a recompute can label them (2026-08-27). Changes no payout figure. |
 | `infra/import-sg-revshare.mjs` | Load SG's rev-share workbook into `RevsharePartnerSG` as contracts + terms (2026-08-26, §1f). Dry run by default. Holds `BRAND_TYPES` (which `merchant type.` values group stores) and `parseTerms` (the free-text term shapes). |
 | `infra/backfill-sg-contract-fields.mjs` | Fill `merchantType` / `units` / `installedUnits` on SG contracts from the same workbook (2026-08-26). Dry run by default; never touches rule/aggregationMode/noPayout/currency. |
+| `infra/restore-contracts.mjs` | Compare live `CONTRACT` rows against a snapshot and put the snapshot back (2026-09-21). **Dry run by default** — prints what changed field by field, writes only with `--apply`. **Never deletes:** a merchant created after the snapshot is reported and left alone. Refuses a snapshot carrying a `LastEvaluatedKey`, since restoring a truncated page would silently drop every row past the first; comparisons sort map keys, because DynamoDB does not preserve key order. A snapshot is just `aws dynamodb query` output. Restore points live OUTSIDE the repo — `~/revshare-backups/<date>/`, with a README naming the commit that was live. |
 | `infra/check-db-exports.mjs` | Deploy preflight (2026-08-26): every name the synced code imports from `db.mjs` must exist in BOTH regions' `db.mjs`. `deploy-lambda-all.sh` aborts if not. See §8. |
 | `infra/rerun-bulk-run.mjs` | Recompute a bulk run from its stored inputs (2026-08-24) — no browser token, no re-upload. Dry run by default; `--apply` writes a new run, `--replace` also deletes the original. Calls the same `computeBulkRun` the HTTP route uses, with `persist: false` on a dry run so a preview cannot mutate the registry. Sets `AWS_REGION` before importing `db.mjs` (which otherwise falls back to the wrong region) — hence its dynamic imports. |
 | `lambda/revshare-api/code/routes/features.mjs` | Feature-request routes (2026-09-02, §1k). Anyone signed in files; admins resolve. Title/detail immutable after filing. |
