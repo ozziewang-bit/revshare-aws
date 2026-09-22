@@ -1088,3 +1088,25 @@ p.rc-warn {
    read past once you know the convention, present enough that you never have to guess. */
 .rc-side { font-weight: 400; font-size: 11.5px; letter-spacing: .02em;
            color: var(--ink-soft); text-transform: uppercase; }
+
+/* ── Reconcile, as a table (2026-09-22) ──────────────────────────────────────────────────
+   The card layout it replaced stacked five things per finding, so sixty findings were a wall
+   with nothing lined up. Columns let you read down one question at a time. */
+.rc-table { width: 100%; table-layout: fixed; }
+.rc-table th, .rc-table td { vertical-align: top; }
+.rc-table th { white-space: nowrap; }
+.rc-table col, .rc-table td { word-break: break-word; }
+.rc-c-app, .rc-c-file { width: 17%; }
+.rc-c-why { width: 16%; }
+.rc-c-money { width: 10%; text-align: right; white-space: nowrap; }
+.rc-c-fix { width: 40%; color: var(--ink-soft); font-size: 12.5px; line-height: 1.45; }
+.rc-name { font-weight: 600; }
+.rc-none { color: var(--ink-soft); }
+/* A group heading, inside the table so every finding shares one set of columns. */
+.rc-grouprow td { background: var(--bg-soft); font-weight: 600; padding-top: 14px; }
+.rc-g-title { margin-right: 8px; }
+.rc-g-money { float: right; font-variant-numeric: tabular-nums; }
+/* Several names in one cell — branch rows, rename candidates, unplaced shops. Capped in height
+   so one merchant with 200 shops cannot push the rest of the table off the screen. */
+.rc-cell-list { margin: 0; padding-left: 16px; max-height: 150px; overflow-y: auto; }
+.rc-cell-list li { margin: 0 0 2px; }

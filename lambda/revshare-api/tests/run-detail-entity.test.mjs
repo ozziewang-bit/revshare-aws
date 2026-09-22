@@ -57,14 +57,24 @@ test('the entity column comes BEFORE the merchant column', () => {
 });
 
 // ── Reconcile: which name is the app's and which is the file's (2026-09-22) ─────────────────
-// A reader looking at "Jharoka ↔ Jharoka by Indus" asked which side was which. The pair is
-// always [app, file], but an order nobody can see is not an answer — so the row labels sides.
-test('a two-name row says which side is the app and which is the file', () => {
+// A reader looking at "Jharoka ↔ Jharoka by Indus" asked which side was which. The answer was
+// worse than missing: the sides were being inferred from position in `names`, and position is
+// NOT consistent — one ambiguous-rename path builds [file, …app] while the other builds
+// [app, …file], and a brand group is [tag, …branches], which is not a pair at all. Sides are
+// now explicit fields, and the table gives each one a column.
+test('the table has an app column before a file column', () => {
+  const html = grab('reconcileHtml');
+  const app_i = html.indexOf('In your app'), file_i = html.indexOf('In your file');
+  assert.ok(app_i > 0 && file_i > 0, 'both headers must exist');
+  assert.ok(app_i < file_i, 'the app column comes first');
+});
+
+test('a row fills those columns from appNames and fileNames, never from name order', () => {
   const row = grab('reconcileRowHtml');
-  assert.match(row, /In your app/);
-  assert.match(row, /In your file/);
-  assert.ok(row.indexOf('In your app') < row.indexOf('In your file'),
-    'the app side is rendered first, matching the [app, file] pair order');
+  const app_i = row.indexOf('item.appNames'), file_i = row.indexOf('item.fileNames');
+  assert.ok(app_i > 0 && file_i > 0, 'both sides must be read explicitly');
+  assert.ok(app_i < file_i, 'and in the same order as the headers');
+  assert.ok(!/item\.names\[0\]/.test(row), 'positional name access is the bug this replaced');
 });
 
 test('the rename row does not send anyone to a control that does not exist', () => {

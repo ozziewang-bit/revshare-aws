@@ -941,6 +941,7 @@ function classifyDifferences(opts) {
         // pays them zero again next run (the `Central` case: 51,495 THB). The classifier can
         // see both, so it says both — see reconcileFix.
         out.push({ type: 'archived-in-file', key: k, names: [c.merchantName],
+                   appNames: [c.merchantName], fileNames: [c.merchantName],
                    contractIds: [c.contractId], money: money.get(k) || 0,
                    archived: true, noPayout: !!c.noPayout,
                    detail: c.noPayout
@@ -951,6 +952,7 @@ function classifyDifferences(opts) {
     }
     if (!inFile.has(k)) {
       out.push({ type: 'in-app-not-in-file', key: k, names: [c.merchantName],
+                 appNames: [c.merchantName], fileNames: [],
                  contractIds: [c.contractId], money: 0, detail: '' });
     }
   }
@@ -959,6 +961,7 @@ function classifyDifferences(opts) {
     if (byKey.has(k)) continue;
     const name = (upload.names || []).find(n => reconcileKey(n) === k);
     out.push({ type: 'in-file-no-row', key: k, names: [name], contractIds: [],
+               appNames: [], fileNames: [name],
                money: money.get(k) || 0, detail: '' });
   }
 
@@ -1030,6 +1033,10 @@ function classifyDifferences(opts) {
       out[out.indexOf(existing)] = {
         type: 'brand-has-branches', key: k,
         names: [existing.names[0], ...branch.branchNames],
+        // `existing` is the in-file-no-row item being converted, so its name is the FILE's tag —
+        // there is no merchant row of that name, which is why it was an orphan. Only the branch
+        // rows belong on the app side.
+        appNames: [...branch.branchNames], fileNames: [existing.names[0]],
         contractIds: [...branchIds], money: existing.money, ...branch, detail: termsDetail };
     } else {
       // The tag resolves to a LIVE row that is itself in the file. Nothing is wrong with the
@@ -1039,6 +1046,11 @@ function classifyDifferences(opts) {
         type: 'brand-has-branches', key: k,
         names: [tagContract ? tagContract.merchantName : (upload.names || []).find(n => reconcileKey(n) === k),
                 ...branch.branchNames],
+        // The tag is what the FILE says. The branch rows are what the app holds, plus the tag's
+        // own live row when it has one.
+        appNames: [...(tagContract ? [tagContract.merchantName] : []), ...branch.branchNames],
+        fileNames: [(upload.names || []).find(n => reconcileKey(n) === k)
+                    || (tagContract ? tagContract.merchantName : '')].filter(Boolean),
         contractIds: [...(tagContract ? [tagContract.contractId] : []), ...branchIds],
         money: money.get(k) || 0, ...branch, detail: termsDetail });
     }
@@ -1094,6 +1106,7 @@ function classifyDifferences(opts) {
     if (i < 0) throw new Error('reconcile pairing: claimant already removed from `out`');
     out[i] = { type: 'ambiguous-rename', key: o.key,
                names: [o.names[0], ...claimants.map(f => f.names[0])],
+               appNames: [o.names[0]], fileNames: claimants.map(f => f.names[0]),
                contractIds: [...o.contractIds],
                money: claimants.reduce((sum, f) => sum + (f.money || 0), 0),
                detail: `${claimants.length} upload names could be this merchant's rename — pick one` };
@@ -1111,6 +1124,7 @@ function classifyDifferences(opts) {
     if (i < 0) throw new Error('reconcile pairing: file item already removed from `out`');
     out[i] = { type: 'likely-rename', key: f.key,
                names: [o.names[0], f.names[0]], contractIds: [...o.contractIds],
+               appNames: [o.names[0]], fileNames: [f.names[0]],
                money: f.money, detail: `${Math.round(score * 100)}% match` };
     removeItem(o);
     consumedOrphans.add(o);
@@ -1137,6 +1151,7 @@ function classifyDifferences(opts) {
     if (i < 0) throw new Error('reconcile pairing: file item already removed from `out`');
     out[i] = { type: 'ambiguous-rename', key: f.key,
                names: [f.names[0], ...scored.map(s => s.o.names[0])],
+               appNames: scored.map(s => s.o.names[0]), fileNames: [f.names[0]],
                contractIds: scored.flatMap(s => s.o.contractIds),
                money: f.money, detail: `${scored.length} merchants could be this` };
     consumedFiles.add(f);
@@ -1151,10 +1166,12 @@ function classifyDifferences(opts) {
   // total rather than `names.length`.
   const mm = upload?.machineMisses;
   if (mm?.unknownTotal) out.push({ type: 'machine-list-miss', key: 'unknown',
+    appNames: [], fileNames: mm.unknown || [],
     names: mm.unknown || [], contractIds: [], money: 0, count: mm.unknownTotal,
     detail: 'These shops are not in the store registry. The registry learns store names from run '
           + 'rosters, so they usually resolve after the next run.' });
   if (mm?.unlinkedTotal) out.push({ type: 'machine-list-miss', key: 'unlinked',
+    appNames: [], fileNames: mm.unlinked || [],
     names: mm.unlinked || [], contractIds: [], money: 0, count: mm.unlinkedTotal,
     detail: 'These shops are in the registry but belong to no merchant, so their machines were '
           + 'not counted anywhere.' });
@@ -2304,39 +2321,44 @@ function truncatedNameListHtml(names, count) {
 // machine-list-miss is the one shape that isn't a rename pair: it can hold up to 200 shop names
 // (the backend's cap) behind a `count` that is the exact total, so it gets its own name rendering
 // via truncatedNameListHtml instead of the arrow-joined `rc-item-names` line below.
-function reconcileRowHtml(item) {
-  const names = (item.names || []).filter(Boolean);
-  // A bare "A ↔ B" does not say which name is yours and which is the file's — and that is
-  // exactly what someone needs before renaming anything. The pair is always [app, file]
-  // (see pairOne in classifyDifferences), so label the sides rather than relying on order
-  // nobody can see. Types carrying a single name are left unlabelled: there is nothing to
-  // confuse them with, and "In your app:" over a one-name row is noise.
-  const sided = (i) => (i === 0 ? 'In your app' : 'In your file');
-  const namesHtml = item.type === 'machine-list-miss'
-    ? truncatedNameListHtml(names, item.count)
-    : names.length > 1
-      ? `<span class="rc-item-names">${names.map((n, i) =>
-            `<span class="rc-side">${sided(i)}:</span> ${escape(n)}`)
-          .join(' <span class="rc-arrow">↔</span> ')}</span>`
-      : `<span class="rc-item-names">${names.map(escape).join('')}</span>`;
-  // Branch rows are a LIST, never the ' ↔ ' rename arrow — that separator means "these are the
-  // same thing", which is exactly the claim this screen must not make about a brand and its
-  // branches. Attached to whichever item owns the tag (an archived one keeps its own type), so
-  // `Central` reads as one finding rather than four scattered rows.
-  const branchesHtml = (item.branchNames || []).length
-    ? `<div class="rc-item-detail muted">Merchant rows under this tag, which a roster labelled `
-      + `“${escape(item.names[0])}” never reaches:</div>`
-      + truncatedNameListHtml(item.branchNames, item.branchNames.length)
-    : '';
-  return `<div class="rc-item">
-    ${namesHtml}
-    ${item.money ? `<span class="rc-item-money">${fmt2(item.money)} ${escape(CCY)}</span>` : ''}
-    ${item.detail ? `<div class="rc-item-detail muted">${escape(item.detail)}</div>` : ''}
-    ${branchesHtml}
-    <div class="rc-item-fix muted">${escape(reconcileFix(item))}</div>
-  </div>`;
+// One difference, one ROW. The card layout this replaced stacked five things vertically per
+// finding, so sixty findings were a wall — nothing lined up and nothing could be compared down a
+// column. A table reads the way the work does: what is the issue, what do I have, what does the
+// file say, how much is at stake.
+//
+// Sides come from `appNames`/`fileNames`, never from position in `names`. Position was already
+// inconsistent: one ambiguous-rename path builds [file, …app] and the other [app, …file], and a
+// brand group is [tag, …branches], which is not a pair at all.
+function reconcileNameCell(names, item) {
+  const list = (names || []).filter(Boolean);
+  if (!list.length) return '<span class="rc-none">—</span>';
+  if (list.length === 1) return `<span class="rc-name">${escape(list[0])}</span>`;
+  // A capped machine-list column must say what it is not showing; everything else lists in full.
+  const total = item.type === 'machine-list-miss' ? (item.count ?? list.length) : list.length;
+  const more = total > list.length
+    ? `<li class="rc-none">…and ${total - list.length} more, not shown</li>` : '';
+  return `<ul class="rc-cell-list">${list.map(n => `<li>${escape(n)}</li>`).join('')}${more}</ul>`;
 }
 
+function reconcileRowHtml(item, moneyUnknown) {
+  const money = moneyUnknown
+    ? '<span class="rc-warn">unknown</span>'
+    : (item.money ? `${fmt2(item.money)}` : '<span class="rc-none">—</span>');
+  const count = item.type === 'machine-list-miss' ? (item.count ?? 0) : 0;
+  return `<tr>
+    <td class="rc-c-app">${reconcileNameCell(item.appNames, item)}</td>
+    <td class="rc-c-file">${reconcileNameCell(item.fileNames, item)}</td>
+    <td class="rc-c-why">${item.detail ? escape(item.detail) : ''}${
+        count ? `${item.detail ? '<br>' : ''}${count} shop(s)` : ''}</td>
+    <td class="rc-c-money">${money}</td>
+    <td class="rc-c-fix">${escape(reconcileFix(item))}</td>
+  </tr>`;
+}
+
+// NOTE: not called since the table layout (2026-09-22) — the 'in your app, not in your file'
+// rows now sit in the table with everything else. Kept, with its tests, because the batch
+// grouping is still the only way the cross-script duplicates ('UDON Cher' / 'เฌอ') are
+// findable, and it will be wanted again when that list gets its own view.
 // Spec §5 type 5: the "in your app, not in your file" rows group by the day the contract row was
 // created, because that is the axis along which this app's duplicates were created (38 from the
 // 7 Aug migration, 21 from the 9 Aug adoption, a handful since). No string metric pairs 'UDON
@@ -2395,27 +2417,38 @@ function reconcileHtml(items, upload, runState) {
     + (state === 'ok' ? ''
       : `<p class="${state === 'error' ? 'rc-warn' : 'muted'}" style="margin:0 0 14px;">${escape(note)}</p>`);
   if (!items.length) return head + '<p class="muted">Nothing to reconcile — your list and your file agree.</p>';
-  return `<div class="rc-wrap">${head}` + RECONCILE_GROUPS.map(g => {
+
+  // Group heading rows inside the table rather than separate sections: the ordering by money
+  // still reads, but every finding shares one set of columns, which is the point of a table.
+  const body = RECONCILE_GROUPS.map(g => {
     const rows = items.filter(i => i.type === g.type);
     if (!rows.length) return '';
-    const money = rows.reduce((s, r) => s + (r.money || 0), 0);
-    // Where the money would have been: "unknown" reads as a fault, 0 reads as "nothing at stake".
-    const moneyHtml = g.money && state === 'error'
-      ? '<span class="rc-money rc-warn">money unknown</span>'
-      : money ? `<span class="rc-money">${fmt2(money)} ${escape(CCY)}</span>` : '';
-    // machine-list-miss rows are one item per REASON (unknown / unlinked), not one per shop — the
-    // count that matters here is shops, `rows.length` would read "2" whether 10 or 5,000 could not
-    // be placed. Every other group is still genuinely one item per finding, so `rows.length` stays
-    // right for them.
+    const moneyUnknown = !!g.money && state === 'error';
+    const money = rows.reduce((sum, r) => sum + (r.money || 0), 0);
+    // machine-list-miss is one row per REASON, not per shop: `rows.length` would read "2"
+    // whether 10 shops or 5,000 could not be placed.
     const count = g.type === 'machine-list-miss'
-      ? rows.reduce((s, r) => s + (r.count ?? r.names.length), 0)
+      ? rows.reduce((sum, r) => sum + (r.count ?? (r.fileNames || []).length), 0)
       : rows.length;
-    const body = g.type === 'in-app-not-in-file' ? reconcileDayGroupsHtml(rows) : rows.map(reconcileRowHtml).join('');
-    return `<section class="rc-group">
-      <h3>${escape(g.title)} <span class="rc-count">${count}</span>${moneyHtml}</h3>
-      <details><summary>${count} to review</summary>${body}</details>
-    </section>`;
-  }).join('') + '</div>';
+    const moneyHtml = moneyUnknown ? '<span class="rc-warn">money unknown</span>'
+      : money ? `${fmt2(money)} ${escape(CCY)}` : '';
+    // Within a group, the largest number at stake first — the order you would work in.
+    const sorted = rows.slice().sort((a, b) => (b.money || 0) - (a.money || 0));
+    return `<tr class="rc-grouprow"><td colspan="5">
+        <span class="rc-g-title">${escape(g.title)}</span>
+        <span class="rc-count">${count}</span>
+        <span class="rc-g-money">${moneyHtml}</span></td></tr>`
+      + sorted.map(r => reconcileRowHtml(r, moneyUnknown)).join('');
+  }).join('');
+
+  return `<div class="rc-wrap">${head}
+    <table class="ts rc-table">
+      <thead><tr>
+        <th>In your app</th><th>In your file</th><th>Why</th>
+        <th class="rc-c-money">Not paid</th><th>What to do</th>
+      </tr></thead>
+      <tbody>${body}</tbody>
+    </table></div>`;
 }
 
 async function renderReconcileTab() {

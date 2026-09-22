@@ -485,3 +485,68 @@ test('the merchant grid takes a token too, because the race runs both ways', () 
   assert.ok(/const token = newPaintToken\(\)/.test(fn));
   assert.ok(/if \(!paintIsCurrent\(token\)\) return;/.test(fn));
 });
+
+// ── Which side each name came from (2026-09-22) ────────────────────────────────────────────
+// The page shows "in your app" and "in your file" as separate columns. It used to infer them
+// from position in `names`, which is NOT consistent between the two ambiguous-rename paths —
+// so one of them labelled every name backwards. Sides are explicit now; these pin it per type.
+const sidesOf = (items, type) => {
+  const it = items.find(i => i.type === type);
+  assert.ok(it, `expected a ${type} item`);
+  return { app: it.appNames || [], file: it.fileNames || [] };
+};
+
+test('a rename puts the merchant on the app side and the upload name on the file side', () => {
+  const items = classifyDifferences({
+    contracts: [{ contractId: 'c1', merchantName: 'Jharoka' }],
+    upload: { names: ['Jharoka by Indus'] }, run: null, dismissals: [] });
+  const { app, file } = sidesOf(items, 'likely-rename');
+  assert.deepEqual(app, ['Jharoka']);
+  assert.deepEqual(file, ['Jharoka by Indus']);
+});
+
+test('ONE upload name over several merchants keeps the merchants on the app side', () => {
+  // This is the path that built [file, ...app] — the reverse of every other pair.
+  const items = classifyDifferences({
+    contracts: [{ contractId: 'c1', merchantName: 'DRINK Bar & Restaurant' },
+                { contractId: 'c2', merchantName: 'DINK Bar and Restaurant' }],
+    upload: { names: ['DINK Bar & Restaurant'] }, run: null, dismissals: [] });
+  const { app, file } = sidesOf(items, 'ambiguous-rename');
+  assert.deepEqual(file, ['DINK Bar & Restaurant']);
+  assert.deepEqual(app.sort(), ['DINK Bar and Restaurant', 'DRINK Bar & Restaurant']);
+});
+
+test('ONE merchant contested by several upload names keeps them on the file side', () => {
+  const items = classifyDifferences({
+    contracts: [{ contractId: 'c1', merchantName: 'Andamanda' }],
+    upload: { names: ['Andamanda Phuket', 'Andamanda Resort'] }, run: null, dismissals: [] });
+  const { app, file } = sidesOf(items, 'ambiguous-rename');
+  assert.deepEqual(app, ['Andamanda']);
+  assert.deepEqual(file.sort(), ['Andamanda Phuket', 'Andamanda Resort']);
+});
+
+test('a brand group puts the tag on the file side and the branch rows on the app side', () => {
+  const gp = (pc) => ({ type: 'percent', _t: 'gp', _method: 'default', rows: [{ model: 'ALL', percent: pc }] });
+  const items = classifyDifferences({
+    contracts: [{ contractId: 'c1', merchantName: 'Citadines Sukhumvit soi 8', rule: gp(25), aggregationMode: 'whole' },
+                { contractId: 'c2', merchantName: 'Citadines Sukhumvit soi 11', rule: gp(25), aggregationMode: 'whole' }],
+    upload: { names: ['Citadines'] }, run: null, dismissals: [] });
+  const { app, file } = sidesOf(items, 'brand-has-branches');
+  assert.deepEqual(file, ['Citadines'], 'the tag is what the file says');
+  assert.equal(app.length, 2, 'the branch rows are what the app holds');
+  assert.ok(!app.includes('Citadines'), 'the tag has no merchant row of its own here');
+});
+
+test('every item declares both sides, so the table can never fall back to guessing', () => {
+  const items = classifyDifferences({
+    contracts: [{ contractId: 'c1', merchantName: 'Somsak' },
+                { contractId: 'c2', merchantName: 'Gone', archived: true }],
+    upload: { names: ['Gone', 'Jims Burger'],
+              machineMisses: { unknown: ['Shop A'], unknownTotal: 1, unlinked: [], unlinkedTotal: 0 } },
+    run: null, dismissals: [] });
+  assert.ok(items.length >= 3);
+  for (const i of items) {
+    assert.ok(Array.isArray(i.appNames), `${i.type} has no appNames`);
+    assert.ok(Array.isArray(i.fileNames), `${i.type} has no fileNames`);
+  }
+});
