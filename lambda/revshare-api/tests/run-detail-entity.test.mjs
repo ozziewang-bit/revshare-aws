@@ -104,3 +104,37 @@ test('the run-detail total row still spans the right number of columns', () => {
   const cells = (foot.match(/<td/g) || []).length;
   assert.equal(cells, cols, `footer has ${cells} cells for ${cols} columns`);
 });
+
+// ── A cell that holds more names than it shows must say so (2026-09-22) ─────────────────────
+// A 150px scrolling box held 49 store names and displayed six, with the scrollbar hidden until
+// touched — beside a heading that said 50. The reader asked "why does this show 50 but not 50?",
+// which is the right question to ask of a screen that quotes numbers.
+const cellFn = () => new Function('escape',
+  app.slice(app.indexOf('const RECONCILE_CELL_NAMES'), app.indexOf('function reconcileRowHtml('))
+  + '\nreturn reconcileNameCell;')(x => x);
+
+test('a long list is capped in items and states how many it left out', () => {
+  const names = Array.from({ length: 49 }, (_, i) => 'Shop ' + (i + 1));
+  const html = cellFn()(names, { type: 'machine-list-miss', count: 49 });
+  assert.equal((html.match(/<li>/g) || []).length, 8, 'eight names shown');
+  assert.match(html, /…and 41 more/);
+});
+
+test('the total comes from `count`, not from the names the row happens to hold', () => {
+  // The backend caps stored names at 200 while the totals stay exact, so a row holding 200 of
+  // 640 must say 440 more — reading list.length would claim nothing was hidden at all.
+  const names = Array.from({ length: 200 }, (_, i) => 'Shop ' + i);
+  assert.match(cellFn()(names, { type: 'machine-list-miss', count: 640 }), /…and 632 more/);
+});
+
+test('a short list shows every name and claims nothing is hidden', () => {
+  const html = cellFn()(['A', 'B', 'C'], { type: 'brand-has-branches' });
+  assert.equal((html.match(/<li>/g) || []).length, 3);
+  assert.ok(!/more/.test(html));
+});
+
+test('the store count is labelled, because 50 read as 50 merchants', () => {
+  const groups = app.slice(app.indexOf('const RECONCILE_GROUPS'),
+                           app.indexOf('// Repeated under every category'));
+  assert.match(groups, /machine-list-miss[\s\S]*unit: 'stores'/);
+});

@@ -2237,7 +2237,7 @@ const RECONCILE_GROUPS = [
   { type: 'in-app-not-in-file', title: 'In your app, not in your file', tone: 'quiet' },
   // Populated starting Task 8 (machine-list-miss items carry `count`, not `names`/`contractIds`
   // the way every other type does) — the group renders, just empty, until then.
-  { type: 'machine-list-miss',  title: 'Stores the machine list could not place', tone: 'quiet' },
+  { type: 'machine-list-miss',  title: 'Stores the machine list could not place', tone: 'quiet', unit: 'stores' },
 ];
 
 // The two seeding batches big enough to have a name of their own — see §11's duplicate-name
@@ -2341,15 +2341,20 @@ function truncatedNameListHtml(names, count) {
 // Sides come from `appNames`/`fileNames`, never from position in `names`. Position was already
 // inconsistent: one ambiguous-rename path builds [file, …app] and the other [app, …file], and a
 // brand group is [tag, …branches], which is not a pair at all.
+const RECONCILE_CELL_NAMES = 8;
+
 function reconcileNameCell(names, item) {
   const list = (names || []).filter(Boolean);
   if (!list.length) return '<span class="rc-none">—</span>';
   if (list.length === 1) return `<span class="rc-name">${escape(list[0])}</span>`;
-  // A capped machine-list column must say what it is not showing; everything else lists in full.
-  const total = item.type === 'machine-list-miss' ? (item.count ?? list.length) : list.length;
-  const more = total > list.length
-    ? `<li class="rc-none">…and ${total - list.length} more, not shown</li>` : '';
-  return `<ul class="rc-cell-list">${list.map(n => `<li>${escape(n)}</li>`).join('')}${more}</ul>`;
+  // `count` is the exact total even when the backend capped the names at 200 (§1l), so a row
+  // that holds 49 names out of 60 still reports 60. Never `list.length` for the total.
+  const total = item.count ?? list.length;
+  const shown = list.slice(0, RECONCILE_CELL_NAMES);
+  const hidden = total - shown.length;
+  const more = hidden > 0
+    ? `<li class="rc-more">…and ${hidden} more</li>` : '';
+  return `<ul class="rc-cell-list">${shown.map(n => `<li>${escape(n)}</li>`).join('')}${more}</ul>`;
 }
 
 function reconcileRowHtml(item, moneyUnknown) {
@@ -2448,7 +2453,7 @@ function reconcileHtml(items, upload, runState) {
     const sorted = rows.slice().sort((a, b) => (b.money || 0) - (a.money || 0));
     return `<tr class="rc-grouprow rc-tone-${g.tone || 'quiet'}"><td colspan="5">
         <span class="rc-g-title">${escape(g.title)}</span>
-        <span class="rc-count">${count}</span>
+        <span class="rc-count">${count}${g.unit ? ` ${escape(g.unit)}` : ''}</span>
         <span class="rc-g-money">${moneyHtml}</span></td></tr>`
       + RECONCILE_COLHEAD
       + sorted.map(r => reconcileRowHtml(r, moneyUnknown)).join('');

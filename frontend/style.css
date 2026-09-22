@@ -1137,8 +1137,11 @@ p.rc-warn {
 .rc-g-money { float: right; font-variant-numeric: tabular-nums; }
 /* Several names in one cell — branch rows, rename candidates, unplaced shops. Capped in height
    so one merchant with 200 shops cannot push the rest of the table off the screen. */
-.rc-cell-list { margin: 0; padding-left: 16px; max-height: 150px; overflow-y: auto; }
+/* No scrolling inside a cell: a hidden scrollbar made a list of 49 look like a list of 6, next
+   to a heading that said 50. The list is capped in ITEMS instead and says what it left out. */
+.rc-cell-list { margin: 0; padding-left: 16px; }
 .rc-cell-list li { margin: 0 0 2px; }
+.rc-more { list-style: none; margin-left: -16px; color: var(--ink-faint); font-style: italic; }
 
 /* The column header, repeated under each category heading. Quieter than a page-level thead —
    it is a reminder of what the columns are, not a second title competing with the category. */
