@@ -3960,7 +3960,13 @@ async function renderMailSentTab(host) {
 
 async function renderMailTemplatesTab(host) {
   const box = host || document.getElementById('main');
-  const templates = await loadMailTemplates();
+  let templates;
+  try {
+    templates = await loadMailTemplates();
+  } catch (e) {
+    box.innerHTML = `<p class="nm-err">Could not load templates: ${escape(e.message)}</p>`;
+    return;
+  }
   const admin = can('admin');
   const help = MAIL_PLACEHOLDERS.map(([k, d]) => `<code>${escape(k)}</code> — ${escape(d)}`).join('<br>');
   box.innerHTML = `
@@ -4047,10 +4053,13 @@ function editMailTemplate(t) {
 // Still ONE MERCHANT AT A TIME. The list makes the job findable; it does not make it bulk.
 async function renderMailSendTab(host) {
   host.innerHTML = '<p class="muted">Loading…</p>';
-  const [runs, templates] = await Promise.all([
-    api('/bulk-runs').catch(() => []),
-    loadMailTemplates(),
-  ]);
+  let runs, templates;
+  try {
+    [runs, templates] = await Promise.all([api('/bulk-runs'), loadMailTemplates()]);
+  } catch (e) {
+    host.innerHTML = `<p class="nm-err">Could not load this screen: ${escape(e.message)}</p>`;
+    return;
+  }
   if (!runs.length) {
     host.innerHTML = '<p class="muted">No run has been computed yet — statements are built from a run.</p>';
     return;
@@ -4136,8 +4145,11 @@ async function drawMailSendList(runId) {
 // different feature with a different confirmation, and is not built.
 let MAIL_TEMPLATES = [];
 
+// Throws rather than swallowing. The first version caught everything and returned [], so a
+// backend fault rendered as "No templates yet" — indistinguishable from an empty list, and it
+// hid a real 500 (a missing TableName) behind a sentence saying nothing was wrong.
 async function loadMailTemplates() {
-  try { MAIL_TEMPLATES = await api('/mail-templates'); } catch { MAIL_TEMPLATES = []; }
+  MAIL_TEMPLATES = await api('/mail-templates');
   return MAIL_TEMPLATES;
 }
 

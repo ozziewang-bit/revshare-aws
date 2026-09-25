@@ -396,7 +396,10 @@ export async function putLastUpload(names, extra = {}) {
 // SENT is a different fact that keeps changing after the run is finished.
 
 export async function listMailTemplates() {
-  return (await query({ KeyConditionExpression: 'pk = :p',
+  // TableName is NOT added by `query` — every caller passes it. Omitting it fails at runtime
+  // with "Value null at 'tableName'", which reached the browser as an empty list.
+  return (await query({ TableName: TABLE,
+                        KeyConditionExpression: 'pk = :p',
                         ExpressionAttributeValues: { ':p': 'MAILTEMPLATE' } }))
     .map(({ pk, sk, ...t }) => t);
 }
@@ -418,7 +421,8 @@ export async function deleteMailTemplate(id) {
 // One row per mail actually accepted by Gmail. Keyed by run so "did we send Central's statement
 // for September?" is one query. Nothing here is ever updated — a send happened or it did not.
 export async function listMailLog(runId) {
-  return (await query({ KeyConditionExpression: 'pk = :p',
+  return (await query({ TableName: TABLE,
+                        KeyConditionExpression: 'pk = :p',
                         ExpressionAttributeValues: { ':p': `MAILLOG#${runId}` } }))
     .map(({ pk, sk, ...m }) => m);
 }
