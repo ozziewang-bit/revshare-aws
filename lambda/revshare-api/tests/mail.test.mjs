@@ -301,3 +301,63 @@ test('a fixed batch warns, in the list itself, that nothing reaches a merchant',
   assert.match(src, /not to the merchants/,
     'the banner must say where the batch is actually going');
 });
+
+// ── The template decides what the send screen asks (2026-09-25) ────────────────────────────
+// "Select template first, and then develop details for each" (user, twice). A statement
+// attaches one merchant's figures for a period, so it needs a period. A plain message attaches
+// nothing and knows nothing about a run — asking for a period there is noise, and offering
+// {{payout}} is a promise that cannot be kept.
+const kindsIn = () => new Function(
+  app.slice(app.indexOf('const MAIL_KINDS'), app.indexOf('// Placeholders a template may use'))
+  + '\nreturn { MAIL_KINDS, mailKind };')();
+
+test('a template without a kind is treated as a statement', () => {
+  // Both existing templates predate the field; they must keep working as what they were.
+  const { mailKind } = kindsIn();
+  assert.equal(mailKind({}), 'statement');
+  assert.equal(mailKind({ kind: 'nonsense' }), 'statement');
+  assert.equal(mailKind(null), 'statement');
+  assert.equal(mailKind({ kind: 'message' }), 'message');
+});
+
+test('only a statement needs a period', () => {
+  const { MAIL_KINDS } = kindsIn();
+  assert.equal(MAIL_KINDS.statement.needsPeriod, true);
+  assert.equal(MAIL_KINDS.message.needsPeriod, false);
+});
+
+test('the send screen asks for the template FIRST and nothing else', () => {
+  // The first step must not carry a period: whether a period is even meaningful is decided by
+  // the answer to this question.
+  const src = grab('renderMailSendTab');
+  assert.match(src, /1 · Template/);
+  assert.ok(!src.includes('msend-run'), 'no period selector before a template is chosen');
+  assert.match(src, /renderMessageSend|renderStatementSend/, 'the kind routes to its own screen');
+});
+
+test('a plain message screen has no period and no attachment', () => {
+  const src = grab('renderMessageSend');
+  assert.ok(!src.includes('msend-run'), 'no period');
+  // Behaviour, not wording — the screen legitimately says the words "no attachment".
+  assert.ok(!/attachment:/.test(src), 'no attachment is passed to the message builder');
+  assert.ok(!/XLSX\.write/.test(src), 'and no statement file is built');
+  assert.match(src, /2 · Send to/, 'its second step is recipients, not a period');
+});
+
+test('a plain message sends each recipient their own copy', () => {
+  // One mail addressed to thirty merchants shows every one of them the others' addresses.
+  const src = grab('renderMessageSend');
+  assert.match(src, /for \(const to of list\)/, 'one message per recipient');
+  assert.match(src, /to: \[to\]/, 'each addressed only to itself');
+});
+
+test('a statement screen asks for the period as step 2', () => {
+  const src = grab('renderStatementSend');
+  assert.match(src, /2 · Period/);
+  assert.match(src, /3 · Send to/);
+});
+
+test('a statement template with no run says so instead of showing an empty list', () => {
+  const src = grab('renderStatementSend');
+  assert.match(src, /nothing to attach/);
+});

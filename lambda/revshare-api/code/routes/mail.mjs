@@ -6,7 +6,9 @@ const resp = (statusCode, body) => ({ statusCode, body: body === null ? '' : JSO
 // Mail templates are per region and edited in Settings. The app does not send from here — the
 // browser does, through the signed-in user's own Gmail — so this module only stores what to
 // write and records what went out.
-const WRITABLE = ['name', 'subject', 'body', 'fromAlias'];
+// `kind` decides what the send screen asks for: a statement needs a period and attaches a
+// file, a plain message needs neither.
+const WRITABLE = ['name', 'kind', 'subject', 'body', 'fromAlias'];
 
 export async function listMailTemplatesRoute() {
   const items = await listMailTemplates();

@@ -3983,7 +3983,8 @@ async function renderMailTemplatesTab(host) {
     list.innerHTML = templates.length ? templates.map((t, i) => `
       <div class="rc-item" style="margin-bottom:10px;">
         <strong>${escape(t.name || 'Untitled')}</strong>
-        <div class="muted" style="font-size:12.5px;">From ${escape(mailFromAlias(t) || '— no sender address for this region —')}</div>
+        <div class="muted" style="font-size:12.5px;">${escape(MAIL_KINDS[mailKind(t)].label)}
+          · from ${escape(mailFromAlias(t) || '— no sender address for this region —')}</div>
         <div style="font-size:13px;margin-top:4px;">${escape(t.subject || '')}</div>
         ${admin ? `<div style="margin-top:6px;display:flex;gap:6px;">
           <button class="btn-ghost mt-edit" data-i="${i}">Edit</button>
@@ -4010,6 +4011,11 @@ function editMailTemplate(t) {
       <div class="mail-row">
         <label><span>Name</span><input id="mt-name" value="${escape(t?.name || '')}"
           placeholder="Monthly statement"></label>
+        <label><span>Kind</span><select id="mt-kind">${Object.entries(MAIL_KINDS).map(([k, v]) =>
+          `<option value="${k}"${mailKind(t) === k ? ' selected' : ''}>${escape(v.label)}</option>`).join('')}</select></label>
+      </div>
+      <p class="mail-hint" id="mt-kind-help"></p>
+      <div class="mail-row">
         <label><span>Send from</span><input id="mt-from"
           value="${escape(t ? (t.fromAlias || '') : (DEFAULT_FROM_ALIAS[REGION] || ''))}"
           placeholder="${escape(DEFAULT_FROM_ALIAS[REGION] || 'no group address set for this region')}"></label>
@@ -4020,18 +4026,34 @@ function editMailTemplate(t) {
         placeholder="ChargeSpot revenue share — {{merchant}} — {{period}}"></label>
       <label><span>Message</span><textarea id="mt-body"
         placeholder="Dear {{entity}},&#10;&#10;Please find attached the revenue-share statement for {{period}}.">${escape(t?.body || '')}</textarea></label>
+      <details style="margin:-4px 0 14px;"><summary class="muted" style="font-size:12.5px;">Placeholders</summary>
+        <p class="muted" id="mt-placeholders" style="font-size:12.5px;line-height:1.7;"></p></details>
       <p class="nm-err" id="mt-err" hidden></p>
       <div class="mail-actions">
         <button id="mt-cancel" class="btn-ghost">Cancel</button>
         <button id="mt-save" class="btn-primary">Save</button>
       </div>
     </div>`;
+  // The help under Kind, and the placeholder list, both follow the choice — a message must not
+  // advertise {{payout}}, which it has no run to fill in.
+  const kindHelp = () => {
+    const k = card.querySelector('#mt-kind').value;
+    card.querySelector('#mt-kind-help').textContent = MAIL_KINDS[k].help;
+    const ph = card.querySelector('#mt-placeholders');
+    if (ph) ph.innerHTML = MAIL_PLACEHOLDERS
+      .filter(([key]) => k === 'statement' || !MAIL_RUN_PLACEHOLDERS.includes(key.slice(2, -2)))
+      .map(([key, d]) => `<code>${escape(key)}</code> — ${escape(d)}`).join('<br>');
+  };
+  card.querySelector('#mt-kind').addEventListener('change', kindHelp);
+  kindHelp();
+
   card.querySelector('#mt-cancel').addEventListener('click', close);
   card.querySelector('#mt-save').addEventListener('click', async () => {
     const err = card.querySelector('#mt-err');
     const payload = {
       id: t?.id,
       name: card.querySelector('#mt-name').value.trim(),
+      kind: card.querySelector('#mt-kind').value,
       fromAlias: card.querySelector('#mt-from').value.trim(),
       subject: card.querySelector('#mt-subject').value.trim(),
       body: card.querySelector('#mt-body').value,
@@ -4084,30 +4106,53 @@ function effectiveRecipients(contractId) {
 // Still ONE MERCHANT AT A TIME. The list makes the job findable; it does not make it bulk.
 async function renderMailSendTab(host) {
   host.innerHTML = '<p class="muted">Loading…</p>';
-  let runs, templates;
+  let templates;
   try {
-    [runs, templates] = await Promise.all([api('/bulk-runs'), loadMailTemplates()]);
+    templates = await loadMailTemplates();
   } catch (e) {
     host.innerHTML = `<p class="nm-err">Could not load this screen: ${escape(e.message)}</p>`;
     return;
   }
-  if (!runs.length) {
-    host.innerHTML = '<p class="muted">No run has been computed yet — statements are built from a run.</p>';
-    return;
-  }
   if (!templates.length) {
     host.innerHTML = '<p class="muted">No mail template yet. Add one under <strong>Templates</strong> — '
-      + 'it holds the subject and wording, and this screen fills in each merchant.</p>';
+      + 'the template decides what is sent and what this screen needs to ask you.</p>';
+    return;
+  }
+  // STEP ONE, on its own. What the template IS decides everything below it: a statement needs a
+  // period because it attaches one merchant's figures for that period; a plain message needs
+  // neither, and asking for a period there is noise.
+  host.innerHTML = `
+    <div class="mail-form" style="max-width:420px;">
+      <label><span>1 · Template</span><select id="msend-tpl">${templates.map((t, i) =>
+        `<option value="${i}">${escape(t.name || t.subject || 'Untitled')} — ${escape(MAIL_KINDS[mailKind(t)].label)}</option>`).join('')}</select></label>
+    </div>
+    <div id="msend-step2"></div>`;
+  const onTemplate = () => {
+    const t = templates[Number(document.getElementById('msend-tpl').value) || 0];
+    MAIL_SEND_TO = { mode: 'merchant', addresses: [] };
+    if (mailKind(t) === 'message') renderMessageSend(document.getElementById('msend-step2'), t);
+    else renderStatementSend(document.getElementById('msend-step2'), t);
+  };
+  host.querySelector('#msend-tpl').addEventListener('change', onTemplate);
+  onTemplate();
+}
+
+// A STATEMENT: attaches each merchant's own figures, so it needs a period, and the list is the
+// merchants that run paid.
+async function renderStatementSend(host, template) {
+  host.innerHTML = '<p class="muted">Loading…</p>';
+  const runs = await api('/bulk-runs').catch(() => []);
+  if (!runs.length) {
+    host.innerHTML = '<p class="muted">This template attaches a statement, and no run has been '
+      + 'computed yet — so there is nothing to attach.</p>';
     return;
   }
   runs.sort((a, b) => (b.periodStart || '').localeCompare(a.periodStart || ''));
   host.innerHTML = `
-    <div class="mail-form" style="display:grid;grid-template-columns:1fr 1fr 1.2fr;gap:0 14px;max-width:920px;">
-      <label><span>Template</span><select id="msend-tpl">${templates.map((t, i) =>
-        `<option value="${i}">${escape(t.name || t.subject || 'Untitled')}</option>`).join('')}</select></label>
-      <label><span>Period</span><select id="msend-run">${runs.map(r =>
+    <div class="mail-form" style="display:grid;grid-template-columns:1fr 1.2fr;gap:0 14px;max-width:760px;">
+      <label><span>2 · Period</span><select id="msend-run">${runs.map(r =>
         `<option value="${escape(r.runId)}">${escape(periodTag(r.periodStart))}</option>`).join('')}</select></label>
-      <label><span>Send to</span>
+      <label><span>3 · Send to</span>
         <div style="display:flex;gap:6px;">
           <select id="msend-mode" style="flex:1;">
             <option value="merchant">Each merchant’s own address</option>
@@ -4118,7 +4163,7 @@ async function renderMailSendTab(host) {
     </div>
     <div id="msend-banner"></div>
     <div id="msend-list">Loading…</div>`;
-  const draw = () => drawMailSendList(document.getElementById('msend-run').value);
+  const draw = () => drawMailSendList(document.getElementById('msend-run').value, template);
   host.querySelector('#msend-run').addEventListener('change', draw);
   host.querySelector('#msend-mode').addEventListener('change', (ev) => {
     MAIL_SEND_TO.mode = ev.target.value;
@@ -4127,10 +4172,71 @@ async function renderMailSendTab(host) {
     else draw();
   });
   host.querySelector('#msend-pick').addEventListener('click', () => pickSendAddresses(draw));
-  // Mode is per visit, not remembered: a test set left switched on from yesterday, silently
-  // applying to a real send, is the worst outcome this screen has.
-  MAIL_SEND_TO = { mode: 'merchant', addresses: [] };
   draw();
+}
+
+// A PLAIN MESSAGE: no attachment, no run, no period. Just who it goes to and what it says. Each
+// recipient gets their OWN message — one mail addressed to thirty merchants would show every
+// one of them the others' addresses.
+async function renderMessageSend(host, template) {
+  await ensureContractCache().catch(() => {});
+  host.innerHTML = `
+    <div class="mail-form" style="max-width:760px;">
+      <label><span>2 · Send to</span>
+        <div style="display:flex;gap:6px;align-items:center;">
+          <button type="button" id="mmsg-pick" class="btn">Choose addresses…</button>
+          <span class="mail-meta" id="mmsg-count" style="margin:0;"></span>
+        </div></label>
+      <label><span>3 · Subject</span><input id="mmsg-subject"
+        value="${escape(renderTemplate(template.subject, { merchant: '', entity: '' }))}"></label>
+      <label><span>Message</span><textarea id="mmsg-body">${escape(template.body || '')}</textarea></label>
+      <p class="mail-meta">From ${escape(mailFromAlias(template) || '— no sender address —')}
+        · no attachment · each recipient gets their own copy, so nobody sees the others.</p>
+      <p class="nm-err" id="mmsg-err" hidden></p>
+      <div class="mail-actions"><button id="mmsg-send" class="btn-primary" disabled>Send</button></div>
+    </div>`;
+
+  const refresh = () => {
+    const n = MAIL_SEND_TO.addresses.length;
+    host.querySelector('#mmsg-count').textContent = n
+      ? `${n} recipient${n === 1 ? '' : 's'}: ${MAIL_SEND_TO.addresses.join(', ')}`
+      : 'nobody chosen yet';
+    host.querySelector('#mmsg-send').disabled = !n;
+  };
+  host.querySelector('#mmsg-pick').addEventListener('click', () => {
+    MAIL_SEND_TO.mode = 'fixed';
+    pickSendAddresses(refresh);
+  });
+  refresh();
+
+  host.querySelector('#mmsg-send').addEventListener('click', async () => {
+    const btn = host.querySelector('#mmsg-send'), err = host.querySelector('#mmsg-err');
+    const list = MAIL_SEND_TO.addresses.slice();
+    const from = mailFromAlias(template);
+    if (!from) { err.hidden = false; err.textContent = 'This template has no sender address.'; return; }
+    if (!confirm(`Send this message to ${list.length} recipient(s)? It cannot be unsent.`)) return;
+    btn.disabled = true; err.hidden = true;
+    let sentCount = 0;
+    for (const to of list) {
+      btn.textContent = `Sending ${sentCount + 1} of ${list.length}…`;
+      try {
+        await sendGmail(buildMimeMessage({
+          from, to: [to],
+          subject: host.querySelector('#mmsg-subject').value,
+          body: host.querySelector('#mmsg-body').value,
+        }));
+        sentCount++;
+      } catch (e) {
+        // Stop at the first failure rather than ploughing on: the rest can be retried, and a
+        // half-sent batch nobody was told about is worse than a short one.
+        err.hidden = false;
+        err.textContent = `Sent ${sentCount} of ${list.length}. Stopped at ${to}: ${e.message}`;
+        btn.disabled = false; btn.textContent = 'Send';
+        return;
+      }
+    }
+    btn.textContent = `Sent to ${sentCount}`;
+  });
 }
 
 // Choose the fixed set: any address the app holds for any merchant, plus anything typed. Shows
@@ -4196,7 +4302,7 @@ function pickSendAddresses(onDone) {
   });
 }
 
-async function drawMailSendList(runId) {
+async function drawMailSendList(runId, template) {
   const box = document.getElementById('msend-list');
   if (!box) return;
   box.innerHTML = '<p class="muted">Loading…</p>';
@@ -4256,8 +4362,7 @@ async function drawMailSendList(runId) {
 
   box.querySelectorAll('.msend-btn').forEach(b => b.addEventListener('click', () => {
     const r = (run.results || []).find(x => x.contractId === b.dataset.cid);
-    const tplIdx = Number(document.getElementById('msend-tpl')?.value) || 0;
-    if (r) mailSendDialog(r, run, sent.get(r.contractId)?.sentAt || null, tplIdx);
+    if (r) mailSendDialog(r, run, sent.get(r.contractId)?.sentAt || null, template);
   }));
 }
 
@@ -4292,7 +4397,7 @@ const DEFAULT_FROM_ALIAS = { th: 'partner.th@inforich.com', sg: '' };
 // where the field was cleared — still sends rather than failing at the last step.
 const mailFromAlias = (t) => ((t && t.fromAlias) || DEFAULT_FROM_ALIAS[REGION] || '').trim();
 
-function mailSendDialog(result, run, sentAlready, templateIndex) {
+function mailSendDialog(result, run, sentAlready, template) {
   const recipients = effectiveRecipients(result.contractId);
   const { card, close } = ctModal(720);
   const vars = mailVarsFor(result, run);
@@ -4307,15 +4412,12 @@ function mailSendDialog(result, run, sentAlready, templateIndex) {
     return;
   }
 
-  const chosen = Number.isInteger(templateIndex) ? templateIndex : 0;
-  const opts = MAIL_TEMPLATES.map((t, i) =>
-    `<option value="${i}"${i === chosen ? ' selected' : ''}>${escape(t.name || t.subject || 'Untitled')}</option>`).join('');
+
   card.innerHTML = `
     <h3 style="margin:0 0 4px;">Send statement — ${escape(result.merchantName)}</h3>
     <p class="muted" style="margin:0 0 12px;font-size:12.5px;">This goes to the merchant. It cannot be unsent.</p>
     ${sentAlready ? `<p class="mail-warn">Already sent ${escape(sentAlready)} — sending again delivers a second copy.</p>` : ''}
     <div class="mail-form">
-      <label><span>Template</span><select id="ms-tpl">${opts}</select></label>
       <fieldset class="mail-to">
         <legend>To</legend>
         <p style="margin:0;font-size:13px;">${escape(recipients.join(', ')) || '<span class="rc-warn">nobody</span>'}</p>
@@ -4335,24 +4437,18 @@ function mailSendDialog(result, run, sentAlready, templateIndex) {
     </div>`;
 
   const $ = (id) => card.querySelector(id);
-  const fill = () => {
-    const t = MAIL_TEMPLATES[Number($('#ms-tpl').value) || 0];
-    $('#ms-subject').value = renderTemplate(t.subject, vars);
-    $('#ms-body').value = renderTemplate(t.body, vars);
-    $('#ms-meta').textContent =
-      `From ${mailFromAlias(t) || '(no sender alias set on this template)'}`
-      + ` · attaching ${result.merchantName}.xlsx`;
-  };
-  $('#ms-tpl').addEventListener('change', fill);
-  fill();
+  $('#ms-subject').value = renderTemplate(template.subject, vars);
+  $('#ms-body').value = renderTemplate(template.body, vars);
+  $('#ms-meta').textContent =
+    `From ${mailFromAlias(template) || '(no sender address on this template)'}`
+    + ` · attaching ${result.merchantName}.xlsx`;
 
   $('#ms-cancel').addEventListener('click', close);
 
   $('#ms-send').addEventListener('click', async () => {
     const btn = $('#ms-send'), err = $('#ms-err');
-    const t = MAIL_TEMPLATES[Number($('#ms-tpl').value) || 0];
     const recipients = effectiveRecipients(result.contractId);
-    const from = mailFromAlias(t);
+    const from = mailFromAlias(template);
     const fail = (m) => { err.hidden = false; err.textContent = m; btn.disabled = false; btn.textContent = 'Send'; };
     btn.disabled = true; btn.textContent = 'Sending…'; err.hidden = true;
     if (!recipients.length) return fail('No recipient chosen. Tick an address, or type one above.');
@@ -4393,8 +4489,28 @@ function mailSendDialog(result, run, sentAlready, templateIndex) {
 // workaround, and that rejection is reported verbatim rather than translated.
 const GMAIL_SCOPE = 'https://www.googleapis.com/auth/gmail.send';
 
+// A template's KIND decides what the send screen needs. A statement attaches one merchant's
+// figures, so it needs a period and can use the run's numbers. A message attaches nothing and
+// knows nothing about a run — asking for a period there is noise, and offering {{payout}} is a
+// promise that cannot be kept.
+const MAIL_KINDS = {
+  statement: {
+    label: 'Revenue-share statement',
+    help: 'Attaches that merchant’s statement for a period, and can use the run’s figures.',
+    needsPeriod: true,
+  },
+  message: {
+    label: 'Plain message',
+    help: 'No attachment and no period — just a note to the addresses you choose.',
+    needsPeriod: false,
+  },
+};
+const mailKind = (t) => (t && MAIL_KINDS[t.kind]) ? t.kind : 'statement';
+
 // Placeholders a template may use. Kept as an explicit list because it is also the help text
-// shown in the editor: an undocumented placeholder is one nobody uses.
+// shown in the editor: an undocumented placeholder is one nobody uses. The run-derived ones are
+// only offered to a statement — a message has no run to read them from.
+const MAIL_RUN_PLACEHOLDERS = ['period', 'payout', 'revenue', 'sharePct', 'currency'];
 const MAIL_PLACEHOLDERS = [
   ['{{merchant}}',  "the merchant's name"],
   ['{{entity}}',    'the contract entity the payout is settled with'],
