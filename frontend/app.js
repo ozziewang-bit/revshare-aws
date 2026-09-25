@@ -4297,11 +4297,12 @@ async function drawMailSendList(runId, template) {
     else noFinance.push(r);
   }
 
-  const row = (r, extra) => `<tr>
+  const row = (r, extra, actions = '') => `<tr>
     <td>${escape(contractEntityFor(r.contractId) || '—')}</td>
     <td><strong>${escape(r.merchantName)}</strong></td>
     <td class="rc-c-money">${fmt2(r.payout)}</td>
-    <td>${extra}</td></tr>`;
+    <td class="msend-to">${extra}</td>
+    <td class="msend-actions">${actions}</td></tr>`;
 
   // What is left, in one line, so the state of the month is readable without counting rows.
   const progress = document.getElementById('msend-progress');
@@ -4319,23 +4320,25 @@ async function drawMailSendList(runId, template) {
     <section style="margin-top:18px;">
       <h3 style="display:flex;align-items:baseline;gap:10px;margin:0 0 6px;font-size:14px;">
         ${escape(title)} <span class="rc-count">${rows.length}</span></h3>
-      <table class="ts"><thead><tr>
-        <th>Contract entity</th><th>Merchant</th><th class="rc-c-money">Payout</th><th>${escape(tone)}</th>
+      <table class="ts msend-table"><thead><tr>
+        <th>Contract entity</th><th>Merchant</th><th class="rc-c-money">Payout</th>
+        <th>${escape(tone)}</th><th></th>
       </tr></thead><tbody>${body}</tbody></table>
     </section>` : '';
 
   box.innerHTML =
     section('Ready to send', ready, 'To', ready.map(r => row(r,
-      `${escape(effectiveRecipients(r.contractId).join(', '))}
-       <button class="btn-ghost mprev-btn" data-cid="${escape(r.contractId)}" style="margin-left:8px;">Preview</button>
+      escape(effectiveRecipients(r.contractId).join(', ')),
+      `<button class="btn-ghost mprev-btn" data-cid="${escape(r.contractId)}">Preview</button>
        <button class="btn-ghost msend-btn" data-cid="${escape(r.contractId)}">Send…</button>`)).join(''))
     + section('Already sent', done, 'Sent', done.map(r => {
         const m = sent.get(r.contractId);
-        return row(r, `${escape(m.sentAt ? new Date(m.sentAt).toLocaleString('en-GB',
-          { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '')}
-          to ${escape(m.to || '')} by ${escape(m.sentBy || '')}
-          <button class="btn-ghost mprev-btn" data-cid="${escape(r.contractId)}" style="margin-left:8px;">Preview</button>
-          <button class="btn-ghost msend-btn" data-cid="${escape(r.contractId)}">Send again…</button>`);
+        return row(r,
+          `${escape(m.sentAt ? new Date(m.sentAt).toLocaleString('en-GB',
+             { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '')}
+           to ${escape(m.to || '')} <span class="muted">by ${escape(m.sentBy || '')}</span>`,
+          `<button class="btn-ghost mprev-btn" data-cid="${escape(r.contractId)}">Preview</button>
+           <button class="btn-ghost msend-btn" data-cid="${escape(r.contractId)}">Send again…</button>`);
       }).join(''))
     + section('No finance email', noFinance, 'What is on file', noFinance.map(r => {
         const other = fallbackContact(r.contractId);

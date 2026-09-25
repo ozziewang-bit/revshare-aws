@@ -636,3 +636,16 @@ test('every table cell the send list builds is opened and closed', () => {
   const trc = (src.match(/<\/tr>/g) || []).length;
   assert.equal(tr, trc, `${tr} <tr> against ${trc} </tr>`);
 });
+
+// ── Actions belong in their own column (2026-09-25) ────────────────────────────────────────
+// With the address and the buttons in ONE cell, a long address pushed the buttons onto a second
+// line and no two rows lined up — worst on 'account@hanumanworldphuket.com'.
+test('the send list puts actions in a column of their own', () => {
+  const src = grab('drawMailSendList').replace(/\/\/.*$/gm, '');
+  assert.match(src, /class="msend-actions"/, 'actions have their own cell');
+  const header = src.slice(src.indexOf('<thead>'), src.indexOf('</thead>'));
+  assert.equal((header.match(/<th[ >]/g) || []).length, 5,   // not /<th/, which matches <thead
+    'five headers: entity, merchant, payout, the reason column, and actions');
+  const rowFn = src.slice(src.indexOf('const row ='), src.indexOf('const section'));
+  assert.equal((rowFn.match(/<td/g) || []).length, 5, 'and five cells to match');
+});

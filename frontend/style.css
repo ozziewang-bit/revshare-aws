@@ -1217,3 +1217,17 @@ p.rc-warn {
 .msend-progress { margin: 14px 0 4px; font-size: 13px; color: var(--ink-soft); }
 .msend-progress strong { color: var(--ink); }
 .msend-done { color: var(--gain); font-weight: 600; }
+
+/* The send list. Actions have their own column so a long address cannot push the buttons onto
+   a second line — with one cell holding both, no two rows lined up. */
+.msend-table { table-layout: fixed; width: 100%; }
+.msend-table th, .msend-table td { vertical-align: middle; }
+.msend-table th:nth-child(1), .msend-table td:nth-child(1) { width: 26%; }
+.msend-table th:nth-child(2), .msend-table td:nth-child(2) { width: 16%; }
+.msend-table th:nth-child(3), .msend-table td:nth-child(3) { width: 11%; }
+.msend-table th:nth-child(4), .msend-table td:nth-child(4) { width: 31%; }
+.msend-table th:nth-child(5), .msend-table td:nth-child(5) { width: 16%; }
+.msend-to { word-break: break-word; }
+/* One line, right-aligned, so every row's buttons sit in the same place down the page. */
+.msend-actions { white-space: nowrap; text-align: right; }
+.msend-actions .btn-ghost { margin-left: 6px; }
