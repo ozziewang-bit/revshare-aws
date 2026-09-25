@@ -3946,14 +3946,17 @@ async function renderMailSentTab(host) {
     return;
   }
   host.innerHTML = `<table class="ts"><thead><tr>
-      <th>Sent</th><th>Period</th><th>Merchant</th><th>To</th><th>Subject</th><th>By</th>
+      <th>Sent</th><th>Period</th><th>Merchant</th><th class="rc-c-money">Payout quoted</th>
+      <th>To</th><th>Attached</th><th>By</th>
     </tr></thead><tbody>${logs.map(m => `<tr>
       <td>${escape(m.sentAt ? new Date(m.sentAt).toLocaleString('en-GB',
             { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '')}</td>
       <td>${escape(m.period || '')}</td>
       <td>${escape(m.merchantName || '')}</td>
+      <td class="rc-c-money">${m.payout == null ? '<span class="muted">—</span>' : escape(fmt2(m.payout))}</td>
       <td>${escape(m.to || '')}</td>
-      <td>${escape(m.subject || '')}</td>
+      <td>${escape(m.attachment || '')}${m.attachmentRows != null
+            ? ` <span class="muted">(${escape(String(m.attachmentRows))} rows)</span>` : ''}</td>
       <td>${escape(m.sentBy || '')}</td>
     </tr>`).join('')}</tbody></table>`;
 }
@@ -4329,11 +4332,17 @@ async function drawMailSendList(runId, template) {
   const fixed = MAIL_SEND_TO.mode === 'fixed';
   const banner = document.getElementById('msend-banner');
   if (banner) {
-    banner.innerHTML = fixed
+    const owners = fixed ? fixedSetOwners(MAIL_SEND_TO.addresses) : [];
+    banner.innerHTML = !fixed ? '' : owners.length
+      // A chosen address that belongs to a merchant means statements WILL reach a merchant —
+      // and the wrong one. Saying "nothing reaches a merchant" here would be a false comfort.
       ? `<p class="mail-warn" style="max-width:920px;">Every statement below goes to
+          <strong>${escape(MAIL_SEND_TO.addresses.join(', '))}</strong>.
+          <strong>${escape(owners.join('; '))}</strong> belongs to a merchant — every merchant’s
+          figures would be sent to it. Remove it unless that is genuinely intended.</p>`
+      : `<p class="mail-warn" style="max-width:920px;">Every statement below goes to
           <strong>${escape(MAIL_SEND_TO.addresses.join(', ') || 'nobody — none chosen')}</strong>,
-          not to the merchants. Nothing reaches a merchant while this is set.</p>`
-      : '';
+          not to the merchants. Nothing reaches a merchant while this is set.</p>`;
   }
 
   const ready = [], done = [], noFinance = [];
@@ -4447,6 +4456,50 @@ function statementWorkbook(result, index) {
                       index.kaByStore),
     sanitizeFilename(result.merchantName).replace(SHEET_SAFE, '-').slice(0, 31));
   return new Uint8Array(XLSX.write(wb, { bookType: 'xlsx', type: 'array' }));
+}
+
+// Nothing here is recoverable: a statement sent to the wrong merchant cannot be recalled, and
+// the merchant who receives someone else's payout figures is the one who tells you about it.
+// So the checks below run at the moment of sending, against the values actually about to be
+// used — not against what the screen showed a minute ago.
+//
+// Returns a list of reasons this send must NOT happen. Empty means go.
+function statementSendBlockers(result, run, recipients, attachmentFor) {
+  const problems = [];
+
+  // 1. The file must belong to the merchant named in the letter. Both come from `result`, so
+  //    this can only fail if some future change threads a different row into one of them —
+  //    which is exactly the change that would otherwise ship silently.
+  if (attachmentFor !== result.contractId) {
+    problems.push(`The attached file was built for a different merchant (${attachmentFor || 'unknown'}).`);
+  }
+
+  // 2. In merchant mode every recipient must be one of THIS merchant's own finance addresses.
+  //    Sending 7-Eleven's payout to IMPACT is the worst thing this screen could do, and the
+  //    addresses are compared here rather than trusted from the row that was clicked.
+  if (MAIL_SEND_TO.mode !== 'fixed') {
+    const own = new Set(mailRecipients(result.contractId).map(a => a.toLowerCase()));
+    const strangers = recipients.filter(a => !own.has(a.toLowerCase()));
+    if (strangers.length) {
+      problems.push(`${strangers.join(', ')} is not a finance address for ${result.merchantName}.`);
+    }
+  }
+
+  if (!recipients.length) problems.push('There is no recipient.');
+  if (!run || !run.runId) problems.push('This send is not attached to a run.');
+  return problems;
+}
+
+// Does a fixed set belong to a merchant? If so the banner must not claim nothing reaches a
+// merchant — it would be a reassurance that is false.
+function fixedSetOwners(addresses) {
+  const owners = [];
+  for (const k of allMerchantAddresses()) {
+    if ((addresses || []).some(a => a.toLowerCase() === k.address.toLowerCase())) {
+      owners.push(`${k.address} (${k.merchants.join(', ')})`);
+    }
+  }
+  return owners;
 }
 
 // Exactly what this merchant would receive, with nothing to press by accident. The send dialog
@@ -4591,17 +4644,40 @@ function mailSendDialog(result, run, sentAlready, template) {
     try {
       // The same file the download produces, from the same function — including the
       // rental-by-rental block, which this used to omit while the wording promised it.
-      const bytes = statementWorkbook(result, await runOrderIndex(run));
+      const index = await runOrderIndex(run);
+      const bytes = statementWorkbook(result, index);
       const filename = `${sanitizeFilename(result.merchantName)}.xlsx`;
+
+      // Checked against what is about to be sent, not what was rendered.
+      const blockers = statementSendBlockers(result, run, recipients, result.contractId);
+      if (blockers.length) return fail('Not sent — ' + blockers.join(' '));
+
+      const rows = index.orders ? (index.ordersByContract.get(result.contractId) || []).length : 0;
+      const ok = confirm(
+        `Send this statement?\n\n`
+        + `Merchant:   ${result.merchantName}\n`
+        + `Period:     ${periodTag(run.periodStart)}\n`
+        + `Payout:     ${fmt2(result.payout)} ${vars.currency}\n`
+        + `To:         ${recipients.join(', ')}\n`
+        + `From:       ${from}\n`
+        + `Attached:   ${filename} (${rows ? rows + ' rental rows' : 'summary only'})\n\n`
+        + `This cannot be unsent.`);
+      if (!ok) { btn.disabled = false; btn.textContent = 'Send'; return; }
+
       const sent = await sendGmail(buildMimeMessage({
         from, to: recipients, subject: $('#ms-subject').value,
         body: $('#ms-body').value, filename, attachment: bytes,
       }));
       await api(`/bulk-runs/${encodeURIComponent(run.runId)}/mail-log`, {
         method: 'POST',
+        // Enough to reconcile the Sent log against the run itself: which merchant, which
+        // period, and what figure the letter quoted. Without the amount, "we sent it" cannot be
+        // checked against "we sent the right one".
         body: JSON.stringify({ contractId: result.contractId, merchantName: result.merchantName,
                                to: recipients.join(', '), subject: $('#ms-subject').value,
-                               attachment: filename, gmailId: sent.id, fromAlias: from }),
+                               attachment: filename, gmailId: sent.id, fromAlias: from,
+                               period: periodTag(run.periodStart), payout: Number(result.payout) || 0,
+                               attachmentRows: rows }),
       });
       close();
       drawMailSendList(run.runId);

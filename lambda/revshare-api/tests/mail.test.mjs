@@ -425,8 +425,8 @@ test('every row that has a mail offers a preview of it', () => {
 // letter would have found the letter wrong. Both paths now go through one builder.
 test('mail and download build the statement from the same function', () => {
   const send = grab('mailSendDialog');
-  assert.match(send, /statementWorkbook\(result, await runOrderIndex\(run\)\)/,
-    'the mail builds the shared workbook');
+  assert.match(send, /statementWorkbook\(result, index\)/, 'the mail builds the shared workbook');
+  assert.match(send, /await runOrderIndex\(run\)/, 'from the run\u2019s own order index');
   assert.ok(!/buildPartnerSheet\(XLSX, result, null/.test(send),
     'and never passes null orders, which is what dropped the rental rows');
 });
@@ -453,4 +453,82 @@ test('the preview states what the attachment will actually contain', () => {
   const src = grab('mailPreviewDialog');
   assert.match(src, /rental row/);
   assert.match(src, /summary only/);
+});
+
+// ── Nothing here is recoverable (2026-09-25) ───────────────────────────────────────────────
+// "We cannot afford a wrong file or any mistake" (user). A statement sent to the wrong merchant
+// cannot be recalled, and the merchant who receives someone else's payout figures is the one
+// who tells you. These run at the MOMENT of sending, against the values actually about to be
+// used — not against what the screen showed a minute ago.
+const blockersIn = (contracts, state) => new Function('CONTRACTS', 'MAIL_SEND_TO',
+  grab('splitAddresses') + '\n' + grab('mailRecipients') + '\n'
+  + grab('statementSendBlockers') + '\nreturn statementSendBlockers;')(contracts, state);
+
+const RUN = { runId: 'r1', periodStart: '2026-08-01' };
+const SEVEN = { contractId: 'c1', merchantName: '7-Eleven' };
+const BOOKS = [
+  { contractId: 'c1', merchantName: '7-Eleven', financeContactEmail: 'wiparatron@cpall.co.th' },
+  { contractId: 'c2', merchantName: 'IMPACT', financeContactEmail: 'ap@impact.co.th' },
+];
+
+test('a clean send has nothing blocking it', () => {
+  const f = blockersIn(BOOKS, { mode: 'merchant', addresses: [] });
+  assert.deepEqual(f(SEVEN, RUN, ['wiparatron@cpall.co.th'], 'c1'), []);
+});
+
+test('a file built for another merchant blocks the send', () => {
+  // The letter and the file both come from one row today, so this can only fail if a future
+  // change threads a different row into one of them — which is exactly the change that would
+  // otherwise ship silently.
+  const f = blockersIn(BOOKS, { mode: 'merchant', addresses: [] });
+  const out = f(SEVEN, RUN, ['wiparatron@cpall.co.th'], 'c2');
+  assert.equal(out.length, 1);
+  assert.match(out[0], /built for a different merchant/);
+});
+
+test('another merchant’s address blocks the send', () => {
+  // Sending 7-Eleven's payout figures to IMPACT is the worst thing this screen could do.
+  const f = blockersIn(BOOKS, { mode: 'merchant', addresses: [] });
+  const out = f(SEVEN, RUN, ['ap@impact.co.th'], 'c1');
+  assert.equal(out.length, 1);
+  assert.match(out[0], /not a finance address for 7-Eleven/);
+});
+
+test('a deliberate fixed set is allowed, because that is what it is for', () => {
+  // Test sends go somewhere that is not the merchant's address ON PURPOSE. The banner carries
+  // the warning there; blocking it would make testing impossible.
+  const f = blockersIn(BOOKS, { mode: 'fixed', addresses: ['ozzie.wang@inforich.com'] });
+  assert.deepEqual(f(SEVEN, RUN, ['ozzie.wang@inforich.com'], 'c1'), []);
+});
+
+test('no recipient and no run both block', () => {
+  const f = blockersIn(BOOKS, { mode: 'merchant', addresses: [] });
+  assert.match(f(SEVEN, RUN, [], 'c1').join(' '), /no recipient/i);
+  assert.match(f(SEVEN, null, ['wiparatron@cpall.co.th'], 'c1').join(' '), /not attached to a run/);
+});
+
+test('a fixed set containing a merchant address is named, not reassured away', () => {
+  // The banner used to say "nothing reaches a merchant" unconditionally. If the chosen address
+  // belongs to IMPACT, every merchant's figures would reach IMPACT — the opposite of comfort.
+  const f = new Function('CONTRACTS',
+    grab('splitAddresses') + '\n' + grab('allMerchantAddresses') + '\n'
+    + grab('fixedSetOwners') + '\nreturn fixedSetOwners;')(BOOKS);
+  assert.deepEqual(f(['ozzie.wang@inforich.com']), []);
+  assert.match(f(['ap@impact.co.th'])[0], /IMPACT/);
+});
+
+test('the send restates merchant, period, payout and recipient before it goes', () => {
+  const src = grab('mailSendDialog');
+  for (const line of ['Merchant:', 'Period:', 'Payout:', 'To:', 'Attached:']) {
+    assert.ok(src.includes(line), `the confirmation must restate ${line}`);
+  }
+  assert.match(src, /cannot be unsent/);
+});
+
+test('the log records enough to check that the RIGHT one was sent', () => {
+  // "We sent it" is not the same claim as "we sent the right one".
+  const src = grab('mailSendDialog');
+  for (const field of ['period:', 'payout:', 'attachmentRows:']) {
+    assert.ok(src.includes(field), `the mail log must record ${field}`);
+  }
 });

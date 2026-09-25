@@ -50,6 +50,11 @@ export async function createMailLogRoute(event) {
     to: body.to,
     subject: body.subject || null,
     attachment: body.attachment || null,
+    // Recorded so the log can be reconciled against the run itself: "we sent it" is not the
+    // same claim as "we sent the right one".
+    period: body.period || null,
+    payout: typeof body.payout === 'number' ? body.payout : null,
+    attachmentRows: typeof body.attachmentRows === 'number' ? body.attachmentRows : null,
     gmailId: body.gmailId || null,
     fromAlias: body.fromAlias || null,
     sentAt: new Date().toISOString(),
