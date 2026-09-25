@@ -3994,7 +3994,8 @@ async function renderMailTemplatesTab(host) {
       <div class="rc-item" style="margin-bottom:10px;">
         <strong>${escape(t.name || 'Untitled')}</strong>
         <div class="muted" style="font-size:12.5px;">${escape(MAIL_KINDS[mailKind(t)].label)}
-          · from ${escape(mailFromAlias(t) || '— no sender address for this region —')}</div>
+          · from ${escape(mailFromAlias(t) || '— no sender address for this region —')}
+          ${t.attachmentName ? `· attaches ${escape(t.attachmentName)} (${escape(fileSizeLabel(t.attachmentSize))})` : ''}</div>
         <div style="font-size:13px;margin-top:4px;">${escape(t.subject || '')}</div>
         ${admin ? `<div style="margin-top:6px;display:flex;gap:6px;">
           <button class="btn-ghost mt-edit" data-i="${i}">Edit</button>
@@ -4034,6 +4035,17 @@ function editMailTemplate(t) {
         sending has verified in Gmail under “Send mail as”, or Gmail refuses the message.</p>
       <label><span>Subject</span><input id="mt-subject" value="${escape(t?.subject || '')}"
         placeholder="ChargeSpot revenue share — {{merchant}} — {{period}}"></label>
+      <div id="mt-attach-row"${mailKind(t) === 'message' ? '' : ' hidden'}>
+        <label><span>Attachment</span>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <input type="file" id="mt-file" style="flex:1;">
+            ${t?.attachmentName ? `<button type="button" id="mt-file-clear" class="btn-ghost">Remove</button>` : ''}
+          </div></label>
+        <p class="mail-hint" id="mt-attach-now">${t?.attachmentName
+          ? `Currently sending <strong>${escape(t.attachmentName)}</strong>
+             (${escape(fileSizeLabel(t.attachmentSize))}). Choose a file to replace it.`
+          : 'Optional. Sent with every message using this template. Up to 5 MB.'}</p>
+      </div>
       <label><span>Message</span><textarea id="mt-body"
         placeholder="Dear {{entity}},&#10;&#10;Please find attached the revenue-share statement for {{period}}.">${escape(t?.body || '')}</textarea></label>
       <details style="margin:-4px 0 14px;"><summary class="muted" style="font-size:12.5px;">Placeholders</summary>
@@ -4054,8 +4066,22 @@ function editMailTemplate(t) {
       .filter(([key]) => k === 'statement' || !MAIL_RUN_PLACEHOLDERS.includes(key.slice(2, -2)))
       .map(([key, d]) => `<code>${escape(key)}</code> — ${escape(d)}`).join('<br>');
   };
-  card.querySelector('#mt-kind').addEventListener('change', kindHelp);
+  card.querySelector('#mt-kind').addEventListener('change', () => {
+    kindHelp();
+    // A statement already attaches the merchant's own figures; a second fixed file would raise
+    // the question of which one matters.
+    const row = card.querySelector('#mt-attach-row');
+    if (row) row.hidden = card.querySelector('#mt-kind').value !== 'message';
+  });
   kindHelp();
+
+  let clearAttachment = false;
+  card.querySelector('#mt-file-clear')?.addEventListener('click', () => {
+    clearAttachment = true;
+    card.querySelector('#mt-file').value = '';
+    card.querySelector('#mt-attach-now').innerHTML =
+      'Will be removed when you save. Choose a file to keep one instead.';
+  });
 
   card.querySelector('#mt-cancel').addEventListener('click', close);
   card.querySelector('#mt-save').addEventListener('click', async () => {
@@ -4080,7 +4106,29 @@ function editMailTemplate(t) {
         body: val('#mt-body'),
       };
       if (!payload.subject) return show('A subject is required.');
+
+      // The template must exist before a file can hang off it, so save first and upload after.
+      // A failed upload therefore leaves the wording saved and the old file in place, which is
+      // the better half to keep.
       const saved = await api('/mail-templates', { method: 'PUT', body: JSON.stringify(payload) });
+
+      const file = card.querySelector('#mt-file')?.files?.[0];
+      if (file && payload.kind === 'message') {
+        if (file.size > 5 * 1024 * 1024) {
+          return show(`That file is ${fileSizeLabel(file.size)}. The limit is 5 MB.`);
+        }
+        show('Uploading the attachment…');
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        const meta = await api(`/mail-templates/${encodeURIComponent(saved.id)}/attachment`, {
+          method: 'PUT',
+          body: JSON.stringify({ name: file.name, type: file.type, data: base64Std(bytes) }),
+        });
+        await api('/mail-templates', { method: 'PUT', body: JSON.stringify({ ...saved, ...meta }) });
+      } else if (clearAttachment) {
+        await api('/mail-templates', { method: 'PUT', body: JSON.stringify({
+          ...saved, attachmentKey: null, attachmentName: null,
+          attachmentSize: null, attachmentType: null }) });
+      }
       // Confirm the server kept what was sent. A PUT that answers 200 with different text is
       // not a save, and this screen must not report one.
       if (!saved || saved.subject !== payload.subject || saved.body !== payload.body) {
@@ -4217,7 +4265,10 @@ async function renderMessageSend(host, template) {
         value="${escape(renderTemplate(template.subject, { merchant: '', entity: '' }))}"></label>
       <label><span>Message</span><textarea id="mmsg-body">${escape(template.body || '')}</textarea></label>
       <p class="mail-meta">From ${escape(mailFromAlias(template) || '— no sender address —')}
-        · no attachment · each recipient gets their own copy, so nobody sees the others.</p>
+        · ${template.attachmentName
+            ? `attaching <strong>${escape(template.attachmentName)}</strong> (${escape(fileSizeLabel(template.attachmentSize))})`
+            : 'no attachment'}
+        · each recipient gets their own copy, so nobody sees the others.</p>
       <p class="nm-err" id="mmsg-err" hidden></p>
       <div class="mail-actions"><button id="mmsg-send" class="btn-primary" disabled>Send</button></div>
     </div>`;
@@ -4253,6 +4304,27 @@ async function renderMessageSend(host, template) {
       return;
     }
     btn.disabled = true; err.hidden = true;
+
+    // Fetched ONCE for the whole batch, not per recipient: the same bytes go to everyone, and
+    // re-downloading a 5 MB file thirty times would be slow and pointless.
+    let files = [];
+    if (template.attachmentKey) {
+      try {
+        btn.textContent = 'Fetching the attachment…';
+        const f = await api(`/mail-templates/${encodeURIComponent(template.id)}/attachment`);
+        const bin = atob(f.data);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        files = [{ bytes, filename: f.name, type: f.type }];
+      } catch (e) {
+        // Better to send nothing than to send a letter whose attachment silently went missing.
+        err.hidden = false;
+        err.textContent = `Could not fetch ${template.attachmentName}: ${e.message}. Nothing was sent.`;
+        btn.disabled = false; btn.textContent = 'Send';
+        return;
+      }
+    }
+
     let sentCount = 0;
     for (const to of list) {
       btn.textContent = `Sending ${sentCount + 1} of ${list.length}…`;
@@ -4261,6 +4333,7 @@ async function renderMessageSend(host, template) {
           from, to: [to],
           subject: host.querySelector('#mmsg-subject').value,
           body: host.querySelector('#mmsg-body').value,
+          attachments: files,
         }));
         sentCount++;
       } catch (e) {
@@ -4669,6 +4742,11 @@ function mailSendDialog(result, run, sentAlready, template) {
 //
 // Gmail rejects a From: that is not a verified alias on that account — there is no app-side
 // workaround, and that rejection is reported verbatim rather than translated.
+function fileSizeLabel(bytes) {
+  const n = Number(bytes) || 0;
+  return n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;
+}
+
 const GMAIL_SCOPE = 'https://www.googleapis.com/auth/gmail.send';
 
 // A template's KIND decides what the send screen needs. A statement attaches one merchant's
@@ -4796,6 +4874,16 @@ function encodeHeaderWord(text) {
   return `=?UTF-8?B?${b64}?=`;
 }
 
+// Standard base64 with padding, for MIME parts and for uploading a file. base64Url below is
+// only for Gmail's `raw` field, which wants the URL-safe alphabet and no padding.
+function base64Std(bytes) {
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(bin);
+}
+
 function base64Url(bytes) {
   let bin = '';
   for (let i = 0; i < bytes.length; i += 0x8000) {
@@ -4812,6 +4900,8 @@ function base64Url(bytes) {
 // as classifyDifferences, and for the same reason.
 function buildMimeMessage(opts) {
   const { from, to, subject, body, filename, attachment } = opts;
+  const contentType = opts.contentType
+    || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
   const boundary = 'mcrm_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
   const head = [
     `From: ${from}`,
@@ -4825,18 +4915,24 @@ function buildMimeMessage(opts) {
     `--${boundary}`,
     'Content-Type: text/plain; charset="UTF-8"',
     'Content-Transfer-Encoding: base64',
-    '', base64Url(new TextEncoder().encode(body)).replace(/-/g, '+').replace(/_/g, '/'),
+    '', base64Std(new TextEncoder().encode(body)),
     '',
   ].join('\r\n');
-  const file = attachment ? [
+  // Any number of files, each with its own type — a statement is an .xlsx, a template's file
+  // could be anything. The type used to be hard-coded to spreadsheet, which would have labelled
+  // a PDF as an Excel file and left the recipient unable to open it.
+  const parts = [];
+  if (attachment) parts.push({ bytes: attachment, filename, type: contentType });
+  for (const f of (opts.attachments || [])) parts.push(f);
+  const files = parts.map(f => [
     `--${boundary}`,
-    'Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    `Content-Type: ${f.type || 'application/octet-stream'}`,
     'Content-Transfer-Encoding: base64',
-    `Content-Disposition: attachment; filename="${String(filename).replace(/"/g, '')}"`,
-    '', base64Url(attachment).replace(/-/g, '+').replace(/_/g, '/'),
+    `Content-Disposition: attachment; filename="${String(f.filename || 'attachment').replace(/"/g, '')}"`,
+    '', base64Std(f.bytes),
     '',
-  ].join('\r\n') : '';
-  return head + text + file + `--${boundary}--\r\n`;
+  ].join('\r\n')).join('');
+  return head + text + files + `--${boundary}--\r\n`;
 }
 
 // One access token per session, requested the first time someone sends. The app's sign-in gives

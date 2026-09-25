@@ -28,8 +28,8 @@ const load = (...names) => new Function(
 const { renderTemplate } = load('renderTemplate');
 const recipientsWith = (contracts) => new Function('CONTRACTS',
   splitSrc() + '\n' + grab('mailRecipients') + '\nreturn mailRecipients;')(contracts);
-const { buildMimeMessage, encodeHeaderWord, base64Url } =
-  load('encodeHeaderWord', 'base64Url', 'buildMimeMessage');
+const { buildMimeMessage, encodeHeaderWord, base64Url, base64Std } =
+  load('encodeHeaderWord', 'base64Std', 'base64Url', 'buildMimeMessage');
 
 test('placeholders are filled from the run', () => {
   assert.equal(
@@ -648,4 +648,68 @@ test('the send list puts actions in a column of their own', () => {
     'five headers: entity, merchant, payout, the reason column, and actions');
   const rowFn = src.slice(src.indexOf('const row ='), src.indexOf('const section'));
   assert.equal((rowFn.match(/<td/g) || []).length, 5, 'and five cells to match');
+});
+
+// ── A file carried by a template (2026-09-25) ──────────────────────────────────────────────
+// A plain message can carry a file — a notice, a rate card — uploaded once and sent with every
+// message using that template. A statement cannot: it already attaches the merchant's own
+// figures, and two attachments raise the question of which one matters.
+test('a message can carry several files, each with its own type', () => {
+  const mime = buildMimeMessage({
+    from: 'partner.th@inforich.com', to: ['a@b.com'], subject: 'Notice', body: 'See attached.',
+    attachments: [{ bytes: new Uint8Array([37, 80, 68, 70]), filename: 'notice.pdf', type: 'application/pdf' }],
+  });
+  assert.match(mime, /Content-Type: application\/pdf/);
+  assert.match(mime, /filename="notice\.pdf"/);
+  assert.ok(!/spreadsheetml/.test(mime),
+    'the type used to be hard-coded to Excel, which would label a PDF unopenable');
+});
+
+test('a statement still gets the spreadsheet type without being told', () => {
+  const mime = buildMimeMessage({
+    from: 'a@b.c', to: ['d@e.f'], subject: 's', body: 'b',
+    filename: 'AOT.xlsx', attachment: new Uint8Array([80, 75, 3, 4]),
+  });
+  assert.match(mime, /spreadsheetml\.sheet/);
+});
+
+test('an attachment survives the round trip byte for byte', () => {
+  // A corrupted attachment is worse than a missing one: it looks delivered.
+  const bytes = new Uint8Array(Array.from({ length: 1000 }, (_, i) => (i * 7) % 256));
+  const mime = buildMimeMessage({
+    from: 'a@b.c', to: ['d@e.f'], subject: 's', body: 'b',
+    attachments: [{ bytes, filename: 'x.bin', type: 'application/octet-stream' }],
+  });
+  const part = mime.split('Content-Disposition: attachment; filename="x.bin"')[1];
+  const b64 = part.split('\r\n').filter(Boolean)[0];
+  const back = Uint8Array.from(Buffer.from(b64, 'base64'));
+  assert.deepEqual([...back], [...bytes]);
+});
+
+test('the send fetches a template file once, not once per recipient', () => {
+  // Thirty recipients would otherwise mean thirty downloads of the same 5 MB.
+  const src = grab('renderMessageSend');
+  const fetchAt = src.indexOf('/attachment');
+  const loopAt = src.indexOf('for (const to of list)');
+  assert.ok(fetchAt > 0 && fetchAt < loopAt, 'fetched before the loop starts');
+});
+
+test('a failed attachment fetch sends nothing at all', () => {
+  // Better than a letter whose attachment silently went missing.
+  const src = grab('renderMessageSend');
+  assert.match(src, /Nothing was sent/);
+});
+
+test('only a plain message offers an attachment field', () => {
+  const src = grab('editMailTemplate');
+  assert.match(src, /mailKind\(t\) === 'message' \? '' : ' hidden'/,
+    'the field is hidden for a statement');
+  assert.match(src, /!== 'message'/, 'and hides again if the kind is changed to statement');
+});
+
+test('the upload refuses a file too large to send, with its size', () => {
+  const src = grab('editMailTemplate');
+  assert.match(src, /5 \* 1024 \* 1024/);
+  assert.match(src, /The limit is 5 MB/);
+  assert.match(src, /fileSizeLabel\(file\.size\)/, 'and says how big the file actually is');
 });

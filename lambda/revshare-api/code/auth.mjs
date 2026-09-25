@@ -25,6 +25,9 @@ export function requiredPermission(method, path) {
   // read, so anyone can check what was sent without being able to send.
   if (path === '/mail-templates') return method === 'GET' ? null : 'admin';
   if (/^\/mail-templates\/[^/]+$/.test(path)) return method === 'GET' ? null : 'admin';
+  // Uploading a file that will be sent under the company's name is an admin act; reading it
+  // back is not, since the send itself has to fetch it.
+  if (/^\/mail-templates\/[^/]+\/attachment$/.test(path)) return method === 'GET' ? null : 'admin';
   if (/^\/bulk-runs\/[^/]+\/mail-log$/.test(path)) return method === 'GET' ? null : 'runCalcs';
 
   if (method === 'GET') return path.startsWith('/users') ? 'admin' : null;   // reads are open; /users list is admin

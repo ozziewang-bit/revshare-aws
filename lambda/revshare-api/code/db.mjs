@@ -418,6 +418,32 @@ export async function deleteMailTemplate(id) {
     TableName: TABLE, Key: { pk: 'MAILTEMPLATE', sk: `MAILTEMPLATE#${id}` } }));
 }
 
+// A file attached to a mail TEMPLATE — a notice, a rate card — uploaded once and sent with
+// every message that uses that template. S3 rather than DynamoDB: a 400KB item limit would
+// rule out most real attachments, and this is the same bucket the runs already use.
+//
+// A replaced file is NOT deleted. A past send's record points at what was actually sent, and
+// storage is pennies against losing that evidence.
+export async function putTemplateAttachment(key, bytes, contentType) {
+  await s3.send(new PutObjectCommand({
+    Bucket: RUNS_BUCKET, Key: key, Body: bytes,
+    ContentType: contentType || 'application/octet-stream',
+  }));
+  return { key };
+}
+
+export async function getTemplateAttachment(key) {
+  if (!key) return null;
+  try {
+    const obj = await s3.send(new GetObjectCommand({ Bucket: RUNS_BUCKET, Key: key }));
+    const bytes = await obj.Body.transformToByteArray();
+    return { bytes: Buffer.from(bytes), contentType: obj.ContentType || 'application/octet-stream' };
+  } catch (e) {
+    if (e.name === 'NoSuchKey') return null;
+    throw e;
+  }
+}
+
 // One row per mail actually accepted by Gmail. Keyed by run so "did we send Central's statement
 // for September?" is one query. Nothing here is ever updated — a send happened or it did not.
 export async function listMailLog(runId) {

@@ -1,5 +1,6 @@
 import { listMailTemplates, putMailTemplate, deleteMailTemplate,
-         listMailLog, putMailLog, ulid } from '../db.mjs';
+         listMailLog, putMailLog, putTemplateAttachment, getTemplateAttachment,
+         ulid } from '../db.mjs';
 
 const resp = (statusCode, body) => ({ statusCode, body: body === null ? '' : JSON.stringify(body) });
 
@@ -8,7 +9,17 @@ const resp = (statusCode, body) => ({ statusCode, body: body === null ? '' : JSO
 // write and records what went out.
 // `kind` decides what the send screen asks for: a statement needs a period and attaches a
 // file, a plain message needs neither.
-const WRITABLE = ['name', 'kind', 'subject', 'body', 'fromAlias'];
+const WRITABLE = ['name', 'kind', 'subject', 'body', 'fromAlias',
+                  // A file carried by every message using this template. Only a plain message
+                  // may have one: a statement already attaches that merchant's own figures, and
+                  // two attachments raise the question of which one matters.
+                  'attachmentKey', 'attachmentName', 'attachmentSize', 'attachmentType'];
+
+// 5 MB. The request carries the file base64-encoded, which inflates it by a third, against an
+// API Gateway limit of 10 MB — so this is the largest size that still leaves headroom. Refused
+// with the actual size rather than a generic error, because "too large" without a number tells
+// nobody what to do.
+const MAX_ATTACHMENT = 5 * 1024 * 1024;
 
 export async function listMailTemplatesRoute() {
   const items = await listMailTemplates();
@@ -60,4 +71,37 @@ export async function createMailLogRoute(event) {
     sentAt: new Date().toISOString(),
     sentBy: event.auth?.email || null,
   }));
+}
+
+export async function putTemplateAttachmentRoute(event) {
+  const id = event.pathParameters?.templateId;
+  const body = JSON.parse(event.body || '{}');
+  const name = String(body.name || '').trim();
+  if (!name || typeof body.data !== 'string') return resp(400, { error: 'name_and_data_required' });
+
+  const bytes = Buffer.from(body.data, 'base64');
+  if (!bytes.length) return resp(400, { error: 'empty_file' });
+  if (bytes.length > MAX_ATTACHMENT) {
+    return resp(413, { error: 'too_large', bytes: bytes.length, limit: MAX_ATTACHMENT });
+  }
+  // Keyed by ULID, never by filename: replacing a file must not overwrite the object a past
+  // send's record points at, and a filename can contain anything at all.
+  const key = `mail-templates/${id}/${ulid()}`;
+  await putTemplateAttachment(key, bytes, body.type || 'application/octet-stream');
+  return resp(200, {
+    attachmentKey: key, attachmentName: name,
+    attachmentSize: bytes.length, attachmentType: body.type || 'application/octet-stream',
+  });
+}
+
+export async function getTemplateAttachmentRoute(event) {
+  const templates = await listMailTemplates();
+  const t = templates.find(x => x.id === event.pathParameters?.templateId);
+  if (!t || !t.attachmentKey) return resp(404, { error: 'no_attachment' });
+  const file = await getTemplateAttachment(t.attachmentKey);
+  if (!file) return resp(404, { error: 'attachment_missing' });
+  return resp(200, {
+    name: t.attachmentName, type: file.contentType,
+    size: file.bytes.length, data: file.bytes.toString('base64'),
+  });
 }

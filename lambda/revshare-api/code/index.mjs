@@ -5,7 +5,8 @@ import { meRoute } from './routes/me.mjs';
 import { listUsersRoute, putUserRoute, deleteUserRoute } from './routes/users.mjs';
 import { listFeatureRequestsRoute, createFeatureRequestRoute, updateFeatureRequestRoute, deleteFeatureRequestRoute } from './routes/features.mjs';
 import { listMailTemplatesRoute, putMailTemplateRoute, deleteMailTemplateRoute,
-         listMailLogRoute, createMailLogRoute } from './routes/mail.mjs';
+         listMailLogRoute, createMailLogRoute,
+         putTemplateAttachmentRoute, getTemplateAttachmentRoute } from './routes/mail.mjs';
 
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
 const ALLOWED_DOMAINS = (process.env.ALLOWED_DOMAINS || '').split(',').map(s => s.trim()).filter(Boolean);
@@ -89,6 +90,8 @@ export const handler = async (event) => {
     if      (method === 'GET'    && path === '/mail-templates')                                  result = await listMailTemplatesRoute();
     else if (method === 'PUT'    && path === '/mail-templates')                                  result = await putMailTemplateRoute(event);
     else if (method === 'DELETE' && /^\/mail-templates\/[^/]+$/.test(path))                      result = await deleteMailTemplateRoute(withParam(event, 'templateId', path));
+    else if (method === 'PUT'    && /^\/mail-templates\/[^/]+\/attachment$/.test(path))           result = await putTemplateAttachmentRoute(withParam(event, 'templateId', path));
+    else if (method === 'GET'    && /^\/mail-templates\/[^/]+\/attachment$/.test(path))           result = await getTemplateAttachmentRoute(withParam(event, 'templateId', path));
     else if (method === 'GET'    && /^\/bulk-runs\/[^/]+\/mail-log$/.test(path))                  result = await listMailLogRoute(withParam(event, 'runId', path, 2));
     else if (method === 'POST'   && /^\/bulk-runs\/[^/]+\/mail-log$/.test(path))                  result = await createMailLogRoute(withParam(event, 'runId', path, 2));
     // Partners
