@@ -127,3 +127,37 @@ test('and that layout is actually defined in the stylesheet', () => {
     assert.ok(css.includes(rule), `style.css is missing ${rule}`);
   }
 });
+
+// ── The sender alias (2026-09-25) ──────────────────────────────────────────────────────────
+// Every Thai template sends as the partner group, so it defaults rather than being retyped.
+// It stays a per-template field because a Thai note and a Singapore one need not share a
+// sender — not because anyone wants the choice each time.
+const aliasIn = (region) => new Function('REGION',
+  app.slice(app.indexOf('const DEFAULT_FROM_ALIAS'), app.indexOf('function mailSendDialog'))
+  + '\nreturn mailFromAlias;')(region);
+
+test('a template with no sender falls back to the region default', () => {
+  // Templates saved before the default existed must still send, rather than failing at the
+  // last step with an error about a field nobody knew to fill in.
+  assert.equal(aliasIn('th')({}), 'partner.th@inforich.com');
+  assert.equal(aliasIn('th')({ fromAlias: '' }), 'partner.th@inforich.com');
+  assert.equal(aliasIn('th')(null), 'partner.th@inforich.com');
+});
+
+test('a template that names a sender keeps it', () => {
+  assert.equal(aliasIn('th')({ fromAlias: 'someone.else@inforich.com' }),
+    'someone.else@inforich.com');
+});
+
+test('Singapore does NOT borrow the Thai group address', () => {
+  // Silently sending as partner.th from Singapore would put the wrong company in a merchant's
+  // inbox. Empty is the right answer until SG has a group of its own: the send is refused with
+  // a message saying to set one.
+  assert.equal(aliasIn('sg')({}), '');
+  assert.equal(aliasIn('sg')({ fromAlias: 'partner.sg@inforich.com' }), 'partner.sg@inforich.com');
+});
+
+test('a sender address is trimmed, since a stray space makes Gmail reject it', () => {
+  assert.equal(aliasIn('th')({ fromAlias: '  partner.th@inforich.com  ' }),
+    'partner.th@inforich.com');
+});

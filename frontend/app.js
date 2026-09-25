@@ -3974,7 +3974,7 @@ async function renderMailTemplatesTab(host) {
     list.innerHTML = templates.length ? templates.map((t, i) => `
       <div class="rc-item" style="margin-bottom:10px;">
         <strong>${escape(t.name || 'Untitled')}</strong>
-        <div class="muted" style="font-size:12.5px;">From ${escape(t.fromAlias || '— no sender alias —')}</div>
+        <div class="muted" style="font-size:12.5px;">From ${escape(mailFromAlias(t) || '— no sender address for this region —')}</div>
         <div style="font-size:13px;margin-top:4px;">${escape(t.subject || '')}</div>
         ${admin ? `<div style="margin-top:6px;display:flex;gap:6px;">
           <button class="btn-ghost mt-edit" data-i="${i}">Edit</button>
@@ -4001,11 +4001,12 @@ function editMailTemplate(t) {
       <div class="mail-row">
         <label><span>Name</span><input id="mt-name" value="${escape(t?.name || '')}"
           placeholder="Monthly statement"></label>
-        <label><span>Send from</span><input id="mt-from" value="${escape(t?.fromAlias || '')}"
-          placeholder="partner.th@inforich.com"></label>
+        <label><span>Send from</span><input id="mt-from"
+          value="${escape(t ? (t.fromAlias || '') : (DEFAULT_FROM_ALIAS[REGION] || ''))}"
+          placeholder="${escape(DEFAULT_FROM_ALIAS[REGION] || 'no group address set for this region')}"></label>
       </div>
-      <p class="mail-hint">Must be an address the sender has verified in Gmail under
-        “Send mail as”, or Gmail refuses the message.</p>
+      <p class="mail-hint">Defaults to the partner group. It must be an address the person
+        sending has verified in Gmail under “Send mail as”, or Gmail refuses the message.</p>
       <label><span>Subject</span><input id="mt-subject" value="${escape(t?.subject || '')}"
         placeholder="ChargeSpot revenue share — {{merchant}} — {{period}}"></label>
       <label><span>Message</span><textarea id="mt-body"
@@ -4064,10 +4065,21 @@ async function loadMailTemplates() {
   return MAIL_TEMPLATES;
 }
 
-// The alias the mail is sent AS. Stored on the template, because which group a statement comes
-// from is part of how it is written — a Thai partner note and a Singapore one need not share
-// a sender. Gmail rejects an alias the sending account has not verified, and says so.
-const mailFromAlias = (t) => (t && t.fromAlias) || '';
+// Who a statement comes from, by region. Every Thai template sends as the partner group, so it
+// is the default rather than something to retype — a per-template field only because a Thai
+// partner note and a Singapore one need not share a sender, not because anyone wants the choice
+// each time. Singapore has no group address yet; a template there must name one or it cannot
+// send, which is the right failure — silently borrowing Thailand's would put the wrong company
+// in a merchant's inbox.
+//
+// Whoever is SIGNED IN is the account that sends; the alias only decides what the merchant
+// sees. Both ozzie.wang@ and pavarisa.t@ have verified partner.th, so either produces identical
+// mail. Gmail rejects an alias the signed-in account has not verified, and says so verbatim.
+const DEFAULT_FROM_ALIAS = { th: 'partner.th@inforich.com', sg: '' };
+
+// Falls back to the region default, so a template saved before the default existed — or one
+// where the field was cleared — still sends rather than failing at the last step.
+const mailFromAlias = (t) => ((t && t.fromAlias) || DEFAULT_FROM_ALIAS[REGION] || '').trim();
 
 function mailSendDialog(result, run, sentAlready) {
   const to = mailRecipients(result.contractId);
