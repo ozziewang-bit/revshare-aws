@@ -3947,18 +3947,25 @@ async function renderMailTemplatesTab() {
 function editMailTemplate(t) {
   const { card, close } = ctModal(700);
   card.innerHTML = `
-    <h3 style="margin:0 0 10px;">${t ? 'Edit' : 'New'} mail template</h3>
-    <label class="nm-f"><span>Name</span><input id="mt-name" value="${escape(t?.name || '')}"></label>
-    <label class="nm-f"><span>Send from</span>
-      <input id="mt-from" value="${escape(t?.fromAlias || '')}" placeholder="partner.th@inforich.com"></label>
-    <p class="muted" style="font-size:12px;margin:-4px 0 10px;">Must be an address the sender has
-      verified in Gmail under “Send mail as”, or Gmail refuses the message.</p>
-    <label class="nm-f"><span>Subject</span><input id="mt-subject" value="${escape(t?.subject || '')}"></label>
-    <label class="nm-f"><span>Message</span><textarea id="mt-body" rows="10">${escape(t?.body || '')}</textarea></label>
-    <p class="nm-err" id="mt-err" hidden></p>
-    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;">
-      <button id="mt-cancel" class="btn-ghost">Cancel</button>
-      <button id="mt-save" class="btn-primary">Save</button>
+    <h3 style="margin:0 0 14px;">${t ? 'Edit' : 'New'} mail template</h3>
+    <div class="mail-form">
+      <div class="mail-row">
+        <label><span>Name</span><input id="mt-name" value="${escape(t?.name || '')}"
+          placeholder="Monthly statement"></label>
+        <label><span>Send from</span><input id="mt-from" value="${escape(t?.fromAlias || '')}"
+          placeholder="partner.th@inforich.com"></label>
+      </div>
+      <p class="mail-hint">Must be an address the sender has verified in Gmail under
+        “Send mail as”, or Gmail refuses the message.</p>
+      <label><span>Subject</span><input id="mt-subject" value="${escape(t?.subject || '')}"
+        placeholder="ChargeSpot revenue share — {{merchant}} — {{period}}"></label>
+      <label><span>Message</span><textarea id="mt-body"
+        placeholder="Dear {{entity}},&#10;&#10;Please find attached the revenue-share statement for {{period}}.">${escape(t?.body || '')}</textarea></label>
+      <p class="nm-err" id="mt-err" hidden></p>
+      <div class="mail-actions">
+        <button id="mt-cancel" class="btn-ghost">Cancel</button>
+        <button id="mt-save" class="btn-primary">Save</button>
+      </div>
     </div>`;
   card.querySelector('#mt-cancel').addEventListener('click', close);
   card.querySelector('#mt-save').addEventListener('click', async () => {
@@ -4031,20 +4038,23 @@ function mailSendDialog(result, run, sentAlready) {
   const opts = MAIL_TEMPLATES.map((t, i) =>
     `<option value="${i}">${escape(t.name || t.subject || 'Untitled')}</option>`).join('');
   card.innerHTML = `
-    <h3 style="margin:0 0 2px;">Send statement — ${escape(result.merchantName)}</h3>
-    <p class="muted" style="margin:0 0 12px;font-size:12.5px;">
-      ${sentAlready ? `<strong class="rc-warn">Already sent ${escape(sentAlready)}.</strong> Sending again will deliver a second copy. ` : ''}
-      This goes to the merchant. It cannot be unsent.</p>
-    <label class="nm-f"><span>Template</span><select id="ms-tpl">${opts}</select></label>
-    <label class="nm-f"><span>To</span><input id="ms-to" value="${escape(to.join(', '))}"
-      ${to.length ? '' : 'placeholder="this merchant has no email address on file"'}></label>
-    <label class="nm-f"><span>Subject</span><input id="ms-subject"></label>
-    <label class="nm-f"><span>Message</span><textarea id="ms-body" rows="9"></textarea></label>
-    <p class="muted" id="ms-meta" style="font-size:12px;margin:6px 0 0;"></p>
-    <p class="nm-err" id="ms-err" hidden></p>
-    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;">
-      <button id="ms-cancel" class="btn-ghost">Cancel</button>
-      <button id="ms-send" class="btn-primary">Send</button>
+    <h3 style="margin:0 0 4px;">Send statement — ${escape(result.merchantName)}</h3>
+    <p class="muted" style="margin:0 0 12px;font-size:12.5px;">This goes to the merchant. It cannot be unsent.</p>
+    ${sentAlready ? `<p class="mail-warn">Already sent ${escape(sentAlready)} — sending again delivers a second copy.</p>` : ''}
+    <div class="mail-form">
+      <div class="mail-row">
+        <label><span>Template</span><select id="ms-tpl">${opts}</select></label>
+        <label><span>To</span><input id="ms-to" value="${escape(to.join(', '))}"
+          ${to.length ? '' : 'placeholder="no email address on file"'}></label>
+      </div>
+      <label><span>Subject</span><input id="ms-subject"></label>
+      <label><span>Message</span><textarea id="ms-body"></textarea></label>
+      <p class="mail-meta" id="ms-meta"></p>
+      <p class="nm-err" id="ms-err" hidden></p>
+      <div class="mail-actions">
+        <button id="ms-cancel" class="btn-ghost">Cancel</button>
+        <button id="ms-send" class="btn-primary">Send</button>
+      </div>
     </div>`;
 
   const $ = (id) => card.querySelector(id);

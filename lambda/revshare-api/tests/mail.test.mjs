@@ -104,3 +104,26 @@ test('base64url output carries no characters that would corrupt a URL-safe paylo
   const bytes = new Uint8Array(Array.from({ length: 300 }, (_, i) => i % 256));
   assert.ok(!/[+/=]/.test(base64Url(bytes)));
 });
+
+// ── Layout coupling (2026-09-25) ───────────────────────────────────────────────────────────
+// The first version of these dialogs used `.nm-f`, which is not a CSS rule at all: the
+// new-merchant form's layout comes from its `.nm-grid` PARENT. In a plain modal the labels fell
+// inline and the textarea floated mid-dialog. A class that only works inside a container it does
+// not carry is exactly the kind of coupling worth a test.
+const css = readFileSync(new URL('../../../frontend/style.css', import.meta.url), 'utf8');
+
+test('the mail dialogs use a form layout that stands on its own', () => {
+  for (const fn of ['editMailTemplate', 'mailSendDialog']) {
+    const src = grab(fn);
+    assert.match(src, /class="mail-form"/, `${fn} must use the standalone mail form`);
+    assert.ok(!/class="nm-f"/.test(src),
+      `${fn} must not use .nm-f, which only lays out inside .nm-grid`);
+  }
+});
+
+test('and that layout is actually defined in the stylesheet', () => {
+  // The bug was markup naming a class with no rule behind it. Check the rules exist.
+  for (const rule of ['.mail-form label', '.mail-form textarea', '.mail-row']) {
+    assert.ok(css.includes(rule), `style.css is missing ${rule}`);
+  }
+});
