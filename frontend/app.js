@@ -3448,7 +3448,8 @@ function renderNewBulkRunForm() {
           status.innerHTML = `Parsed ${merchants.length} merchants${excluded.length ? ` (${excluded.length} not Approved, excluded)` : ''}. Preparing…`;
           wiz.merchants = merchants;
           wiz.excluded = excluded;
-          const prepare = await api('/bulk-runs/prepare', { method: 'POST', body: JSON.stringify({ merchants }) });
+          // The roster is smaller than the orders, but it grows the same way — 2,367 rows today.
+          const prepare = await postLarge('/bulk-runs/prepare', { merchants }, 'merchant list');
           wiz.prepare = prepare;
           render();
           // Populate rule editors after render
@@ -3513,10 +3514,13 @@ function renderNewBulkRunForm() {
             const btn = document.getElementById('wiz-run');
             btn.disabled = true; btn.textContent = 'Running…';
             try {
-              const run = await api('/bulk-runs', {
-                method: 'POST',
-                body: JSON.stringify({ periodStart: wiz.periodStart, periodEnd: wiz.periodEnd, merchants: wiz.merchants, orders: wiz.orders, machines: wiz.machines || [], excluded: wiz.excluded || [] })
-              });
+              // Compressed: a month of orders is now well past API Gateway's 10 MB payload
+              // limit uncompressed (32,277 orders ~= 13 MB in September 2026).
+              const run = await postLarge('/bulk-runs', {
+                periodStart: wiz.periodStart, periodEnd: wiz.periodEnd,
+                merchants: wiz.merchants, orders: wiz.orders,
+                machines: wiz.machines || [], excluded: wiz.excluded || [],
+              }, 'order report');
               renderBulkRunDetail(run.runId);
             } catch (err) {
               status.innerHTML += `<p style="color:#f03e3e;">Error: ${escape(err.message)}</p>`;
@@ -3576,6 +3580,52 @@ function renderNewBulkRunForm() {
   }
 
   render();
+}
+
+// API Gateway's REST payload limit is a HARD 10 MB. One month of orders passed it in September
+// 2026 — 32,277 orders is ~13 MB — and the 413 that came back carried no CORS headers, so the
+// browser could only say "Failed to fetch". Orders are dense repetitive JSON and gzip to about a
+// tenth of that, so the body goes up compressed and index.mjs unpacks it before dispatch.
+//
+// Returns null when the browser has no CompressionStream, and the caller then sends the body
+// uncompressed — an older browser keeps working for a normal-sized run rather than being locked
+// out of the app entirely.
+async function gzipBase64(text) {
+  if (typeof CompressionStream !== 'function') return null;
+  const packed = new Uint8Array(await new Response(
+    new Blob([text]).stream().pipeThrough(new CompressionStream('gzip'))).arrayBuffer());
+  // btoa in 32KB chunks: String.fromCharCode(...bytes) on a megabyte-sized array blows the
+  // argument limit and throws RangeError, which would read as a mysterious upload failure.
+  let bin = '';
+  for (let i = 0; i < packed.length; i += 0x8000) {
+    bin += String.fromCharCode.apply(null, packed.subarray(i, i + 0x8000));
+  }
+  return btoa(bin);
+}
+
+// The limit, and what the reader can do about it. The browser is the only place that can say
+// this: the gateway rejects an oversized body before gateway responses apply, so its 413 never
+// reaches JavaScript as anything but a network error.
+const API_BODY_LIMIT = 10 * 1024 * 1024;
+
+// BYTES, not characters. `String.length` counts UTF-16 units, and this app's merchant names are
+// mostly Thai at 3 bytes per character — measuring length would undercount a real order report by
+// roughly half and wave through exactly the body the gateway then rejects.
+const byteLength = (s) => new TextEncoder().encode(s).length;
+
+async function postLarge(path, payload, what) {
+  const text = JSON.stringify(payload);
+  const packed = await gzipBase64(text);
+  const body = packed == null ? text : JSON.stringify({ gz: packed });
+  if (byteLength(body) > API_BODY_LIMIT) {
+    const mb = (n) => (n / 1024 / 1024).toFixed(1) + ' MB';
+    throw new Error(
+      `This ${what} is too large to send: ${mb(byteLength(body))}`
+      + (packed == null ? ' (this browser cannot compress it — try Chrome, Edge or Safari 16.4+)'
+                        : ` compressed, from ${mb(byteLength(text))}`)
+      + `. The API accepts at most ${mb(API_BODY_LIMIT)}. Split the period and run it in two halves.`);
+  }
+  return api(path, { method: 'POST', body });
 }
 
 async function parseOrderReport(file) {

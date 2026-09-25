@@ -1,4 +1,5 @@
 import { verifyGoogleToken, resolvePermissions, requiredPermission } from './auth.mjs';
+import { decodeBody } from './body.mjs';
 import { getUser } from './users-db.mjs';
 import { meRoute } from './routes/me.mjs';
 import { listUsersRoute, putUserRoute, deleteUserRoute } from './routes/users.mjs';
@@ -61,6 +62,17 @@ export const handler = async (event) => {
     const need = requiredPermission(method, path);
     if (need && !permissions[need]) return cors(resp(403, { error: 'forbidden', need }));
     event.auth = { email: claims.email.toLowerCase(), name: claims.name, permissions };
+
+    // A compressed body is unpacked here — AFTER the auth gate, deliberately. Decompressing
+    // first would let an unauthenticated caller spend this function's CPU on a gzip bomb;
+    // body.mjs caps the inflated size, but the cheapest defence is not doing the work for
+    // someone who has not signed in. Every route still reads `event.body` as the JSON it
+    // always read, so none of them know this happened.
+    try {
+      event.body = decodeBody(event.body);
+    } catch (e) {
+      return cors(resp(400, { error: 'bad_compressed_body', reason: e.message }));
+    }
 
     let result;
     // Partners
