@@ -4247,7 +4247,15 @@ async function renderMessageSend(host, template) {
     const list = MAIL_SEND_TO.addresses.slice();
     const from = mailFromAlias(template);
     if (!from) { err.hidden = false; err.textContent = 'This template has no sender address.'; return; }
+    // Asked for while the click is still live — see gmailToken.
+    const tokenReady = gmailToken();
     if (!confirm(`Send this message to ${list.length} recipient(s)? It cannot be unsent.`)) return;
+    try {
+      await tokenReady;
+    } catch (e) {
+      err.hidden = false; err.textContent = e.message;
+      return;
+    }
     btn.disabled = true; err.hidden = true;
     let sentCount = 0;
     for (const to of list) {
@@ -4661,8 +4669,12 @@ function mailSendDialog(result, run, sentAlready, template) {
     const fail = (m) => { err.hidden = false; err.textContent = m; btn.disabled = false; btn.textContent = 'Send'; };
     btn.disabled = true; btn.textContent = 'Sending…'; err.hidden = true;
     if (!recipients.length) return fail('No recipient chosen. Tick an address, or type one above.');
-    if (!from) return fail('This template has no sender alias. Set one under Settings → Mail templates.');
+    if (!from) return fail('This template has no sender alias. Set one under Mailing → Templates.');
+    // FIRST, before any await: this opens Google's permission window the first time, and a
+    // browser only permits that while the click is still live.
+    const tokenReady = gmailToken();
     try {
+      await tokenReady;
       // The same file the download produces, from the same function — including the
       // rental-by-rental block, which this used to omit while the wording promised it.
       const index = await runOrderIndex(run);
@@ -4891,6 +4903,11 @@ function buildMimeMessage(opts) {
 // own consent. Internal Workspace app, so no unverified-app warning.
 let GMAIL_TOKEN = null;
 
+// MUST be called synchronously from the click that wants to send. Asking Google for a token
+// opens a popup, and a browser only allows that during a user gesture — after the first `await`
+// the gesture is spent and the popup is blocked with "Failed to open popup window". That is
+// what happened on the first real send: the handler fetched the run's orders, built the file
+// and showed a confirm before asking, by which point the click was long over.
 function gmailToken() {
   if (GMAIL_TOKEN && GMAIL_TOKEN.expires > Date.now() + 60000) return Promise.resolve(GMAIL_TOKEN.value);
   return new Promise((resolve, reject) => {
@@ -4903,7 +4920,13 @@ function gmailToken() {
         GMAIL_TOKEN = { value: r.access_token, expires: Date.now() + (Number(r.expires_in) || 3600) * 1000 };
         resolve(GMAIL_TOKEN.value);
       },
-      error_callback: (e) => reject(new Error(e?.message || 'Permission to send mail was not granted.')),
+      error_callback: (e) => {
+        const m = e?.message || '';
+        reject(new Error(/popup/i.test(m)
+          // Say what to do. "Failed to open popup window" on its own reads as a fault in the app.
+          ? 'Your browser blocked the Google permission window. Allow pop-ups for this site, then press Send again.'
+          : (m || 'Permission to send mail was not granted.')));
+      },
     });
     client.requestAccessToken();
   });

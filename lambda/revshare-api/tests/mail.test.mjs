@@ -597,3 +597,31 @@ test('a broken address is reported as broken, not as absent', () => {
   assert.deepEqual(malformedAddresses('not an email at all'), [],
     'and neither is something that was never trying to be one');
 });
+
+// ── The Google permission window needs the click (2026-09-25) ──────────────────────────────
+// Asking Google for a send token opens a popup, and a browser only allows that DURING a user
+// gesture. The first real send failed with "Failed to open popup window" because the handler
+// fetched the run's orders, built the file and showed a confirm before asking — by which point
+// the click was spent. The token must be requested before the first await.
+test('the statement send asks for the token before anything it has to wait for', () => {
+  const src = grab('mailSendDialog');
+  const ask = src.indexOf('gmailToken()');
+  const firstAwait = src.indexOf('await ', src.indexOf("addEventListener('click'"));
+  assert.ok(ask > 0, 'it must ask for a token');
+  assert.ok(ask < firstAwait,
+    'and must ask BEFORE the first await, or the popup is blocked');
+});
+
+test('the plain-message send does the same', () => {
+  const src = grab('renderMessageSend');
+  const ask = src.indexOf('gmailToken()');
+  const firstAwait = src.indexOf('await ', src.indexOf("'#mmsg-send'"));
+  assert.ok(ask > 0 && ask < firstAwait);
+});
+
+test('a blocked popup says what to do about it', () => {
+  // "Failed to open popup window" on its own reads as a fault in the app rather than a browser
+  // setting the reader can change.
+  const src = grab('gmailToken');
+  assert.match(src, /Allow pop-ups for this site/);
+});
