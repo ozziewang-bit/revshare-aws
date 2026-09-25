@@ -4072,10 +4072,10 @@ async function renderMailSendTab(host) {
   runs.sort((a, b) => (b.periodStart || '').localeCompare(a.periodStart || ''));
   host.innerHTML = `
     <div class="mail-form mail-row" style="max-width:640px;">
-      <label><span>Period</span><select id="msend-run">${runs.map(r =>
-        `<option value="${escape(r.runId)}">${escape(periodTag(r.periodStart))}</option>`).join('')}</select></label>
       <label><span>Template</span><select id="msend-tpl">${templates.map((t, i) =>
         `<option value="${i}">${escape(t.name || t.subject || 'Untitled')}</option>`).join('')}</select></label>
+      <label><span>Period</span><select id="msend-run">${runs.map(r =>
+        `<option value="${escape(r.runId)}">${escape(periodTag(r.periodStart))}</option>`).join('')}</select></label>
     </div>
     <div id="msend-list">Loading…</div>`;
   const draw = () => drawMailSendList(document.getElementById('msend-run').value);
@@ -4170,7 +4170,7 @@ const DEFAULT_FROM_ALIAS = { th: 'partner.th@inforich.com', sg: '' };
 const mailFromAlias = (t) => ((t && t.fromAlias) || DEFAULT_FROM_ALIAS[REGION] || '').trim();
 
 function mailSendDialog(result, run, sentAlready, templateIndex) {
-  const to = mailRecipients(result.contractId);
+  const known = knownAddresses(result.contractId);
   const { card, close } = ctModal(720);
   const vars = mailVarsFor(result, run);
 
@@ -4192,11 +4192,19 @@ function mailSendDialog(result, run, sentAlready, templateIndex) {
     <p class="muted" style="margin:0 0 12px;font-size:12.5px;">This goes to the merchant. It cannot be unsent.</p>
     ${sentAlready ? `<p class="mail-warn">Already sent ${escape(sentAlready)} — sending again delivers a second copy.</p>` : ''}
     <div class="mail-form">
-      <div class="mail-row">
-        <label><span>Template</span><select id="ms-tpl">${opts}</select></label>
-        <label><span>To</span><input id="ms-to" value="${escape(to.join(', '))}"
-          ${to.length ? '' : 'placeholder="no email address on file"'}></label>
-      </div>
+      <label><span>Template</span><select id="ms-tpl">${opts}</select></label>
+      <fieldset class="mail-to">
+        <legend>To</legend>
+        ${known.length ? known.map((k, i) => `
+          <label class="mail-to-opt"><input type="checkbox" class="ms-known" value="${escape(k.address)}"
+            ${k.source === 'finance contact' ? 'checked' : ''}>
+            <span>${escape(k.address)} <em>${escape(k.source)}</em></span></label>`).join('')
+          : '<p class="muted" style="margin:0 0 8px;font-size:12.5px;">This merchant has no address on file.</p>'}
+        <label class="mail-to-free"><span>Also send to</span>
+          <input id="ms-extra" placeholder="type any address — use this to send yourself a test">
+        </label>
+        <p class="mail-meta" id="ms-who"></p>
+      </fieldset>
       <label><span>Subject</span><input id="ms-subject"></label>
       <label><span>Message</span><textarea id="ms-body"></textarea></label>
       <p class="mail-meta" id="ms-meta"></p>
@@ -4218,16 +4226,39 @@ function mailSendDialog(result, run, sentAlready, templateIndex) {
   };
   $('#ms-tpl').addEventListener('change', fill);
   fill();
+
+  // Who this will actually reach, restated under the boxes after every change. A test send —
+  // ticking nothing and typing your own address — must be obviously a test, not something that
+  // looks the same as sending to the merchant.
+  const chosenAddresses = () => {
+    const ticked = [...card.querySelectorAll('.ms-known:checked')].map(b => b.value);
+    const typed = splitAddresses($('#ms-extra').value);
+    const all = [...ticked, ...typed];
+    return all.filter((a, i) => all.findIndex(b => b.toLowerCase() === a.toLowerCase()) === i);
+  };
+  const restate = () => {
+    const list = chosenAddresses();
+    const merchantsOwn = new Set(known.map(k => k.address.toLowerCase()));
+    const anyOwn = list.some(a => merchantsOwn.has(a.toLowerCase()));
+    $('#ms-who').innerHTML = !list.length
+      ? '<span class="rc-warn">No recipient chosen — nothing will be sent.</span>'
+      : `Will send to <strong>${escape(list.join(', '))}</strong>`
+        + (anyOwn ? '' : ' — <span class="rc-warn">none of these is this merchant\u2019s own address, so this is a test</span>');
+  };
+  card.querySelectorAll('.ms-known').forEach(b => b.addEventListener('change', restate));
+  $('#ms-extra').addEventListener('input', restate);
+  restate();
+
   $('#ms-cancel').addEventListener('click', close);
 
   $('#ms-send').addEventListener('click', async () => {
     const btn = $('#ms-send'), err = $('#ms-err');
     const t = MAIL_TEMPLATES[Number($('#ms-tpl').value) || 0];
-    const recipients = $('#ms-to').value.split(/[;,]/).map(a => a.trim()).filter(Boolean);
+    const recipients = chosenAddresses();
     const from = mailFromAlias(t);
     const fail = (m) => { err.hidden = false; err.textContent = m; btn.disabled = false; btn.textContent = 'Send'; };
     btn.disabled = true; btn.textContent = 'Sending…'; err.hidden = true;
-    if (!recipients.length) return fail('No recipient. Add an email address to this merchant first.');
+    if (!recipients.length) return fail('No recipient chosen. Tick an address, or type one above.');
     if (!from) return fail('This template has no sender alias. Set one under Settings → Mail templates.');
     try {
       // The attachment is the same per-merchant sheet the zip carries, built here rather than
@@ -4308,7 +4339,29 @@ function mailVarsFor(result, run) {
 function mailRecipients(contractId) {
   const c = CONTRACTS.find(x => x.contractId === contractId);
   const raw = (c && (c.financeContactEmail || c.contactEmail)) || '';
-  return String(raw).split(/[;,]/).map(a => a.trim()).filter(a => /.+@.+\..+/.test(a));
+  return splitAddresses(raw);
+}
+
+// A function declaration, not an arrow const: the tests extract by `function name(`, and an
+// arrow is invisible to them — which showed up as three unrelated tests failing at once.
+function splitAddresses(raw) {
+  return String(raw ?? '').split(/[;,]/).map(a => a.trim()).filter(a => /.+@.+\..+/.test(a));
+}
+
+// Every address the app knows for a merchant, each labelled with WHERE it came from — so
+// picking one is an informed choice rather than a guess between two similar strings. Finance
+// first, because that is who a remittance advice is for, and the finance ones are what the
+// dialog ticks by default.
+function knownAddresses(contractId) {
+  const c = CONTRACTS.find(x => x.contractId === contractId) || {};
+  const out = [];
+  for (const a of splitAddresses(c.financeContactEmail)) out.push({ address: a, source: 'finance contact' });
+  for (const a of splitAddresses(c.contactEmail)) {
+    if (!out.some(x => x.address.toLowerCase() === a.toLowerCase())) {
+      out.push({ address: a, source: 'contact' });
+    }
+  }
+  return out;
 }
 
 // RFC 2047 encoding for a header that is not ASCII. Thai merchant names in a Subject: arrive as

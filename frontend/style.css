@@ -1180,3 +1180,18 @@ p.rc-warn {
 .mail-meta { margin: 0 0 12px; font-size: 12px; color: var(--ink-soft); }
 .mail-warn { margin: 0 0 12px; padding: 9px 11px; border-radius: var(--radius-sm);
   background: var(--warn-soft); color: var(--warn); font-size: 12.5px; }
+
+/* The recipient picker: the merchant's known addresses to tick, plus free typing for a test
+   send. Each known address says WHERE it came from, so choosing between two similar strings
+   is an informed choice rather than a guess. */
+.mail-to { border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 10px 12px 12px; margin: 0 0 14px; }
+.mail-to legend { padding: 0 6px; font-size: 10.5px; font-weight: 600; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--ink-faint); }
+.mail-to-opt { display: flex; align-items: center; gap: 8px; margin: 0 0 6px; cursor: pointer; }
+.mail-to-opt input { width: 16px; height: 16px; margin: 0; flex: none; }
+.mail-to-opt em { color: var(--ink-faint); font-style: normal; font-size: 11.5px; }
+.mail-to-free { margin: 10px 0 0; }
+.mail-to-free > span { display: block; margin: 0 0 5px; font-size: 10.5px; font-weight: 600;
+  letter-spacing: .06em; text-transform: uppercase; color: var(--ink-faint); }
+.mail-to .mail-meta { margin: 10px 0 0; }

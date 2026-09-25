@@ -20,7 +20,7 @@ const load = (...names) => new Function(
 
 const { renderTemplate } = load('renderTemplate');
 const recipientsWith = (contracts) => new Function('CONTRACTS',
-  grab('mailRecipients') + '\nreturn mailRecipients;')(contracts);
+  grab('splitAddresses') + '\n' + grab('mailRecipients') + '\nreturn mailRecipients;')(contracts);
 const { buildMimeMessage, encodeHeaderWord, base64Url } =
   load('encodeHeaderWord', 'base64Url', 'buildMimeMessage');
 
@@ -190,4 +190,50 @@ test('the send list separates what can be sent from what cannot', () => {
   }
   assert.match(src, /mailRecipients\(r\.contractId\)\.length/,
     'membership of those groups must come from whether an address exists');
+});
+
+// ── Choosing recipients (2026-09-25) ───────────────────────────────────────────────────────
+// Either tick the merchant's known addresses, or type one — typing your own is how a test send
+// is done, and the dialog has to make that visibly different from mailing the merchant.
+const knownIn = (contracts) => new Function('CONTRACTS',
+  grab('splitAddresses') + '\n' + grab('knownAddresses') + '\nreturn knownAddresses;')(contracts);
+
+test('every known address is offered, labelled with where it came from', () => {
+  const f = knownIn([{ contractId: 'c1', financeContactEmail: 'ap@x.com', contactEmail: 'ops@x.com' }]);
+  assert.deepEqual(f('c1'), [
+    { address: 'ap@x.com', source: 'finance contact' },
+    { address: 'ops@x.com', source: 'contact' },
+  ]);
+});
+
+test('the same address in both fields is offered once', () => {
+  // Otherwise it appears twice, both ticked, and the merchant gets two copies.
+  const f = knownIn([{ contractId: 'c1', financeContactEmail: 'AP@x.com', contactEmail: 'ap@x.com' }]);
+  assert.equal(f('c1').length, 1);
+  assert.equal(f('c1')[0].source, 'finance contact', 'and the finance one is the survivor');
+});
+
+test('several addresses in one field are offered separately', () => {
+  // IMPACT really does carry two in one field; they must be individually tickable.
+  const f = knownIn([{ contractId: 'c1', contactEmail: 'KornjiraS@impact.co.th, creditcontrol@impact.co.th' }]);
+  assert.deepEqual(f('c1').map(k => k.address),
+    ['KornjiraS@impact.co.th', 'creditcontrol@impact.co.th']);
+});
+
+test('a merchant with nothing on file offers nothing, rather than a blank row', () => {
+  assert.deepEqual(knownIn([{ contractId: 'c1' }])('c1'), []);
+  assert.deepEqual(knownIn([])('nope'), []);
+});
+
+test('the dialog ticks finance addresses and leaves the rest to a person', () => {
+  const src = grab('mailSendDialog');
+  assert.match(src, /k\.source === 'finance contact' \? 'checked' : ''/,
+    'finance addresses start ticked; an ordinary contact is a decision');
+  assert.match(src, /ms-extra/, 'and any address can be typed, which is how a test is sent');
+});
+
+test('the dialog says when a send is not going to the merchant', () => {
+  // A test send must not look identical to the real thing.
+  const src = grab('mailSendDialog');
+  assert.match(src, /this is a test/, 'it must say so when no recipient is the merchant\u2019s own');
 });
