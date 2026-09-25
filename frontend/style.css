@@ -1233,3 +1233,10 @@ p.rc-warn {
 /* One line, right-aligned, so every row's buttons sit in the same place down the page. */
 .msend-actions { white-space: nowrap; text-align: right; }
 .msend-actions .btn-ghost { margin-left: 6px; }
+
+/* Width is for TABLES. A paragraph is not a table: cap the measure of top-level prose so a
+   full-width screen does not produce 2,000px lines. Only direct children, so nothing inside a
+   table cell or a card is touched. */
+#main.main-wide > p,
+#main.main-wide > .muted,
+#main.main-wide > .page-head + p { max-width: 92ch; }

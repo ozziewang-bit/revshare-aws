@@ -523,11 +523,14 @@ function setActiveNav(id) {
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.id === id));
   // The merchant grid is ~2400px of columns; the app's 1100px content column hides most
   // of them behind a scrollbar. Let this one screen use the whole window.
-  // Full width for the screens that are TABLES. Mailing's send list carries five columns —
-  // entity, merchant, payout, address, actions — and squeezing those into the 1100px
-  // reading column is what made long addresses wrap and the buttons fall out of line.
-  document.getElementById('main')?.classList.toggle('main-wide',
-    id === 'nav-contracts' || id === 'nav-mailing');
+  // Every screen takes the window (2026-09-25). This app is tables — merchants, runs, mail,
+  // archived rows — and each of them was being squeezed into a 1100px reading column on a
+  // 2000px display, which is what made addresses wrap and buttons fall out of line on Mailing.
+  // Width is also what makes the next column cheap to add rather than a layout problem.
+  //
+  // PROSE is capped separately in the stylesheet: a paragraph 2000px wide is harder to read,
+  // not easier, and that is the one thing a reading column was right about.
+  document.getElementById('main')?.classList.add('main-wide');
 }
 
 
