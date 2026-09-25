@@ -4390,6 +4390,65 @@ async function drawMailSendList(runId, template) {
   }));
 }
 
+// The orders behind a run, attributed to the merchant that was paid for them — the input the
+// per-merchant statement needs for its rental-by-rental block. Extracted so the EMAILED
+// statement and the DOWNLOADED one are built from the same thing: the mail used to pass `null`
+// here and attach a summary-only sheet while its own wording promised "every rental in the
+// period". A merchant comparing the file to the letter would have found the letter wrong.
+//
+// Several MB, so it is fetched once per run and kept. A run created before 2026-09-01 stored no
+// order detail (§1j) and returns null orders — the sheet then carries the summary block and
+// says so, which is a fact about that run rather than a fault here.
+const RUN_ORDER_INDEX = new Map();
+
+async function runOrderIndex(run) {
+  if (RUN_ORDER_INDEX.has(run.runId)) return RUN_ORDER_INDEX.get(run.runId);
+  let orders = null;
+  try {
+    const inputs = await api(`/bulk-runs/${encodeURIComponent(run.runId)}/inputs`);
+    if (Array.isArray(inputs?.orders) && inputs.orders.some(o => o.rentalTime != null)) orders = inputs.orders;
+  } catch { /* older run, or inputs gone — the summary block still builds */ }
+
+  const contractOfStore = new Map();
+  const kaByStore = new Map();
+  for (const r of run.results || []) {
+    for (const m of r.merchants || []) {
+      const k = String(m.merchantName || '').toLowerCase().trim();
+      if (!k) continue;
+      contractOfStore.set(k, r.contractId);
+      kaByStore.set(k, r.merchantName);
+    }
+  }
+  for (const m of run.matchedByMachine || []) {
+    const to = contractOfStore.get(String(m.rosterName || '').toLowerCase().trim());
+    if (to) contractOfStore.set(String(m.orderName || '').toLowerCase().trim(), to);
+  }
+  for (const m of run.matchedByAlias || []) {
+    contractOfStore.set(String(m.name || '').toLowerCase().trim(), m.contractId);
+  }
+
+  const ordersByContract = new Map();
+  for (const o of orders || []) {
+    const cid = contractOfStore.get(String(o.merchantName || '').toLowerCase().trim());
+    if (!cid) continue;                      // unmatched — it belongs to no merchant statement
+    if (!ordersByContract.has(cid)) ordersByContract.set(cid, []);
+    ordersByContract.get(cid).push(o);
+  }
+  const index = { orders, ordersByContract, kaByStore };
+  RUN_ORDER_INDEX.set(run.runId, index);
+  return index;
+}
+
+// One merchant's statement as a file, identical whether it is emailed or downloaded.
+function statementWorkbook(result, index) {
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,
+    buildPartnerSheet(XLSX, result, index.orders ? (index.ordersByContract.get(result.contractId) || []) : null,
+                      index.kaByStore),
+    sanitizeFilename(result.merchantName).replace(SHEET_SAFE, '-').slice(0, 31));
+  return new Uint8Array(XLSX.write(wb, { bookType: 'xlsx', type: 'array' }));
+}
+
 // Exactly what this merchant would receive, with nothing to press by accident. The send dialog
 // shows the same text, but it is a form with a Send button — reading fourteen of those to check
 // the wording means fourteen chances to send one early. This is the reading view; Send is
@@ -4414,7 +4473,8 @@ function mailPreviewDialog(result, run, template, sentAlready) {
         <dt>To</dt><dd>${to.length ? escape(to.join(', ')) : '<span class="rc-warn">nobody</span>'}</dd>
         <dt>Subject</dt><dd><strong>${escape(subject)}</strong></dd>
         <dt>Attached</dt><dd>${escape(sanitizeFilename(result.merchantName))}.xlsx
-          <span class="muted">— this merchant’s statement for ${escape(vars.period)}</span></dd>
+          <span class="muted">— this merchant’s statement for ${escape(vars.period)}</span>
+          <div class="muted" id="mp-attach" style="font-size:12px;">checking what it contains…</div></dd>
       </dl>
       <pre class="mail-preview-body">${escape(body)}</pre>
     </div>
@@ -4422,6 +4482,18 @@ function mailPreviewDialog(result, run, template, sentAlready) {
       <button id="mp-close" class="btn-ghost">Close</button>
       ${to.length ? '<button id="mp-send" class="btn-primary">Send this…</button>' : ''}
     </div>`;
+  // Whether the file will carry the rental-by-rental block depends on the run: one created
+  // before 2026-09-01 stored no order detail (§1j). Saying so here stops a covering letter
+  // promising rows the file does not have.
+  runOrderIndex(run).then((index) => {
+    const el = card.querySelector('#mp-attach');
+    if (!el) return;
+    const rows = index.orders ? (index.ordersByContract.get(result.contractId) || []).length : 0;
+    el.textContent = index.orders
+      ? `summary plus ${rows} rental row${rows === 1 ? '' : 's'}`
+      : 'summary only — this run predates stored order detail, so there are no rental rows';
+  }).catch(() => {});
+
   card.querySelector('#mp-close').addEventListener('click', close);
   card.querySelector('#mp-send')?.addEventListener('click', () => {
     close();
@@ -4517,12 +4589,9 @@ function mailSendDialog(result, run, sentAlready, template) {
     if (!recipients.length) return fail('No recipient chosen. Tick an address, or type one above.');
     if (!from) return fail('This template has no sender alias. Set one under Settings → Mail templates.');
     try {
-      // The attachment is the same per-merchant sheet the zip carries, built here rather than
-      // downloaded, so what is emailed and what is downloaded cannot drift apart.
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, buildPartnerSheet(XLSX, result, null, new Map()),
-        sanitizeFilename(result.merchantName).slice(0, 31));
-      const bytes = new Uint8Array(XLSX.write(wb, { bookType: 'xlsx', type: 'array' }));
+      // The same file the download produces, from the same function — including the
+      // rental-by-rental block, which this used to omit while the wording promised it.
+      const bytes = statementWorkbook(result, await runOrderIndex(run));
       const filename = `${sanitizeFilename(result.merchantName)}.xlsx`;
       const sent = await sendGmail(buildMimeMessage({
         from, to: recipients, subject: $('#ms-subject').value,
@@ -4752,40 +4821,11 @@ async function downloadRevshareZip(run) {
   const results = (run.results || []).slice().sort((a, b) => b.payout - a.payout);
 
   // Orders live in the run's stored inputs, not its payload — one fetch of several MB, only
-  // when someone actually downloads. A run without them still produces the summary block.
-  let orders = null;
-  try {
-    const inputs = await api(`/bulk-runs/${encodeURIComponent(run.runId)}/inputs`);
-    if (Array.isArray(inputs?.orders) && inputs.orders.some(o => o.rentalTime != null)) orders = inputs.orders;
-  } catch { /* older run, or inputs gone — fall back to the summary block alone */ }
-
-  // Which merchant does an order belong to? Every store name this run paid, plus the names
-  // recovered by machine number or manual assignment, mapped to the merchant that was paid.
-  const contractOfStore = new Map();
-  const kaByStore = new Map();
-  for (const r of results) {
-    for (const m of r.merchants || []) {
-      const k = String(m.merchantName || '').toLowerCase().trim();
-      if (!k) continue;
-      contractOfStore.set(k, r.contractId);
-      kaByStore.set(k, r.merchantName);
-    }
-  }
-  for (const m of run.matchedByMachine || []) {
-    const to = contractOfStore.get(String(m.rosterName || '').toLowerCase().trim());
-    if (to) contractOfStore.set(String(m.orderName || '').toLowerCase().trim(), to);
-  }
-  for (const m of run.matchedByAlias || []) {
-    contractOfStore.set(String(m.name || '').toLowerCase().trim(), m.contractId);
-  }
-
-  const ordersByContract = new Map();
-  for (const o of orders || []) {
-    const cid = contractOfStore.get(String(o.merchantName || '').toLowerCase().trim());
-    if (!cid) continue;                      // unmatched — it belongs to no merchant statement
-    if (!ordersByContract.has(cid)) ordersByContract.set(cid, []);
-    ordersByContract.get(cid).push(o);
-  }
+  // when someone actually downloads. Shared with the mail, so the two cannot drift.
+  const index = await runOrderIndex(run);
+  const orders = index.orders;
+  const ordersByContract = index.ordersByContract;
+  const kaByStore = index.kaByStore;
 
   // Grouped into a folder per contract entity where that entity covers more than one brand.
   const bases = zipEntryBases(results, contractEntityFor);

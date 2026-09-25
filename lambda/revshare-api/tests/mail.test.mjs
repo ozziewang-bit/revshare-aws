@@ -418,3 +418,39 @@ test('every row that has a mail offers a preview of it', () => {
   assert.equal((src.match(/mprev-btn/g) || []).length >= 3, true,
     'both the ready and already-sent groups, plus the handler');
 });
+
+// ── The emailed file IS the downloaded file (2026-09-25) ───────────────────────────────────
+// The mail used to build its attachment with `null` orders — a summary-only sheet — while its
+// own wording promised "every rental in the period". A merchant comparing the file with the
+// letter would have found the letter wrong. Both paths now go through one builder.
+test('mail and download build the statement from the same function', () => {
+  const send = grab('mailSendDialog');
+  assert.match(send, /statementWorkbook\(result, await runOrderIndex\(run\)\)/,
+    'the mail builds the shared workbook');
+  assert.ok(!/buildPartnerSheet\(XLSX, result, null/.test(send),
+    'and never passes null orders, which is what dropped the rental rows');
+});
+
+test('the order index is fetched once per run, not per merchant', () => {
+  // It is several MB. Fetching it per row would mean 14 downloads to send 14 statements.
+  const src = grab('runOrderIndex');
+  assert.match(src, /RUN_ORDER_INDEX\.has\(run\.runId\)/);
+  assert.match(src, /RUN_ORDER_INDEX\.set\(run\.runId, index\)/);
+});
+
+test('a run with no stored order detail still produces a statement', () => {
+  // Runs before 2026-09-01 stored no orders (§1j). That is a fact about the run, not a fault:
+  // the sheet carries the summary block and the preview says so.
+  const src = grab('runOrderIndex');
+  assert.match(src, /orders = null/, 'orders stay null rather than throwing');
+  const prev = grab('mailPreviewDialog');
+  assert.match(prev, /predates stored order detail/,
+    'and the preview says the attachment has no rental rows');
+});
+
+test('the preview states what the attachment will actually contain', () => {
+  // A covering letter promising rows the file does not have is the failure this prevents.
+  const src = grab('mailPreviewDialog');
+  assert.match(src, /rental row/);
+  assert.match(src, /summary only/);
+});
