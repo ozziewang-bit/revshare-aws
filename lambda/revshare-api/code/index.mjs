@@ -4,6 +4,8 @@ import { getUser } from './users-db.mjs';
 import { meRoute } from './routes/me.mjs';
 import { listUsersRoute, putUserRoute, deleteUserRoute } from './routes/users.mjs';
 import { listFeatureRequestsRoute, createFeatureRequestRoute, updateFeatureRequestRoute, deleteFeatureRequestRoute } from './routes/features.mjs';
+import { listMailTemplatesRoute, putMailTemplateRoute, deleteMailTemplateRoute,
+         listMailLogRoute, createMailLogRoute } from './routes/mail.mjs';
 
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
 const ALLOWED_DOMAINS = (process.env.ALLOWED_DOMAINS || '').split(',').map(s => s.trim()).filter(Boolean);
@@ -30,6 +32,13 @@ import {
   listMachineModelsRoute, createMachineModelRoute,
   updateMachineModelRoute, deleteMachineModelRoute
 } from './routes/machine-models.mjs';
+
+// The existing routes take their id from `event.pathParameters`; these paths are matched by
+// regex here, so the segment is lifted out the same way rather than each route re-parsing.
+function withParam(event, name, path, index = 1) {
+  const seg = path.split('/').filter(Boolean)[index];
+  return { ...event, pathParameters: { ...(event.pathParameters || {}), [name]: decodeURIComponent(seg || '') } };
+}
 
 export const handler = async (event) => {
   try {
@@ -75,8 +84,15 @@ export const handler = async (event) => {
     }
 
     let result;
+    // Mail templates, and the record of what was actually sent. The sending itself happens in
+    // the browser through the operator's own Gmail — see §1q — so nothing here touches mail.
+    if      (method === 'GET'    && path === '/mail-templates')                                  result = await listMailTemplatesRoute();
+    else if (method === 'PUT'    && path === '/mail-templates')                                  result = await putMailTemplateRoute(event);
+    else if (method === 'DELETE' && /^\/mail-templates\/[^/]+$/.test(path))                      result = await deleteMailTemplateRoute(withParam(event, 'templateId', path));
+    else if (method === 'GET'    && /^\/bulk-runs\/[^/]+\/mail-log$/.test(path))                  result = await listMailLogRoute(withParam(event, 'runId', path, 2));
+    else if (method === 'POST'   && /^\/bulk-runs\/[^/]+\/mail-log$/.test(path))                  result = await createMailLogRoute(withParam(event, 'runId', path, 2));
     // Partners
-    if      (method === 'GET'    && path === '/partners')                                        result = await listPartnersRoute();
+    else if (method === 'GET'    && path === '/partners')                                        result = await listPartnersRoute();
     else if (method === 'POST'   && path === '/partners')                                        result = await createPartnerRoute(event);
     else if (method === 'GET'    && /^\/partners\/[^/]+$/.test(path))                           result = await routePartner(event, getPartnerRoute);
     else if (method === 'PUT'    && /^\/partners\/[^/]+$/.test(path))                           result = await routePartner(event, updatePartnerRoute);

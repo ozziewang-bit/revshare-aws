@@ -526,6 +526,9 @@ async function renderSettingsScreen(tab = 'device-types') {
   const main = document.getElementById('main');
   setActiveNav('nav-settings');
   const tabs = [{ id: 'device-types', label: 'Device types' }];
+  // Readable by anyone — checking what is being sent to merchants should not need admin; only
+  // editing does, which the tab itself enforces.
+  tabs.push({ id: 'mail-templates', label: 'Mail templates' });
   if (can('admin')) tabs.push({ id: 'users', label: 'Users' });
   if (!tabs.some(t => t.id === tab)) tab = 'device-types';
   main.innerHTML = `<div class="page-head"><h2>Settings</h2></div>
@@ -534,6 +537,7 @@ async function renderSettingsScreen(tab = 'device-types') {
   wireSubTabs(main, id => renderSettingsScreen(id));
   const body = document.getElementById('settings-body');
   if (tab === 'users') await renderUsersScreen(body);
+  else if (tab === 'mail-templates') await renderMailTemplatesTab();
   else await renderDeviceTypesScreen(body);
 }
 
@@ -3898,6 +3902,346 @@ function buildPartnerSheet(XLSXns, result, orders, kaByStore) {
 const round2 = v => Math.round(Number(v) * 100) / 100;
 const round4 = v => Math.round(Number(v) * 10000) / 10000;
 
+// ── Settings → Mail templates ──────────────────────────────────────────────────────────────
+// Admin-only to edit, because a template is the wording that reaches a merchant under the
+// company's name. Everyone can read one, so anyone can check what is being sent.
+async function renderMailTemplatesTab() {
+  const main = document.getElementById('main');
+  const box = document.getElementById('settings-body') || main;
+  const templates = await loadMailTemplates();
+  const admin = can('admin');
+  const help = MAIL_PLACEHOLDERS.map(([k, d]) => `<code>${escape(k)}</code> — ${escape(d)}`).join('<br>');
+  box.innerHTML = `
+    <p class="muted" style="margin:0 0 12px;font-size:13px;">
+      The wording sent to a merchant with its statement. Placeholders are filled in per merchant
+      when the mail is written; you see the finished text before anything is sent.</p>
+    <div id="mt-list"></div>
+    ${admin ? '<button id="mt-add" class="btn" style="margin-top:12px;">+ New template</button>' : ''}
+    <details style="margin-top:16px;"><summary class="muted">Placeholders</summary>
+      <p class="muted" style="font-size:12.5px;line-height:1.7;">${help}</p></details>`;
+
+  const list = document.getElementById('mt-list');
+  const draw = () => {
+    list.innerHTML = templates.length ? templates.map((t, i) => `
+      <div class="rc-item" style="margin-bottom:10px;">
+        <strong>${escape(t.name || 'Untitled')}</strong>
+        <div class="muted" style="font-size:12.5px;">From ${escape(t.fromAlias || '— no sender alias —')}</div>
+        <div style="font-size:13px;margin-top:4px;">${escape(t.subject || '')}</div>
+        ${admin ? `<div style="margin-top:6px;display:flex;gap:6px;">
+          <button class="btn-ghost mt-edit" data-i="${i}">Edit</button>
+          <button class="btn-ghost mt-del" data-i="${i}">Delete</button></div>` : ''}
+      </div>`).join('') : '<p class="muted">No templates yet.</p>';
+    list.querySelectorAll('.mt-edit').forEach(b =>
+      b.addEventListener('click', () => editMailTemplate(templates[b.dataset.i])));
+    list.querySelectorAll('.mt-del').forEach(b => b.addEventListener('click', async () => {
+      const t = templates[b.dataset.i];
+      if (!confirm(`Delete the template "${t.name || 'Untitled'}"? Mail already sent is unaffected.`)) return;
+      await api('/mail-templates/' + encodeURIComponent(t.id), { method: 'DELETE' });
+      renderMailTemplatesTab();
+    }));
+  };
+  draw();
+  document.getElementById('mt-add')?.addEventListener('click', () => editMailTemplate(null));
+}
+
+function editMailTemplate(t) {
+  const { card, close } = ctModal(700);
+  card.innerHTML = `
+    <h3 style="margin:0 0 10px;">${t ? 'Edit' : 'New'} mail template</h3>
+    <label class="nm-f"><span>Name</span><input id="mt-name" value="${escape(t?.name || '')}"></label>
+    <label class="nm-f"><span>Send from</span>
+      <input id="mt-from" value="${escape(t?.fromAlias || '')}" placeholder="partner.th@inforich.com"></label>
+    <p class="muted" style="font-size:12px;margin:-4px 0 10px;">Must be an address the sender has
+      verified in Gmail under “Send mail as”, or Gmail refuses the message.</p>
+    <label class="nm-f"><span>Subject</span><input id="mt-subject" value="${escape(t?.subject || '')}"></label>
+    <label class="nm-f"><span>Message</span><textarea id="mt-body" rows="10">${escape(t?.body || '')}</textarea></label>
+    <p class="nm-err" id="mt-err" hidden></p>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;">
+      <button id="mt-cancel" class="btn-ghost">Cancel</button>
+      <button id="mt-save" class="btn-primary">Save</button>
+    </div>`;
+  card.querySelector('#mt-cancel').addEventListener('click', close);
+  card.querySelector('#mt-save').addEventListener('click', async () => {
+    const err = card.querySelector('#mt-err');
+    const payload = {
+      id: t?.id,
+      name: card.querySelector('#mt-name').value.trim(),
+      fromAlias: card.querySelector('#mt-from').value.trim(),
+      subject: card.querySelector('#mt-subject').value.trim(),
+      body: card.querySelector('#mt-body').value,
+    };
+    if (!payload.subject) { err.hidden = false; err.textContent = 'A subject is required.'; return; }
+    try {
+      await api('/mail-templates', { method: 'PUT', body: JSON.stringify(payload) });
+      close();
+      renderMailTemplatesTab();
+    } catch (e) { err.hidden = false; err.textContent = e.message; }
+  });
+}
+
+// What the Statement column says for one merchant. Three states, and the third is the one that
+// matters: a merchant with no email address is shown as UNSENDABLE rather than given a button
+// that fails — 266 of 304 merchants have no address on file, so this is the common case, not
+// the edge case.
+function mailCellHtml(result, sent) {
+  if (sent) {
+    const when = sent.sentAt ? new Date(sent.sentAt).toLocaleDateString('en-GB',
+      { day: 'numeric', month: 'short' }) : '';
+    return `<button class="btn-ghost br-send-btn" data-cid="${escape(result.contractId)}"
+      title="Sent to ${escape(sent.to || '')} on ${escape(sent.sentAt || '')} by ${escape(sent.sentBy || '')} — click to send again">✓ sent ${escape(when)}</button>`;
+  }
+  if (!mailRecipients(result.contractId).length) {
+    return `<span class="muted" title="No finance or contact email on this merchant. Add one on the Merchant view.">no address</span>`;
+  }
+  return `<button class="btn-ghost br-send-btn" data-cid="${escape(result.contractId)}">Send…</button>`;
+}
+
+// ── Sending one merchant its statement ─────────────────────────────────────────────────────
+// Deliberately ONE merchant at a time. Sending is outward-facing and cannot be undone, so the
+// dialog shows the exact message — final subject, final body, every recipient, the attachment
+// by name — and the operator presses Send on that, not on a list. A "send all" would be a
+// different feature with a different confirmation, and is not built.
+let MAIL_TEMPLATES = [];
+
+async function loadMailTemplates() {
+  try { MAIL_TEMPLATES = await api('/mail-templates'); } catch { MAIL_TEMPLATES = []; }
+  return MAIL_TEMPLATES;
+}
+
+// The alias the mail is sent AS. Stored on the template, because which group a statement comes
+// from is part of how it is written — a Thai partner note and a Singapore one need not share
+// a sender. Gmail rejects an alias the sending account has not verified, and says so.
+const mailFromAlias = (t) => (t && t.fromAlias) || '';
+
+function mailSendDialog(result, run, sentAlready) {
+  const to = mailRecipients(result.contractId);
+  const { card, close } = ctModal(720);
+  const vars = mailVarsFor(result, run);
+
+  if (!MAIL_TEMPLATES.length) {
+    card.innerHTML = `<h3 style="margin:0 0 8px;">No mail template yet</h3>
+      <p class="muted">An admin can add one under <strong>Settings → Mail templates</strong>.
+      A template holds the subject and the wording; this dialog fills in the merchant, the
+      period and the numbers.</p>
+      <div style="text-align:right;margin-top:14px;"><button id="ms-close" class="btn">Close</button></div>`;
+    card.querySelector('#ms-close').addEventListener('click', close);
+    return;
+  }
+
+  const opts = MAIL_TEMPLATES.map((t, i) =>
+    `<option value="${i}">${escape(t.name || t.subject || 'Untitled')}</option>`).join('');
+  card.innerHTML = `
+    <h3 style="margin:0 0 2px;">Send statement — ${escape(result.merchantName)}</h3>
+    <p class="muted" style="margin:0 0 12px;font-size:12.5px;">
+      ${sentAlready ? `<strong class="rc-warn">Already sent ${escape(sentAlready)}.</strong> Sending again will deliver a second copy. ` : ''}
+      This goes to the merchant. It cannot be unsent.</p>
+    <label class="nm-f"><span>Template</span><select id="ms-tpl">${opts}</select></label>
+    <label class="nm-f"><span>To</span><input id="ms-to" value="${escape(to.join(', '))}"
+      ${to.length ? '' : 'placeholder="this merchant has no email address on file"'}></label>
+    <label class="nm-f"><span>Subject</span><input id="ms-subject"></label>
+    <label class="nm-f"><span>Message</span><textarea id="ms-body" rows="9"></textarea></label>
+    <p class="muted" id="ms-meta" style="font-size:12px;margin:6px 0 0;"></p>
+    <p class="nm-err" id="ms-err" hidden></p>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;">
+      <button id="ms-cancel" class="btn-ghost">Cancel</button>
+      <button id="ms-send" class="btn-primary">Send</button>
+    </div>`;
+
+  const $ = (id) => card.querySelector(id);
+  const fill = () => {
+    const t = MAIL_TEMPLATES[Number($('#ms-tpl').value) || 0];
+    $('#ms-subject').value = renderTemplate(t.subject, vars);
+    $('#ms-body').value = renderTemplate(t.body, vars);
+    $('#ms-meta').textContent =
+      `From ${mailFromAlias(t) || '(no sender alias set on this template)'}`
+      + ` · attaching ${result.merchantName}.xlsx`;
+  };
+  $('#ms-tpl').addEventListener('change', fill);
+  fill();
+  $('#ms-cancel').addEventListener('click', close);
+
+  $('#ms-send').addEventListener('click', async () => {
+    const btn = $('#ms-send'), err = $('#ms-err');
+    const t = MAIL_TEMPLATES[Number($('#ms-tpl').value) || 0];
+    const recipients = $('#ms-to').value.split(/[;,]/).map(a => a.trim()).filter(Boolean);
+    const from = mailFromAlias(t);
+    const fail = (m) => { err.hidden = false; err.textContent = m; btn.disabled = false; btn.textContent = 'Send'; };
+    btn.disabled = true; btn.textContent = 'Sending…'; err.hidden = true;
+    if (!recipients.length) return fail('No recipient. Add an email address to this merchant first.');
+    if (!from) return fail('This template has no sender alias. Set one under Settings → Mail templates.');
+    try {
+      // The attachment is the same per-merchant sheet the zip carries, built here rather than
+      // downloaded, so what is emailed and what is downloaded cannot drift apart.
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, buildPartnerSheet(XLSX, result, null, new Map()),
+        sanitizeFilename(result.merchantName).slice(0, 31));
+      const bytes = new Uint8Array(XLSX.write(wb, { bookType: 'xlsx', type: 'array' }));
+      const filename = `${sanitizeFilename(result.merchantName)}.xlsx`;
+      const sent = await sendGmail(buildMimeMessage({
+        from, to: recipients, subject: $('#ms-subject').value,
+        body: $('#ms-body').value, filename, attachment: bytes,
+      }));
+      await api(`/bulk-runs/${encodeURIComponent(run.runId)}/mail-log`, {
+        method: 'POST',
+        body: JSON.stringify({ contractId: result.contractId, merchantName: result.merchantName,
+                               to: recipients.join(', '), subject: $('#ms-subject').value,
+                               attachment: filename, gmailId: sent.id, fromAlias: from }),
+      });
+      close();
+      renderBulkRunDetail(run.runId);
+    } catch (e) {
+      fail(e.message);
+    }
+  });
+}
+
+// ── Mail: templates, MIME, and sending through the operator's own Gmail (2026-09-25) ───────
+// The app sends nothing server-side. The signed-in user's browser calls the Gmail API with
+// `From:` set to a group address they have verified as a "send mail as" alias, so the mail
+// genuinely comes from partner.th@inforich.com, lands in that person's Sent folder, and
+// replies reach the whole group. No SES, no stored credentials, no domain verification.
+//
+// Gmail rejects a From: that is not a verified alias on that account — there is no app-side
+// workaround, and that rejection is reported verbatim rather than translated.
+const GMAIL_SCOPE = 'https://www.googleapis.com/auth/gmail.send';
+
+// Placeholders a template may use. Kept as an explicit list because it is also the help text
+// shown in the editor: an undocumented placeholder is one nobody uses.
+const MAIL_PLACEHOLDERS = [
+  ['{{merchant}}',  "the merchant's name"],
+  ['{{entity}}',    'the contract entity the payout is settled with'],
+  ['{{period}}',    'the run period, e.g. 2026-09'],
+  ['{{payout}}',    'the payout amount, formatted'],
+  ['{{revenue}}',   'revenue for the period, formatted'],
+  ['{{sharePct}}',  'revenue share as a percentage'],
+  ['{{currency}}',  "the merchant's currency"],
+];
+
+// Substitution is literal and total: an unknown placeholder is LEFT AS IT IS rather than
+// replaced with a blank. A merchant receiving "{{payout}}" is embarrassing; a merchant
+// receiving "Your payout is  THB" looks like a system that lost the number.
+function renderTemplate(text, vars) {
+  return String(text ?? '').replace(/\{\{(\w+)\}\}/g, (whole, key) =>
+    Object.prototype.hasOwnProperty.call(vars || {}, key) ? String(vars[key] ?? '') : whole);
+}
+
+// The variables for one merchant in one run. Read from the frozen run result plus the merchant
+// record, so it says what was actually paid.
+function mailVarsFor(result, run) {
+  const rev = Number(result.revenue) || 0;
+  const pay = Number(result.payout) || 0;
+  const c = CONTRACTS.find(x => x.contractId === result.contractId);
+  return {
+    merchant: result.merchantName || '',
+    entity: contractEntityFor(result.contractId) || result.merchantName || '',
+    period: periodTag(run.periodStart) || '',
+    payout: fmt2(pay),
+    revenue: fmt2(rev),
+    sharePct: rev > 0 ? (pay / rev * 100).toFixed(1) + '%' : '—',
+    currency: (c && c.currency) || CCY,
+  };
+}
+
+// Where a merchant's mail goes: the finance contact first, because that is who a remittance
+// advice is for, falling back to the ordinary contact. Several addresses in one field is
+// normal in this data (IMPACT carries two), so commas and semicolons both split.
+function mailRecipients(contractId) {
+  const c = CONTRACTS.find(x => x.contractId === contractId);
+  const raw = (c && (c.financeContactEmail || c.contactEmail)) || '';
+  return String(raw).split(/[;,]/).map(a => a.trim()).filter(a => /.+@.+\..+/.test(a));
+}
+
+// RFC 2047 encoding for a header that is not ASCII. Thai merchant names in a Subject: arrive as
+// mojibake without this, and "?????" in a subject line reads as a broken system.
+function encodeHeaderWord(text) {
+  const s = String(text ?? '');
+  if (/^[\x20-\x7E]*$/.test(s)) return s;
+  const b64 = btoa(String.fromCharCode(...new TextEncoder().encode(s)));
+  return `=?UTF-8?B?${b64}?=`;
+}
+
+function base64Url(bytes) {
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+// A multipart/mixed message: the note, then the statement. Built by hand because the whole
+// message is three headers and a base64 blob, and a library for that would be more code than
+// this is. The boundary is random so it cannot appear in the attachment by coincidence.
+// Plain parameter, destructured inside: a destructured PARAMETER breaks the test extractor,
+// whose brace matcher closes on the parameter's brace instead of the body. Same convention
+// as classifyDifferences, and for the same reason.
+function buildMimeMessage(opts) {
+  const { from, to, subject, body, filename, attachment } = opts;
+  const boundary = 'mcrm_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+  const head = [
+    `From: ${from}`,
+    `To: ${to.join(', ')}`,
+    `Subject: ${encodeHeaderWord(subject)}`,
+    'MIME-Version: 1.0',
+    `Content-Type: multipart/mixed; boundary="${boundary}"`,
+    '', '',
+  ].join('\r\n');
+  const text = [
+    `--${boundary}`,
+    'Content-Type: text/plain; charset="UTF-8"',
+    'Content-Transfer-Encoding: base64',
+    '', base64Url(new TextEncoder().encode(body)).replace(/-/g, '+').replace(/_/g, '/'),
+    '',
+  ].join('\r\n');
+  const file = attachment ? [
+    `--${boundary}`,
+    'Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'Content-Transfer-Encoding: base64',
+    `Content-Disposition: attachment; filename="${String(filename).replace(/"/g, '')}"`,
+    '', base64Url(attachment).replace(/-/g, '+').replace(/_/g, '/'),
+    '',
+  ].join('\r\n') : '';
+  return head + text + file + `--${boundary}--\r\n`;
+}
+
+// One access token per session, requested the first time someone sends. The app's sign-in gives
+// an ID token only — proof of who you are, not permission to act as you — so sending needs its
+// own consent. Internal Workspace app, so no unverified-app warning.
+let GMAIL_TOKEN = null;
+
+function gmailToken() {
+  if (GMAIL_TOKEN && GMAIL_TOKEN.expires > Date.now() + 60000) return Promise.resolve(GMAIL_TOKEN.value);
+  return new Promise((resolve, reject) => {
+    if (!window.google?.accounts?.oauth2) return reject(new Error('Google sign-in is not loaded — reload the page.'));
+    const client = google.accounts.oauth2.initTokenClient({
+      client_id: GOOGLE_CLIENT_ID,
+      scope: GMAIL_SCOPE,
+      callback: (r) => {
+        if (r.error) return reject(new Error(r.error_description || r.error));
+        GMAIL_TOKEN = { value: r.access_token, expires: Date.now() + (Number(r.expires_in) || 3600) * 1000 };
+        resolve(GMAIL_TOKEN.value);
+      },
+      error_callback: (e) => reject(new Error(e?.message || 'Permission to send mail was not granted.')),
+    });
+    client.requestAccessToken();
+  });
+}
+
+async function sendGmail(mime) {
+  const token = await gmailToken();
+  const res = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ raw: base64Url(new TextEncoder().encode(mime)) }),
+  });
+  if (!res.ok) {
+    const detail = await res.text();
+    // Gmail's own words. The commonest failure is an unverified From: alias, and translating
+    // that into something friendlier would hide the one thing that tells you how to fix it.
+    throw new Error(`Gmail refused this message (${res.status}): ${detail.slice(0, 300)}`);
+  }
+  return res.json();
+}
+
 async function downloadRevshareZip(run) {
   const tag = periodTag(run.periodStart);
   // Entities come from the merchant records, not the run. Harmless if already cached.
@@ -4065,6 +4409,13 @@ async function renderBulkRunDetail(runId) {
   // A run freezes what it PAID (§10.5) — the contract entity is not part of that, so it is
   // resolved live from the merchant record. See contractEntityFor for what that means.
   await ensureContractCache().catch(() => {});
+  // What has already gone out for this run, so a row can say so before anyone sends a second
+  // copy. A failed fetch leaves the column blank rather than blocking the page.
+  const [, mailLog] = await Promise.all([
+    loadMailTemplates(),
+    api(`/bulk-runs/${encodeURIComponent(runId)}/mail-log`).catch(() => []),
+  ]);
+  const sentBy = new Map((mailLog || []).map(m => [m.contractId, m]));
   const el = document.getElementById('br-detail');
   const totalRevenue = (run.results || []).reduce((s, r) => s + (r.revenue || 0), 0);
   const totalSharePct = totalRevenue > 0 ? ((run.totalPayout || 0) / totalRevenue * 100).toFixed(1) + '%' : '—';
@@ -4136,7 +4487,8 @@ async function renderBulkRunDetail(runId) {
 
     <table class="ts"><thead><tr>
       <th title="The company a payout is settled with, read from the merchant record as it is today — a run does not store it">Contract entity</th>
-      <th>Merchant</th><th>Stores</th><th>Rentals</th><th>Revenue</th><th>Payout</th><th>Share %</th></tr></thead>
+      <th>Merchant</th><th>Stores</th><th>Rentals</th><th>Revenue</th><th>Payout</th><th>Share %</th>
+      ${can('runCalcs') ? '<th>Statement</th>' : ''}</tr></thead>
     <tbody>${(run.results || []).sort((a,b) => b.payout - a.payout).map(r => `<tr>
       <td>${contractEntityFor(r.contractId)
              ? escape(contractEntityFor(r.contractId))
@@ -4147,9 +4499,10 @@ async function renderBulkRunDetail(runId) {
       <td>${Number(r.revenue).toFixed(2)}</td>
       <td><strong>${Number(r.payout).toFixed(2)}</strong></td>
       <td>${r.revenue > 0 ? (r.payout / r.revenue * 100).toFixed(1) + '%' : '—'}</td>
+      ${can('runCalcs') ? `<td class="br-send">${mailCellHtml(r, sentBy.get(r.contractId))}</td>` : ''}
     </tr>`).join('')}</tbody>
     <tfoot><tr>
-      <td>Total</td><td></td><td></td><td></td>
+      <td>Total</td><td></td><td></td><td></td>${can('runCalcs') ? '<td></td>' : ''}
       <td>${totalRevenue.toFixed(2)}</td>
       <td>${Number(run.totalPayout || 0).toFixed(2)}</td>
       <td>${totalSharePct}</td>
@@ -4225,6 +4578,12 @@ async function renderBulkRunDetail(runId) {
           ${reconciles ? `— matches the order report's total.` : `vs. the order report's ${fmt2(run.totalOrderRevenue)}. Investigate before treating totals as final.`}
         </p>` : ''}
     </section>` : ''}`;
+
+  // Delegated, because the table is re-rendered whenever a send completes.
+  el.querySelectorAll('.br-send-btn').forEach(b => b.addEventListener('click', () => {
+    const r = (run.results || []).find(x => x.contractId === b.dataset.cid);
+    if (r) mailSendDialog(r, run, sentBy.get(r.contractId)?.sentAt || null);
+  }));
 
   el.querySelector('#dl-revshare-zip')?.addEventListener('click', async (ev) => {
     ev.preventDefault();

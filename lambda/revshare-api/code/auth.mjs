@@ -19,6 +19,14 @@ export function resolvePermissions(email, row, adminEmails) {
 
 // Map a request to the permission it requires. null → any valid token (reads / me).
 export function requiredPermission(method, path) {
+  // Mail (2026-09-25). Editing a template is an admin act — it is the wording that goes to a
+  // merchant under the company's name. SENDING is gated on runCalcs: the people who run a
+  // payout are the people who send its statements. Reading either is open, like every other
+  // read, so anyone can check what was sent without being able to send.
+  if (path === '/mail-templates') return method === 'GET' ? null : 'admin';
+  if (/^\/mail-templates\/[^/]+$/.test(path)) return method === 'GET' ? null : 'admin';
+  if (/^\/bulk-runs\/[^/]+\/mail-log$/.test(path)) return method === 'GET' ? null : 'runCalcs';
+
   if (method === 'GET') return path.startsWith('/users') ? 'admin' : null;   // reads are open; /users list is admin
   if (path.startsWith('/users')) return 'admin';
   // Anyone signed in can FILE a feature request — the catch-all below would otherwise demand

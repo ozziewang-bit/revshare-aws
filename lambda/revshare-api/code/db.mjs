@@ -389,6 +389,47 @@ export async function putLastUpload(names, extra = {}) {
   return rec;
 }
 
+// ── Mail templates + the record of what was sent (2026-09-25) ──────────────────────────────
+// Templates are per region, because a Thai merchant and a Singapore one are not written to in
+// the same language or currency. `MAILLOG` is deliberately a SEPARATE row family rather than a
+// field on the run: a run is a frozen snapshot of what was CALCULATED (§10.5), and what was
+// SENT is a different fact that keeps changing after the run is finished.
+
+export async function listMailTemplates() {
+  return (await query({ KeyConditionExpression: 'pk = :p',
+                        ExpressionAttributeValues: { ':p': 'MAILTEMPLATE' } }))
+    .map(({ pk, sk, ...t }) => t);
+}
+
+export async function putMailTemplate(t) {
+  const now = new Date().toISOString();
+  const item = { pk: 'MAILTEMPLATE', sk: `MAILTEMPLATE#${t.id}`, ...t,
+                 updatedAt: now, createdAt: t.createdAt || now };
+  await ddb.send(new PutCommand({ TableName: TABLE, Item: item }));
+  const { pk, sk, ...out } = item;
+  return out;
+}
+
+export async function deleteMailTemplate(id) {
+  await ddb.send(new DeleteCommand({
+    TableName: TABLE, Key: { pk: 'MAILTEMPLATE', sk: `MAILTEMPLATE#${id}` } }));
+}
+
+// One row per mail actually accepted by Gmail. Keyed by run so "did we send Central's statement
+// for September?" is one query. Nothing here is ever updated — a send happened or it did not.
+export async function listMailLog(runId) {
+  return (await query({ KeyConditionExpression: 'pk = :p',
+                        ExpressionAttributeValues: { ':p': `MAILLOG#${runId}` } }))
+    .map(({ pk, sk, ...m }) => m);
+}
+
+export async function putMailLog(runId, entry) {
+  const item = { pk: `MAILLOG#${runId}`, sk: `MAILLOG#${entry.id}`, ...entry };
+  await ddb.send(new PutCommand({ TableName: TABLE, Item: item }));
+  const { pk, sk, ...out } = item;
+  return out;
+}
+
 // One document per RECORDED weekly upload — the folded brand rows the import already built,
 // kept so the Reconcile tab can compare field by field long after the dialog closed. It goes
 // to S3 rather than DynamoDB for the same reason bulk runs do: 260 brands of contact detail
