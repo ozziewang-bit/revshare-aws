@@ -161,3 +161,33 @@ test('a sender address is trimmed, since a stray space makes Gmail reject it', (
   assert.equal(aliasIn('th')({ fromAlias: '  partner.th@inforich.com  ' }),
     'partner.th@inforich.com');
 });
+
+// ── One place sends (2026-09-25) ───────────────────────────────────────────────────────────
+// "All mails happen in the mailing page, never from Run share" (user). Two places that can send
+// means two places that can send a second copy, and two places to look when someone asks what
+// went out. A run detail reports what was CALCULATED; Mailing is where anything leaves.
+test('the run detail cannot send mail', () => {
+  const src = grab('renderBulkRunDetail');
+  for (const forbidden of ['mailSendDialog', 'mail-log', 'Statement']) {
+    assert.ok(!src.includes(forbidden),
+      `renderBulkRunDetail must not reference ${forbidden} — sending belongs to Mailing`);
+  }
+});
+
+test('the Mailing screen opens on Send, because that is the job', () => {
+  const src = grab('renderMailingScreen');
+  assert.match(src, /tab = 'send'/, 'the default tab is the work, not the configuration');
+  const order = ['send', 'templates', 'sent'].map(id => src.indexOf(`id: '${id}'`));
+  assert.deepEqual(order, [...order].sort((a, b) => a - b), 'Send comes first');
+});
+
+test('the send list separates what can be sent from what cannot', () => {
+  // Three groups because they need three different things: work, a record, and a gap in the
+  // merchant list that no amount of mailing fixes.
+  const src = grab('drawMailSendList');
+  for (const group of ['Ready to send', 'Already sent', 'No email address']) {
+    assert.ok(src.includes(group), `the send list must show "${group}"`);
+  }
+  assert.match(src, /mailRecipients\(r\.contractId\)\.length/,
+    'membership of those groups must come from whether an address exists');
+});

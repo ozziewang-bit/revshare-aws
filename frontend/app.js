@@ -3911,18 +3911,21 @@ const round4 = v => Math.round(Number(v) * 10000) / 10000;
 // Mailing: its own destination, because writing to a merchant is work, not configuration.
 // Two tabs for now — the templates, and what has actually gone out. The sending workspace
 // (pick a period, work down the list) is the next piece and is being designed.
-async function renderMailingScreen(tab = 'templates') {
+async function renderMailingScreen(tab = 'send') {
   const main = document.getElementById('main');
   setActiveNav('nav-mailing');
-  const tabs = [{ id: 'templates', label: 'Templates' }, { id: 'sent', label: 'Sent' }];
-  if (!tabs.some(t => t.id === tab)) tab = 'templates';
+  const tabs = [{ id: 'send', label: 'Send' },
+                { id: 'templates', label: 'Templates' },
+                { id: 'sent', label: 'Sent' }];
+  if (!tabs.some(t => t.id === tab)) tab = 'send';
   main.innerHTML = `<div class="page-head"><h2>Mailing</h2></div>
     ${subTabsHtml(tabs, tab)}
     <div id="mailing-body">Loading…</div>`;
   wireSubTabs(main, id => renderMailingScreen(id));
   const body = document.getElementById('mailing-body');
   if (tab === 'sent') await renderMailSentTab(body);
-  else await renderMailTemplatesTab(body);
+  else if (tab === 'templates') await renderMailTemplatesTab(body);
+  else await renderMailSendTab(body);
 }
 
 // Everything sent, newest first, across every run. Answers "did Central get its September
@@ -4036,21 +4039,94 @@ function editMailTemplate(t) {
   });
 }
 
-// What the Statement column says for one merchant. Three states, and the third is the one that
-// matters: a merchant with no email address is shown as UNSENDABLE rather than given a button
-// that fails — 266 of 304 merchants have no address on file, so this is the common case, not
-// the edge case.
-function mailCellHtml(result, sent) {
-  if (sent) {
-    const when = sent.sentAt ? new Date(sent.sentAt).toLocaleDateString('en-GB',
-      { day: 'numeric', month: 'short' }) : '';
-    return `<button class="btn-ghost br-send-btn" data-cid="${escape(result.contractId)}"
-      title="Sent to ${escape(sent.to || '')} on ${escape(sent.sentAt || '')} by ${escape(sent.sentBy || '')} — click to send again">✓ sent ${escape(when)}</button>`;
+// ── Mailing → Send: the monthly job on one screen ──────────────────────────────────────────
+// Pick a month, pick a template, work down the list. Three groups, because they need three
+// different things from you: Ready is work, Already sent is a record, and No address is a gap
+// in the merchant list that no amount of mailing will fix — 266 of 304 merchants today.
+//
+// Still ONE MERCHANT AT A TIME. The list makes the job findable; it does not make it bulk.
+async function renderMailSendTab(host) {
+  host.innerHTML = '<p class="muted">Loading…</p>';
+  const [runs, templates] = await Promise.all([
+    api('/bulk-runs').catch(() => []),
+    loadMailTemplates(),
+  ]);
+  if (!runs.length) {
+    host.innerHTML = '<p class="muted">No run has been computed yet — statements are built from a run.</p>';
+    return;
   }
-  if (!mailRecipients(result.contractId).length) {
-    return `<span class="muted" title="No finance or contact email on this merchant. Add one on the Merchant view.">no address</span>`;
+  if (!templates.length) {
+    host.innerHTML = '<p class="muted">No mail template yet. Add one under <strong>Templates</strong> — '
+      + 'it holds the subject and wording, and this screen fills in each merchant.</p>';
+    return;
   }
-  return `<button class="btn-ghost br-send-btn" data-cid="${escape(result.contractId)}">Send…</button>`;
+  runs.sort((a, b) => (b.periodStart || '').localeCompare(a.periodStart || ''));
+  host.innerHTML = `
+    <div class="mail-form mail-row" style="max-width:640px;">
+      <label><span>Period</span><select id="msend-run">${runs.map(r =>
+        `<option value="${escape(r.runId)}">${escape(periodTag(r.periodStart))}</option>`).join('')}</select></label>
+      <label><span>Template</span><select id="msend-tpl">${templates.map((t, i) =>
+        `<option value="${i}">${escape(t.name || t.subject || 'Untitled')}</option>`).join('')}</select></label>
+    </div>
+    <div id="msend-list">Loading…</div>`;
+  const draw = () => drawMailSendList(document.getElementById('msend-run').value);
+  host.querySelector('#msend-run').addEventListener('change', draw);
+  draw();
+}
+
+async function drawMailSendList(runId) {
+  const box = document.getElementById('msend-list');
+  if (!box) return;
+  box.innerHTML = '<p class="muted">Loading…</p>';
+  const [run, log] = await Promise.all([
+    api('/bulk-runs/' + encodeURIComponent(runId)),
+    api(`/bulk-runs/${encodeURIComponent(runId)}/mail-log`).catch(() => []),
+  ]);
+  await ensureContractCache().catch(() => {});
+  const sent = new Map((log || []).map(m => [m.contractId, m]));
+
+  const ready = [], done = [], noAddress = [];
+  for (const r of (run.results || []).slice().sort((a, b) => b.payout - a.payout)) {
+    if (sent.has(r.contractId)) done.push(r);
+    else if (mailRecipients(r.contractId).length) ready.push(r);
+    else noAddress.push(r);
+  }
+
+  const row = (r, extra) => `<tr>
+    <td>${escape(contractEntityFor(r.contractId) || '—')}</td>
+    <td><strong>${escape(r.merchantName)}</strong></td>
+    <td class="rc-c-money">${fmt2(r.payout)}</td>
+    <td>${extra}</td></tr>`;
+
+  const section = (title, rows, tone, body) => rows.length ? `
+    <section style="margin-top:18px;">
+      <h3 style="display:flex;align-items:baseline;gap:10px;margin:0 0 6px;font-size:14px;">
+        ${escape(title)} <span class="rc-count">${rows.length}</span></h3>
+      <table class="ts"><thead><tr>
+        <th>Contract entity</th><th>Merchant</th><th class="rc-c-money">Payout</th><th>${escape(tone)}</th>
+      </tr></thead><tbody>${body}</tbody></table>
+    </section>` : '';
+
+  box.innerHTML =
+    section('Ready to send', ready, 'To', ready.map(r => row(r,
+      `${escape(mailRecipients(r.contractId).join(', '))}
+       <button class="btn-ghost msend-btn" data-cid="${escape(r.contractId)}" style="margin-left:8px;">Send…</button>`)).join(''))
+    + section('Already sent', done, 'Sent', done.map(r => {
+        const m = sent.get(r.contractId);
+        return row(r, `${escape(m.sentAt ? new Date(m.sentAt).toLocaleString('en-GB',
+          { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '')}
+          to ${escape(m.to || '')} by ${escape(m.sentBy || '')}
+          <button class="btn-ghost msend-btn" data-cid="${escape(r.contractId)}" style="margin-left:8px;">Send again…</button>`);
+      }).join(''))
+    + section('No email address', noAddress, 'Fix', noAddress.map(r => row(r,
+      `<span class="muted">add a finance email on the Merchant view</span>`)).join(''))
+    + (ready.length || done.length || noAddress.length ? '' : '<p class="muted">This run paid nobody.</p>');
+
+  box.querySelectorAll('.msend-btn').forEach(b => b.addEventListener('click', () => {
+    const r = (run.results || []).find(x => x.contractId === b.dataset.cid);
+    const tplIdx = Number(document.getElementById('msend-tpl')?.value) || 0;
+    if (r) mailSendDialog(r, run, sent.get(r.contractId)?.sentAt || null, tplIdx);
+  }));
 }
 
 // ── Sending one merchant its statement ─────────────────────────────────────────────────────
@@ -4081,7 +4157,7 @@ const DEFAULT_FROM_ALIAS = { th: 'partner.th@inforich.com', sg: '' };
 // where the field was cleared — still sends rather than failing at the last step.
 const mailFromAlias = (t) => ((t && t.fromAlias) || DEFAULT_FROM_ALIAS[REGION] || '').trim();
 
-function mailSendDialog(result, run, sentAlready) {
+function mailSendDialog(result, run, sentAlready, templateIndex) {
   const to = mailRecipients(result.contractId);
   const { card, close } = ctModal(720);
   const vars = mailVarsFor(result, run);
@@ -4096,8 +4172,9 @@ function mailSendDialog(result, run, sentAlready) {
     return;
   }
 
+  const chosen = Number.isInteger(templateIndex) ? templateIndex : 0;
   const opts = MAIL_TEMPLATES.map((t, i) =>
-    `<option value="${i}">${escape(t.name || t.subject || 'Untitled')}</option>`).join('');
+    `<option value="${i}"${i === chosen ? ' selected' : ''}>${escape(t.name || t.subject || 'Untitled')}</option>`).join('');
   card.innerHTML = `
     <h3 style="margin:0 0 4px;">Send statement — ${escape(result.merchantName)}</h3>
     <p class="muted" style="margin:0 0 12px;font-size:12.5px;">This goes to the merchant. It cannot be unsent.</p>
@@ -4159,7 +4236,7 @@ function mailSendDialog(result, run, sentAlready) {
                                attachment: filename, gmailId: sent.id, fromAlias: from }),
       });
       close();
-      renderBulkRunDetail(run.runId);
+      drawMailSendList(run.runId);
     } catch (e) {
       fail(e.message);
     }
@@ -4480,13 +4557,9 @@ async function renderBulkRunDetail(runId) {
   // A run freezes what it PAID (§10.5) — the contract entity is not part of that, so it is
   // resolved live from the merchant record. See contractEntityFor for what that means.
   await ensureContractCache().catch(() => {});
-  // What has already gone out for this run, so a row can say so before anyone sends a second
-  // copy. A failed fetch leaves the column blank rather than blocking the page.
-  const [, mailLog] = await Promise.all([
-    loadMailTemplates(),
-    api(`/bulk-runs/${encodeURIComponent(runId)}/mail-log`).catch(() => []),
-  ]);
-  const sentBy = new Map((mailLog || []).map(m => [m.contractId, m]));
+  // No mail from this screen, by decision (2026-09-25): every statement leaves from Mailing,
+  // so there is one place where sending happens and one place that records it. A run detail
+  // reports what was CALCULATED.
   const el = document.getElementById('br-detail');
   const totalRevenue = (run.results || []).reduce((s, r) => s + (r.revenue || 0), 0);
   const totalSharePct = totalRevenue > 0 ? ((run.totalPayout || 0) / totalRevenue * 100).toFixed(1) + '%' : '—';
@@ -4558,8 +4631,7 @@ async function renderBulkRunDetail(runId) {
 
     <table class="ts"><thead><tr>
       <th title="The company a payout is settled with, read from the merchant record as it is today — a run does not store it">Contract entity</th>
-      <th>Merchant</th><th>Stores</th><th>Rentals</th><th>Revenue</th><th>Payout</th><th>Share %</th>
-      ${can('runCalcs') ? '<th>Statement</th>' : ''}</tr></thead>
+      <th>Merchant</th><th>Stores</th><th>Rentals</th><th>Revenue</th><th>Payout</th><th>Share %</th></tr></thead>
     <tbody>${(run.results || []).sort((a,b) => b.payout - a.payout).map(r => `<tr>
       <td>${contractEntityFor(r.contractId)
              ? escape(contractEntityFor(r.contractId))
@@ -4570,10 +4642,9 @@ async function renderBulkRunDetail(runId) {
       <td>${Number(r.revenue).toFixed(2)}</td>
       <td><strong>${Number(r.payout).toFixed(2)}</strong></td>
       <td>${r.revenue > 0 ? (r.payout / r.revenue * 100).toFixed(1) + '%' : '—'}</td>
-      ${can('runCalcs') ? `<td class="br-send">${mailCellHtml(r, sentBy.get(r.contractId))}</td>` : ''}
     </tr>`).join('')}</tbody>
     <tfoot><tr>
-      <td>Total</td><td></td><td></td><td></td>${can('runCalcs') ? '<td></td>' : ''}
+      <td>Total</td><td></td><td></td><td></td>
       <td>${totalRevenue.toFixed(2)}</td>
       <td>${Number(run.totalPayout || 0).toFixed(2)}</td>
       <td>${totalSharePct}</td>
@@ -4649,12 +4720,6 @@ async function renderBulkRunDetail(runId) {
           ${reconciles ? `— matches the order report's total.` : `vs. the order report's ${fmt2(run.totalOrderRevenue)}. Investigate before treating totals as final.`}
         </p>` : ''}
     </section>` : ''}`;
-
-  // Delegated, because the table is re-rendered whenever a send completes.
-  el.querySelectorAll('.br-send-btn').forEach(b => b.addEventListener('click', () => {
-    const r = (run.results || []).find(x => x.contractId === b.dataset.cid);
-    if (r) mailSendDialog(r, run, sentBy.get(r.contractId)?.sentAt || null);
-  }));
 
   el.querySelector('#dl-revshare-zip')?.addEventListener('click', async (ev) => {
     ev.preventDefault();
