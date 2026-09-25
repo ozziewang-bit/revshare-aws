@@ -7,8 +7,9 @@ longer read from the weekly file — a column is writable by a file or by hand, 
 2026-09-21/22: the Merchant view gained a read-only **Reconcile** tab and a **Review only**
 upload that changes nothing — §1o; the run detail leads with **Contract entity** and its download
 groups into a folder per entity — §1j. 2026-09-23: a month of orders outgrew API Gateway's 10 MB
-payload limit and the request body is now **gzipped** — §1p.)
-Service-worker `CACHE_VERSION` is at `revshare-v169` (bump on every shell change).
+payload limit and the request body is now **gzipped** — §1p. 2026-09-25: a **Mailing** nav item
+sends each merchant its statement from the partner group address — §1q.)
+Service-worker `CACHE_VERSION` is at `revshare-v193` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
 end-to-end before touching anything. The codebase is the ultimate source of
@@ -989,7 +990,96 @@ not. Keeping those names and consulting them before the registry is the fix; it 
 shop in the same week it appears rather than one run later. Note the file is Approved-only, so
 pending/disapproved shops still would not place.
 
-Tests: `npm test` → **321**.
+Tests: `npm test` → **394**.
+
+## 1q. Mailing (2026-09-25) — statements go out from here, and only from here
+
+A fifth nav item: **Send · Templates · Sent**. The nav was deliberately four (§1b); this earned a
+slot because writing to a merchant is work someone does, not configuration, and it was unusable
+buried under Settings.
+
+**Nothing is sent server-side.** The signed-in operator's BROWSER calls the Gmail API with
+`From:` set to a group address they have verified in Gmail under "Send mail as". So the mail
+genuinely comes from `partner.th@inforich.com`, lands in that person's Sent folder, and replies
+reach the group. No SES, no stored credentials, no domain verification — and no way for this app
+to mail anyone on its own. Both `ozzie.wang@` and `pavarisa.t@` have verified the alias.
+
+**Setup, already done, recorded because nothing in the repo shows it:** Google Cloud project
+**Revshare SEA** (`speedy-precept-499109-m8`, project number 1087526052921 — the number in
+`GOOGLE_CLIENT_ID`). OAuth consent screen is **Internal**, which is why the restricted
+`gmail.send` scope needs no Google review and no unverified-app warning. Gmail API enabled, scope
+added, CloudFront origin allow-listed.
+
+### The template decides what the send screen asks for
+
+`kind` is `statement` or `message` (absent ⇒ statement). A **statement** attaches that merchant's
+figures for a period, so the screen then asks for a period and lists the merchants that run paid.
+A **message** attaches nothing from a run, so it asks for recipients and nothing else — and the
+editor stops offering `{{payout}}`/`{{period}}`, which it would have no run to fill in. Step one
+is the template ALONE, with nothing selected by default: an auto-selected first template put one
+click between landing on the screen and sending a real merchant a real statement.
+
+A **plain message** may carry an uploaded file (≤5 MB, S3, keyed by ULID so replacing one never
+overwrites what a past send used). A **statement may not** — it already attaches the merchant's
+own figures, and a second fixed file raises the question of which one matters.
+
+### Who it goes to
+
+**The finance email column, and only that** (user, 2026-09-25). It used to fall back to
+`contactEmail`, which quietly sent a remittance advice to an ops or marketing address. The cost
+is real and shown rather than hidden: in the August run **14** merchants have a finance email and
+**17** have a contact email but no finance one — QSNCC (28,180) and IMPACT (9,070) among them —
+and those appear under "No finance email" WITH the address that is on file, so the gap reads as a
+to-do list. Live coverage 2026-09-25: **38 of 304** merchants have any address at all.
+
+**Send to** at the top offers *each merchant's own finance address* or *an assigned address*, and
+the assignment is **cleared on every visit** — one left on from yesterday, silently redirecting a
+real send, is the worst thing this screen could do. A per-row "Assign other address" button was
+tried and removed: it put 106 identical buttons in one section and drowned the merchants.
+
+### What stops a mistake
+
+Nothing here is recoverable, so the checks run at the MOMENT of sending, against the values about
+to be used rather than what the screen rendered:
+
+- The attached file must belong to the merchant named in the letter.
+- Unless the send was deliberately assigned, every recipient must be a finance address of THAT
+  merchant. Sending 7-Eleven's figures to IMPACT is blocked, not merely unlikely.
+- A confirmation restates merchant, period, payout, recipients, sender and the attachment with
+  its row count, and says it cannot be unsent.
+- **Preview** renders the exact mail with no Send button in reach, and warns about placeholders
+  the template left unfilled — an unknown placeholder renders as ITSELF by design, so a merchant
+  would otherwise receive `{{payout}}` literally.
+- `MAILLOG#<runId>` records merchant, recipients, subject, attachment + row count, period, the
+  payout the letter quoted, whether it was assigned, and who sent it. Written only AFTER Gmail
+  accepts. "We sent it" is not the same claim as "we sent the right one".
+
+### The emailed file IS the downloaded file
+
+Both go through `statementWorkbook` / `runOrderIndex`. The mail once built its attachment with
+`null` orders — a summary-only sheet — while the letter promised "every rental in the period". A
+merchant comparing the two would have found the letter wrong. The order index is fetched once per
+run, not per merchant (it is several MB).
+
+### Things that cost an afternoon, so do not re-learn them
+
+- **The Gmail permission popup needs the click.** Ask for the token BEFORE the first `await`, or
+  the browser blocks it and reports only "Failed to open popup window".
+- **A silent catch is a lie in the user's own words.** `loadMailTemplates` caught everything and
+  returned `[]`, so a broken list read as "No templates yet"; the template save built its payload
+  outside its try, so a stale dialog silently dropped an edit. Both are fixed and tested.
+- **`query()` in `db.mjs` does not add `TableName`.** Omitting it fails at runtime while writes
+  succeed — which is exactly how two saved templates appeared to vanish.
+- **Anything appended after a `row(...)` helper lands outside the `</tr>`**, and the browser
+  hoists it out of the table.
+- **An address with a space is not an address.** `/.+@.+\..+/` accepts one; three live entries
+  (BAANYING ×2, Oranuch) are `baanying mkt@gmail.com`, which Gmail would reject outright.
+
+### Not built
+
+No bulk send — one merchant at a time, deliberately. No SG group address yet, so an SG template
+must name its own sender or it is refused rather than borrowing Thailand's. Nothing chases you
+about unsent periods beyond the Send tab's progress line.
 
 ## 2. Live URLs and resources
 
@@ -1019,6 +1109,7 @@ Account `<YOUR_AWS_ACCOUNT_ID>`, region `ap-northeast-1`. IAM user `<your-iam-us
 | `infra/rerun-bulk-run.mjs` | Recompute a bulk run from its stored inputs (2026-08-24) — no browser token, no re-upload. Dry run by default; `--apply` writes a new run, `--replace` also deletes the original. Calls the same `computeBulkRun` the HTTP route uses, with `persist: false` on a dry run so a preview cannot mutate the registry. Sets `AWS_REGION` before importing `db.mjs` (which otherwise falls back to the wrong region) — hence its dynamic imports. |
 | `lambda/revshare-api/code/routes/features.mjs` | Feature-request routes (2026-09-02, §1k). Anyone signed in files; admins resolve. Title/detail immutable after filing. |
 | `lambda/revshare-api/code/rules.mjs` | Pure rule construction (2026-08-27) — `compileRule`, moved out of `routes/import.mjs` so the sheet importer can use it without AWS imports. |
+| `lambda/revshare-api/code/routes/mail.mjs` | Mail templates, their uploaded attachments, and the record of what was sent (2026-09-25, §1q). Stores only — the browser does the sending. Editing a template is `admin`; writing a send record is `runCalcs`; reads are open. |
 | `lambda/revshare-api/code/body.mjs` | Unpacks a gzipped request body (2026-09-23, §1p). Node `zlib` only, no AWS imports. Caps the inflated size so a decompression bomb cannot exhaust the function; leaves any body without a string `gz` untouched. `tests/body.test.mjs` round-trips the BROWSER's encoder (extracted from `app.js`) against this decoder — they live in different runtimes and cannot import each other. |
 | `lambda/revshare-api/code/ddb-util.mjs` | Pure DynamoDB helpers (2026-08-24), no AWS imports — the caller injects `send`. `queryAll` follows `LastEvaluatedKey` (every list in `db.mjs` goes through it; see §1c); `chunkUnique` builds duplicate-free `BatchWriteItem` batches. |
 | `lambda/revshare-api/code/payout.mjs` | Pure payout-decision module (2026-08-07). No AWS imports. Exports `merchantRowChanged` (2026-08-24 — is a roster row worth writing back? see §1c), `ruleHasValue` (does a rule tree pay anything?), `contractNeedsTerms` (also requires a valid `aggregationMode` as of 2026-08-09, to agree with `payoutDecision`), `indexContractsByName`/`resolveLabel` (name-based roster resolution). |
