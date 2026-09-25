@@ -1222,11 +1222,13 @@ p.rc-warn {
    a second line — with one cell holding both, no two rows lined up. */
 .msend-table { table-layout: fixed; width: 100%; }
 .msend-table th, .msend-table td { vertical-align: middle; }
-.msend-table th:nth-child(1), .msend-table td:nth-child(1) { width: 26%; }
-.msend-table th:nth-child(2), .msend-table td:nth-child(2) { width: 16%; }
-.msend-table th:nth-child(3), .msend-table td:nth-child(3) { width: 11%; }
-.msend-table th:nth-child(4), .msend-table td:nth-child(4) { width: 31%; }
-.msend-table th:nth-child(5), .msend-table td:nth-child(5) { width: 16%; }
+/* Proportions for a FULL-WIDTH screen (see main-wide). The address column no longer has to
+   fight for room, so entity and merchant get what they need and nothing wraps that shouldn't. */
+.msend-table th:nth-child(1), .msend-table td:nth-child(1) { width: 28%; }
+.msend-table th:nth-child(2), .msend-table td:nth-child(2) { width: 18%; }
+.msend-table th:nth-child(3), .msend-table td:nth-child(3) { width: 10%; }
+.msend-table th:nth-child(4), .msend-table td:nth-child(4) { width: 30%; }
+.msend-table th:nth-child(5), .msend-table td:nth-child(5) { width: 14%; }
 .msend-to { word-break: break-word; }
 /* One line, right-aligned, so every row's buttons sit in the same place down the page. */
 .msend-actions { white-space: nowrap; text-align: right; }

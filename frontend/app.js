@@ -523,7 +523,11 @@ function setActiveNav(id) {
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.id === id));
   // The merchant grid is ~2400px of columns; the app's 1100px content column hides most
   // of them behind a scrollbar. Let this one screen use the whole window.
-  document.getElementById('main')?.classList.toggle('main-wide', id === 'nav-contracts');
+  // Full width for the screens that are TABLES. Mailing's send list carries five columns —
+  // entity, merchant, payout, address, actions — and squeezing those into the 1100px
+  // reading column is what made long addresses wrap and the buttons fall out of line.
+  document.getElementById('main')?.classList.toggle('main-wide',
+    id === 'nav-contracts' || id === 'nav-mailing');
 }
 
 
