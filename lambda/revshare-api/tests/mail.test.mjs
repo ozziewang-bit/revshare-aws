@@ -15,12 +15,19 @@ const grab = (n) => {
     if (app[k] === '{') d++; else if (app[k] === '}') { d--; if (!d) return app.slice(i, k + 1); }
   }
 };
+// splitAddresses now leans on a shared VALID_ADDRESS constant, so every helper that extracts
+// it needs the constant too — an address with a space is not an address, and that rule lives in
+// one place.
+const splitSrc = () =>
+  app.slice(app.indexOf('const VALID_ADDRESS'), app.indexOf('function splitAddresses'))
+  + grab('splitAddresses');
+
 const load = (...names) => new Function(
   names.map(grab).join('\n') + `\nreturn { ${names.join(', ')} };`)();
 
 const { renderTemplate } = load('renderTemplate');
 const recipientsWith = (contracts) => new Function('CONTRACTS',
-  grab('splitAddresses') + '\n' + grab('mailRecipients') + '\nreturn mailRecipients;')(contracts);
+  splitSrc() + '\n' + grab('mailRecipients') + '\nreturn mailRecipients;')(contracts);
 const { buildMimeMessage, encodeHeaderWord, base64Url } =
   load('encodeHeaderWord', 'base64Url', 'buildMimeMessage');
 
@@ -60,7 +67,7 @@ test('what is on file is still reported, so the gap reads as a to-do', () => {
   // 17 merchants in the August run have a contact email and no finance one. Saying only
   // "missing" would hide the address someone could copy across.
   const f = new Function('CONTRACTS',
-    grab('splitAddresses') + '\n' + grab('fallbackContact') + '\nreturn fallbackContact;')(
+    splitSrc() + '\n' + grab('fallbackContact') + '\nreturn fallbackContact;')(
     [{ contractId: 'c2', contactEmail: 'KornjiraS@impact.co.th, creditcontrol@impact.co.th' }]);
   assert.deepEqual(f('c2'), ['KornjiraS@impact.co.th', 'creditcontrol@impact.co.th']);
 });
@@ -210,7 +217,7 @@ test('the send list separates what can be sent from what cannot', () => {
 // Either tick the merchant's known addresses, or type one — typing your own is how a test send
 // is done, and the dialog has to make that visibly different from mailing the merchant.
 const knownIn = (contracts) => new Function('CONTRACTS',
-  grab('splitAddresses') + '\n' + grab('knownAddresses') + '\nreturn knownAddresses;')(contracts);
+  splitSrc() + '\n' + grab('knownAddresses') + '\nreturn knownAddresses;')(contracts);
 
 test('every known address is offered, labelled with where it came from', () => {
   const f = knownIn([{ contractId: 'c1', financeContactEmail: 'ap@x.com', contactEmail: 'ops@x.com' }]);
@@ -261,7 +268,7 @@ test('the dialog says when a send is not going to the merchant', () => {
 // "Once, at the top" (user). Two modes: each merchant's own address — the real job — or a fixed
 // set, which is how a whole run is tested without a merchant receiving anything.
 const sendToIn = (contracts, state) => new Function('CONTRACTS', 'MAIL_SEND_TO',
-  grab('splitAddresses') + '\n' + grab('mailRecipients') + '\n'
+  splitSrc() + '\n' + grab('mailRecipients') + '\n'
   + grab('allMerchantAddresses') + '\n' + grab('effectiveRecipients')
   + '\nreturn { allMerchantAddresses, effectiveRecipients };')(contracts, state);
 
@@ -461,7 +468,7 @@ test('the preview states what the attachment will actually contain', () => {
 // who tells you. These run at the MOMENT of sending, against the values actually about to be
 // used — not against what the screen showed a minute ago.
 const blockersIn = (contracts, state) => new Function('CONTRACTS', 'MAIL_SEND_TO',
-  grab('splitAddresses') + '\n' + grab('mailRecipients') + '\n'
+  splitSrc() + '\n' + grab('mailRecipients') + '\n'
   + grab('statementSendBlockers') + '\nreturn statementSendBlockers;')(contracts, state);
 
 const RUN = { runId: 'r1', periodStart: '2026-08-01' };
@@ -511,7 +518,7 @@ test('a fixed set containing a merchant address is named, not reassured away', (
   // The banner used to say "nothing reaches a merchant" unconditionally. If the chosen address
   // belongs to IMPACT, every merchant's figures would reach IMPACT — the opposite of comfort.
   const f = new Function('CONTRACTS',
-    grab('splitAddresses') + '\n' + grab('allMerchantAddresses') + '\n'
+    splitSrc() + '\n' + grab('allMerchantAddresses') + '\n'
     + grab('fixedSetOwners') + '\nreturn fixedSetOwners;')(BOOKS);
   assert.deepEqual(f(['ozzie.wang@inforich.com']), []);
   assert.match(f(['ap@impact.co.th'])[0], /IMPACT/);
@@ -554,4 +561,39 @@ test('a save is only reported once the server confirms the text', () => {
   assert.match(src, /saved\.subject !== payload\.subject/);
   assert.match(src, /saved\.body !== payload\.body/);
   assert.match(src, /Nothing has been saved/);
+});
+
+// ── An address with a space is not an address (2026-09-25) ─────────────────────────────────
+// The first check was /.+@.+\\..+/, where `.` matches a space — so 'baanying mkt@gmail.com',
+// a real entry on BAANYING and Oranuch, passed as valid. It would have been offered as a
+// recipient and Gmail would have rejected the whole message at the moment of sending.
+const addrFns = () => new Function(
+  app.slice(app.indexOf('const VALID_ADDRESS'), app.indexOf('function malformedAddresses'))
+  + grab('malformedAddresses')
+  + '\nreturn { splitAddresses, malformedAddresses };')();
+
+test('an address containing a space is rejected', () => {
+  const { splitAddresses } = addrFns();
+  assert.deepEqual(splitAddresses('baanying mkt@gmail.com'), []);
+  assert.deepEqual(splitAddresses('ap@x.com, baanying mkt@gmail.com'), ['ap@x.com'],
+    'and the good one beside it still comes through');
+});
+
+test('ordinary addresses still pass, including the awkward real ones', () => {
+  const { splitAddresses } = addrFns();
+  assert.deepEqual(
+    splitAddresses('KornjiraS@impact.co.th, creditcontrol@impact.co.th'),
+    ['KornjiraS@impact.co.th', 'creditcontrol@impact.co.th']);
+  assert.deepEqual(splitAddresses('natthakarn.jitth@airportthai.co.th'),
+    ['natthakarn.jitth@airportthai.co.th']);
+});
+
+test('a broken address is reported as broken, not as absent', () => {
+  // "No address" sends someone looking for a missing field. "Not a valid address" sends them to
+  // the one that is there and wrong — which is the actual job.
+  const { malformedAddresses } = addrFns();
+  assert.deepEqual(malformedAddresses('baanying mkt@gmail.com'), ['baanying mkt@gmail.com']);
+  assert.deepEqual(malformedAddresses('ap@x.com'), [], 'a good address is not reported');
+  assert.deepEqual(malformedAddresses('not an email at all'), [],
+    'and neither is something that was never trying to be one');
 });

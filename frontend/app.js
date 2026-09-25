@@ -4399,7 +4399,11 @@ async function drawMailSendList(runId, template) {
       }).join(''))
     + section('No finance email', noFinance, 'What is on file', noFinance.map(r => {
         const other = fallbackContact(r.contractId);
-        return row(r, other.length
+        const broken = [...malformedAddresses((CONTRACTS.find(x => x.contractId === r.contractId) || {}).financeContactEmail),
+                        ...malformedAddresses((CONTRACTS.find(x => x.contractId === r.contractId) || {}).contactEmail)];
+        return row(r, broken.length
+          ? `<span class="rc-warn">${escape(broken.join(', '))} is not a valid address — fix it on the Merchant view</span>`
+          : other.length
           ? `<span class="muted">contact email: ${escape(other.join(', '))} — copy it into
              <strong>Finance email</strong> on the Merchant view if that is the right person</span>`
           : '<span class="muted">no address at all — add a finance email on the Merchant view</span>');
@@ -4796,8 +4800,22 @@ function fallbackContact(contractId) {
 
 // A function declaration, not an arrow const: the tests extract by `function name(`, and an
 // arrow is invisible to them — which showed up as three unrelated tests failing at once.
+// An address has no spaces, and no stray separators. The first check here was /.+@.+\..+/,
+// where `.` matches a space — so 'baanying mkt@gmail.com' (a real entry on BAANYING and
+// Oranuch) passed as valid, would have been offered as a recipient, and would have made Gmail
+// reject the entire message at the moment of sending. Something that cannot be delivered must
+// not be presented as a choice.
+const VALID_ADDRESS = /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/;
+
 function splitAddresses(raw) {
-  return String(raw ?? '').split(/[;,]/).map(a => a.trim()).filter(a => /.+@.+\..+/.test(a));
+  return String(raw ?? '').split(/[;,]/).map(a => a.trim()).filter(a => VALID_ADDRESS.test(a));
+}
+
+// The entries that LOOK like an address but cannot be one, so a merchant with a broken address
+// reads as broken rather than as having none at all.
+function malformedAddresses(raw) {
+  return String(raw ?? '').split(/[;,]/).map(a => a.trim())
+    .filter(a => a && a.includes('@') && !VALID_ADDRESS.test(a));
 }
 
 // Every address the app knows for a merchant, each labelled with WHERE it came from — so
