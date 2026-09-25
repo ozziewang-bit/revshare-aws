@@ -4308,13 +4308,18 @@ async function drawMailSendList(runId, template) {
         const other = fallbackContact(r.contractId);
         const broken = [...malformedAddresses((CONTRACTS.find(x => x.contractId === r.contractId) || {}).financeContactEmail),
                         ...malformedAddresses((CONTRACTS.find(x => x.contractId === r.contractId) || {}).contactEmail)];
-        return row(r, broken.length
+        // The button belongs INSIDE the row's last cell. Appending it after row(...) put it
+        // after the closing </tr>, and a browser hoists non-cell content out of a table — so
+        // 106 loose buttons rendered as a grid and took their rows with them.
+        const why = broken.length
           ? `<span class="rc-warn">${escape(broken.join(', '))} is not a valid address — fix it on the Merchant view</span>`
           : other.length
           ? `<span class="muted">contact email: ${escape(other.join(', '))} — copy it into
              <strong>Finance email</strong> on the Merchant view if that is the right person</span>`
-          : '<span class="muted">no address at all — add a finance email on the Merchant view</span>')
-          + ` <button class="btn-ghost massign-btn" data-cid="${escape(r.contractId)}">Assign other address…</button>`;
+          : '<span class="muted">no address at all — add a finance email on the Merchant view</span>';
+        return row(r, `${why}
+          <button class="btn-ghost massign-btn" data-cid="${escape(r.contractId)}"
+            style="margin-left:8px;">Assign other address…</button>`);
       }).join(''))
     + (ready.length || done.length || noFinance.length ? '' : '<p class="muted">This run paid nobody.</p>');
 

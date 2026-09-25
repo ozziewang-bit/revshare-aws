@@ -605,3 +605,28 @@ test('a blocked popup says what to do about it', () => {
   const src = grab('gmailToken');
   assert.match(src, /Allow pop-ups for this site/);
 });
+
+// ── Everything a row renders must be inside the row (2026-09-25) ───────────────────────────
+// A button was appended AFTER row(...), which is after the closing </tr>. A browser hoists
+// non-cell content out of a table, so 106 loose buttons rendered as a grid and their rows
+// vanished with them. Cheap to do, invisible to every other kind of test, and it made a whole
+// section unreadable.
+test('no row helper output is concatenated outside its own markup', () => {
+  const src = grab('drawMailSendList');
+  // `row(...)` closes its own <tr>. Anything appended to that call lands outside the table.
+  assert.ok(!/row\(r,[\s\S]*?\)\s*\n\s*\+ `?\s*<button/.test(src),
+    'a button appended after row(...) would render outside the table');
+});
+
+test('every table cell the send list builds is opened and closed', () => {
+  // Counting tags is crude, but an unbalanced cell is exactly the fault above wearing a
+  // different hat, and it is otherwise only visible on screen.
+  // Comments mention tags too — the comment explaining THIS bug contains a </tr>. Count markup.
+  const src = grab('drawMailSendList').replace(/\/\/.*$/gm, '');
+  const open = (src.match(/<td[ >]/g) || []).length;
+  const close = (src.match(/<\/td>/g) || []).length;
+  assert.equal(open, close, `${open} <td> against ${close} </td>`);
+  const tr = (src.match(/<tr[ >]/g) || []).length;
+  const trc = (src.match(/<\/tr>/g) || []).length;
+  assert.equal(tr, trc, `${tr} <tr> against ${trc} </tr>`);
+});
