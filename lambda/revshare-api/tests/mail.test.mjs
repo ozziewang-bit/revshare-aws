@@ -340,6 +340,15 @@ test('only a statement needs a period', () => {
   assert.equal(MAIL_KINDS.message.needsPeriod, false);
 });
 
+test('nothing is chosen for you, and nothing is shown until you choose', () => {
+  // An auto-selected first template would put one click between landing on this screen and
+  // sending a real merchant a real statement.
+  const src = grab('renderMailSendTab');
+  assert.match(src, /<option value="" selected>Choose a template/);
+  assert.match(src, /if \(raw === ''\)/, 'the empty choice is handled explicitly');
+  assert.match(src, /Choose a template to continue/, 'and says so rather than rendering nothing');
+});
+
 test('the send screen asks for the template FIRST and nothing else', () => {
   // The first step must not carry a period: whether a period is even meaningful is decided by
   // the answer to this question.

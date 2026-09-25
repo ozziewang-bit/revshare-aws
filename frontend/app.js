@@ -4123,15 +4123,28 @@ async function renderMailSendTab(host) {
   // neither, and asking for a period there is noise.
   host.innerHTML = `
     <div class="mail-form" style="max-width:420px;">
-      <label><span>1 · Template</span><select id="msend-tpl">${templates.map((t, i) =>
+      <label><span>1 · Template</span><select id="msend-tpl">
+        <option value="" selected>Choose a template…</option>
+        ${templates.map((t, i) =>
         `<option value="${i}">${escape(t.name || t.subject || 'Untitled')} — ${escape(MAIL_KINDS[mailKind(t)].label)}</option>`).join('')}</select></label>
     </div>
     <div id="msend-step2"></div>`;
+  // Nothing is chosen for you. What the template IS decides whether a period is even
+  // meaningful, so until one is picked there is nothing honest to show — an auto-selected
+  // first template would also mean one click from landing on this screen to sending a real
+  // merchant a real statement.
   const onTemplate = () => {
-    const t = templates[Number(document.getElementById('msend-tpl').value) || 0];
+    const step2 = document.getElementById('msend-step2');
+    const raw = document.getElementById('msend-tpl').value;
     MAIL_SEND_TO = { mode: 'merchant', addresses: [] };
-    if (mailKind(t) === 'message') renderMessageSend(document.getElementById('msend-step2'), t);
-    else renderStatementSend(document.getElementById('msend-step2'), t);
+    if (raw === '') {
+      step2.innerHTML = '<p class="muted">Choose a template to continue. '
+        + 'What it is decides what comes next — a statement needs a period, a plain message does not.</p>';
+      return;
+    }
+    const t = templates[Number(raw)];
+    if (mailKind(t) === 'message') renderMessageSend(step2, t);
+    else renderStatementSend(step2, t);
   };
   host.querySelector('#msend-tpl').addEventListener('change', onTemplate);
   onTemplate();
