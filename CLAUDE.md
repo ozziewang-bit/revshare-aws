@@ -6,8 +6,9 @@ screen now opens with **every column group collapsed** — §1n. 2026-09-18: `Co
 longer read from the weekly file — a column is writable by a file or by hand, never both — §1l.
 2026-09-21/22: the Merchant view gained a read-only **Reconcile** tab and a **Review only**
 upload that changes nothing — §1o; the run detail leads with **Contract entity** and its download
-groups into a folder per entity — §1j.)
-Service-worker `CACHE_VERSION` is at `revshare-v168` (bump on every shell change).
+groups into a folder per entity — §1j. 2026-09-23: a month of orders outgrew API Gateway's 10 MB
+payload limit and the request body is now **gzipped** — §1p.)
+Service-worker `CACHE_VERSION` is at `revshare-v169` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
 end-to-end before touching anything. The codebase is the ultimate source of
@@ -362,6 +363,47 @@ clones are blank, but in **28 groups** the oldest row is blank where a newer sib
 so a plain keep-oldest delete loses data. Agreed rule, not yet written: keep the oldest row's
 `merchantId`; take `notes`/`partnerId`/`externalId` as first-non-empty; take
 `contractId`/`machineModel` from the newest row; let the next prepare self-correct the rest.
+
+## 1p. The 10 MB payload wall (2026-09-23) — the run that could not be submitted
+
+**September's order report is 32,277 orders ≈ 13 MB of JSON. API Gateway's REST request payload
+limit is a HARD 10 MB and is not configurable.** The POST was rejected with **413 before the
+Lambda was ever invoked** — CloudWatch shows no matching invocation at all — and because an
+oversized body is rejected *before* gateway responses apply, that 413 carried no
+`access-control-allow-origin`. The browser could only report **"Failed to fetch"**. This is §1c's
+failure mode wearing different clothes: a real, specific error hidden behind a CORS gap.
+(`REQUEST_TOO_LARGE` already inherits CORS headers from `DEFAULT_4XX`; it makes no difference,
+verified against the live API. Nothing configured on the gateway can fix this one.)
+
+**The fix: the browser gzips the body.** `postLarge` in `app.js` packs `JSON.stringify(payload)`
+with `CompressionStream('gzip')`, base64s it, and sends `{gz: "…"}`; `index.mjs` unpacks it and
+replaces `event.body`, so **every route still reads the JSON it always read**. Orders are dense
+repetitive JSON — ~13 MB becomes ~1.3 MB. `zlib` is built in: no dependency, no IAM, no bucket
+CORS, nothing deployed but code. Used by `POST /bulk-runs` and `POST /bulk-runs/prepare`.
+
+Things that are the way they are for a reason:
+
+- **The decode runs AFTER the auth gate.** Unpacking first would let an unauthenticated caller
+  spend this function's CPU on a gzip bomb. `body.mjs` also caps the inflated size
+  (`maxOutputLength`, 64 MB) — one bomb would take down every route on that container.
+- **An uncompressed body passes through untouched**, so an old tab mid-run, the CLI and curl all
+  keep working. Only a STRING `gz` means "this is packed" — `gz: 42` is left alone.
+- **The size check counts BYTES, not `String.length`.** These merchant names are Thai at 3 bytes
+  per character, so measuring characters understates a real order report by about a third and
+  would wave through exactly the body the gateway rejects. A test caught this in the first cut.
+- **The browser is the only place that can report this**, since the gateway's 413 never reaches
+  JavaScript as anything but a network error. Over the limit it now says what the file is, what
+  the limit is, and to split the period.
+- **The timeout is NOT the problem — measured, not assumed.** Recomputing August's 7,103 orders
+  via `infra/rerun-bulk-run.mjs` takes **2.4s end to end**, so 4.5× that stays well inside the
+  REST integration's 29s cap. Do not "fix" a timeout here; the payload was the only wall.
+
+⚠ **This moves the ceiling, it does not remove it.** At roughly **10× the current volume** the
+compressed body passes 10 MB again. The answer then is a **presigned S3 upload** — the browser
+PUTs the orders straight to the runs bucket and the run request carries only the key, which the
+app is already shaped for (§1e stores run inputs in S3). That needs a presigning dependency in
+the bundle, bucket CORS and a new route, which is why it was not done in an afternoon while a
+payout was blocked. Volume went 7,103 → 32,277 in one month; watch it.
 
 ## 1d. Order matching is THREE passes (2026-08-24) — and why
 
@@ -947,7 +989,7 @@ not. Keeping those names and consulting them before the registry is the fix; it 
 shop in the same week it appears rather than one run later. Note the file is Approved-only, so
 pending/disapproved shops still would not place.
 
-Tests: `npm test` → **314**.
+Tests: `npm test` → **321**.
 
 ## 2. Live URLs and resources
 
@@ -977,6 +1019,7 @@ Account `<YOUR_AWS_ACCOUNT_ID>`, region `ap-northeast-1`. IAM user `<your-iam-us
 | `infra/rerun-bulk-run.mjs` | Recompute a bulk run from its stored inputs (2026-08-24) — no browser token, no re-upload. Dry run by default; `--apply` writes a new run, `--replace` also deletes the original. Calls the same `computeBulkRun` the HTTP route uses, with `persist: false` on a dry run so a preview cannot mutate the registry. Sets `AWS_REGION` before importing `db.mjs` (which otherwise falls back to the wrong region) — hence its dynamic imports. |
 | `lambda/revshare-api/code/routes/features.mjs` | Feature-request routes (2026-09-02, §1k). Anyone signed in files; admins resolve. Title/detail immutable after filing. |
 | `lambda/revshare-api/code/rules.mjs` | Pure rule construction (2026-08-27) — `compileRule`, moved out of `routes/import.mjs` so the sheet importer can use it without AWS imports. |
+| `lambda/revshare-api/code/body.mjs` | Unpacks a gzipped request body (2026-09-23, §1p). Node `zlib` only, no AWS imports. Caps the inflated size so a decompression bomb cannot exhaust the function; leaves any body without a string `gz` untouched. `tests/body.test.mjs` round-trips the BROWSER's encoder (extracted from `app.js`) against this decoder — they live in different runtimes and cannot import each other. |
 | `lambda/revshare-api/code/ddb-util.mjs` | Pure DynamoDB helpers (2026-08-24), no AWS imports — the caller injects `send`. `queryAll` follows `LastEvaluatedKey` (every list in `db.mjs` goes through it; see §1c); `chunkUnique` builds duplicate-free `BatchWriteItem` batches. |
 | `lambda/revshare-api/code/payout.mjs` | Pure payout-decision module (2026-08-07). No AWS imports. Exports `merchantRowChanged` (2026-08-24 — is a roster row worth writing back? see §1c), `ruleHasValue` (does a rule tree pay anything?), `contractNeedsTerms` (also requires a valid `aggregationMode` as of 2026-08-09, to agree with `payoutDecision`), `indexContractsByName`/`resolveLabel` (name-based roster resolution). |
 | `lambda/revshare-api/code/routes/` | partners.mjs, runs.mjs |
