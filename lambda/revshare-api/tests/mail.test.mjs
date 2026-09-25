@@ -532,3 +532,26 @@ test('the log records enough to check that the RIGHT one was sent', () => {
     assert.ok(src.includes(field), `the mail log must record ${field}`);
   }
 });
+
+// ── A save either happens or says why (2026-09-25) ─────────────────────────────────────────
+// An edit to the "Rev share" template was lost: the payload was built OUTSIDE the try, so a
+// missing field element threw before anything was sent — the button did nothing, no error
+// appeared, and the template silently stayed as it was. The report was "I made an adjustment,
+// why is it not updated".
+test('the whole save is guarded, not just the request', () => {
+  const src = grab('editMailTemplate');
+  const tryAt = src.indexOf('try {');
+  const payloadAt = src.indexOf('const payload');
+  assert.ok(tryAt > 0 && payloadAt > tryAt,
+    'the payload must be built INSIDE the try, or a missing element fails silently');
+  assert.match(src, /reload the page and try again/,
+    'a stale dialog must say so rather than doing nothing');
+});
+
+test('a save is only reported once the server confirms the text', () => {
+  // A 200 carrying different text is not a save, and this screen must not claim one.
+  const src = grab('editMailTemplate');
+  assert.match(src, /saved\.subject !== payload\.subject/);
+  assert.match(src, /saved\.body !== payload\.body/);
+  assert.match(src, /Nothing has been saved/);
+});

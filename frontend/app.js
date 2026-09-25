@@ -4053,20 +4053,37 @@ function editMailTemplate(t) {
   card.querySelector('#mt-cancel').addEventListener('click', close);
   card.querySelector('#mt-save').addEventListener('click', async () => {
     const err = card.querySelector('#mt-err');
-    const payload = {
-      id: t?.id,
-      name: card.querySelector('#mt-name').value.trim(),
-      kind: card.querySelector('#mt-kind').value,
-      fromAlias: card.querySelector('#mt-from').value.trim(),
-      subject: card.querySelector('#mt-subject').value.trim(),
-      body: card.querySelector('#mt-body').value,
-    };
-    if (!payload.subject) { err.hidden = false; err.textContent = 'A subject is required.'; return; }
+    const show = (m) => { err.hidden = false; err.textContent = m; };
+    // The WHOLE handler is guarded, not just the request. Building the payload outside a try
+    // meant a missing field element threw before anything was sent: the button did nothing, no
+    // error appeared, and the template silently stayed as it was — which is exactly how an
+    // edit to "Rev share" was lost on 2026-09-25. A save either happens or says why.
     try {
-      await api('/mail-templates', { method: 'PUT', body: JSON.stringify(payload) });
+      const val = (sel) => {
+        const el = card.querySelector(sel);
+        if (!el) throw new Error(`This dialog is out of date (${sel} is missing) — reload the page and try again.`);
+        return el.value;
+      };
+      const payload = {
+        id: t?.id,
+        name: val('#mt-name').trim(),
+        kind: val('#mt-kind'),
+        fromAlias: val('#mt-from').trim(),
+        subject: val('#mt-subject').trim(),
+        body: val('#mt-body'),
+      };
+      if (!payload.subject) return show('A subject is required.');
+      const saved = await api('/mail-templates', { method: 'PUT', body: JSON.stringify(payload) });
+      // Confirm the server kept what was sent. A PUT that answers 200 with different text is
+      // not a save, and this screen must not report one.
+      if (!saved || saved.subject !== payload.subject || saved.body !== payload.body) {
+        return show('The server did not store this text unchanged. Nothing has been saved — try again.');
+      }
       close();
       renderMailingScreen('templates');
-    } catch (e) { err.hidden = false; err.textContent = e.message; }
+    } catch (e) {
+      show(e.message || 'Could not save.');
+    }
   });
 }
 
