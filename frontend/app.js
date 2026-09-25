@@ -4361,13 +4361,15 @@ async function drawMailSendList(runId, template) {
   box.innerHTML =
     section('Ready to send', ready, 'To', ready.map(r => row(r,
       `${escape(effectiveRecipients(r.contractId).join(', '))}
-       <button class="btn-ghost msend-btn" data-cid="${escape(r.contractId)}" style="margin-left:8px;">Send…</button>`)).join(''))
+       <button class="btn-ghost mprev-btn" data-cid="${escape(r.contractId)}" style="margin-left:8px;">Preview</button>
+       <button class="btn-ghost msend-btn" data-cid="${escape(r.contractId)}">Send…</button>`)).join(''))
     + section('Already sent', done, 'Sent', done.map(r => {
         const m = sent.get(r.contractId);
         return row(r, `${escape(m.sentAt ? new Date(m.sentAt).toLocaleString('en-GB',
           { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '')}
           to ${escape(m.to || '')} by ${escape(m.sentBy || '')}
-          <button class="btn-ghost msend-btn" data-cid="${escape(r.contractId)}" style="margin-left:8px;">Send again…</button>`);
+          <button class="btn-ghost mprev-btn" data-cid="${escape(r.contractId)}" style="margin-left:8px;">Preview</button>
+          <button class="btn-ghost msend-btn" data-cid="${escape(r.contractId)}">Send again…</button>`);
       }).join(''))
     + section('No finance email', noFinance, 'What is on file', noFinance.map(r => {
         const other = fallbackContact(r.contractId);
@@ -4382,6 +4384,49 @@ async function drawMailSendList(runId, template) {
     const r = (run.results || []).find(x => x.contractId === b.dataset.cid);
     if (r) mailSendDialog(r, run, sent.get(r.contractId)?.sentAt || null, template);
   }));
+  box.querySelectorAll('.mprev-btn').forEach(b => b.addEventListener('click', () => {
+    const r = (run.results || []).find(x => x.contractId === b.dataset.cid);
+    if (r) mailPreviewDialog(r, run, template, sent.get(r.contractId)?.sentAt || null);
+  }));
+}
+
+// Exactly what this merchant would receive, with nothing to press by accident. The send dialog
+// shows the same text, but it is a form with a Send button — reading fourteen of those to check
+// the wording means fourteen chances to send one early. This is the reading view; Send is
+// reached deliberately from it.
+function mailPreviewDialog(result, run, template, sentAlready) {
+  const vars = mailVarsFor(result, run);
+  const to = effectiveRecipients(result.contractId);
+  const subject = renderTemplate(template.subject, vars);
+  const body = renderTemplate(template.body, vars);
+  const unfilled = [...new Set((subject + '\n' + body).match(/\{\{\w+\}\}/g) || [])];
+  const { card, close } = ctModal(760);
+  card.innerHTML = `
+    <h3 style="margin:0 0 4px;">Preview — ${escape(result.merchantName)}</h3>
+    <p class="muted" style="margin:0 0 12px;font-size:12.5px;">Nothing is sent from this view.</p>
+    ${sentAlready ? `<p class="mail-warn">Already sent ${escape(sentAlready)}.</p>` : ''}
+    ${unfilled.length ? `<p class="mail-warn">This template still contains
+      ${escape(unfilled.join(', '))} — the merchant would receive it literally. Fix the template
+      before sending.</p>` : ''}
+    <div class="mail-preview">
+      <dl class="mail-preview-head">
+        <dt>From</dt><dd>${escape(mailFromAlias(template) || '— no sender address —')}</dd>
+        <dt>To</dt><dd>${to.length ? escape(to.join(', ')) : '<span class="rc-warn">nobody</span>'}</dd>
+        <dt>Subject</dt><dd><strong>${escape(subject)}</strong></dd>
+        <dt>Attached</dt><dd>${escape(sanitizeFilename(result.merchantName))}.xlsx
+          <span class="muted">— this merchant’s statement for ${escape(vars.period)}</span></dd>
+      </dl>
+      <pre class="mail-preview-body">${escape(body)}</pre>
+    </div>
+    <div class="mail-actions">
+      <button id="mp-close" class="btn-ghost">Close</button>
+      ${to.length ? '<button id="mp-send" class="btn-primary">Send this…</button>' : ''}
+    </div>`;
+  card.querySelector('#mp-close').addEventListener('click', close);
+  card.querySelector('#mp-send')?.addEventListener('click', () => {
+    close();
+    mailSendDialog(result, run, sentAlready, template);
+  });
 }
 
 // ── Sending one merchant its statement ─────────────────────────────────────────────────────

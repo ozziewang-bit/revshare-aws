@@ -384,3 +384,37 @@ test('a statement template with no run says so instead of showing an empty list'
   const src = grab('renderStatementSend');
   assert.match(src, /nothing to attach/);
 });
+
+// ── Per-merchant preview (2026-09-25) ──────────────────────────────────────────────────────
+// Reading fourteen mails to check the wording, in a dialog with a Send button, is fourteen
+// chances to send one early. The preview is a reading view: nothing leaves from it.
+test('the preview cannot send, it can only hand over to the send dialog', () => {
+  const src = grab('mailPreviewDialog');
+  assert.ok(!src.includes('sendGmail'), 'the preview must not send');
+  assert.ok(!src.includes('mail-log'), 'and must not record anything');
+  assert.match(src, /mailSendDialog\(result, run, sentAlready, template\)/,
+    'Send this… hands over to the real dialog rather than duplicating it');
+});
+
+test('the preview renders the same text the send would', () => {
+  // If the preview and the send could differ, the preview would be worse than nothing.
+  const src = grab('mailPreviewDialog');
+  assert.match(src, /renderTemplate\(template\.subject, vars\)/);
+  assert.match(src, /renderTemplate\(template\.body, vars\)/);
+  assert.match(src, /effectiveRecipients\(result\.contractId\)/);
+});
+
+test('the preview warns about placeholders the template left unfilled', () => {
+  // An unknown placeholder renders as itself, by design — so the merchant would receive
+  // "{{payout}}" literally. The preview is the last place that can be caught.
+  const src = grab('mailPreviewDialog');
+  assert.match(src, /\\\{\\\{\\w\+\\\}\\\}/, 'it scans the rendered text for leftovers');
+  assert.match(src, /would receive it literally/);
+});
+
+test('every row that has a mail offers a preview of it', () => {
+  const src = grab('drawMailSendList');
+  assert.match(src, /mprev-btn[\s\S]*Preview/, 'ready rows');
+  assert.equal((src.match(/mprev-btn/g) || []).length >= 3, true,
+    'both the ready and already-sent groups, plus the handler');
+});

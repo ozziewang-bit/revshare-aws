@@ -1200,3 +1200,15 @@ p.rc-warn {
    and more when the merchant list fills out. */
 .mail-pick-list { max-height: 260px; overflow-y: auto; border: 1px solid var(--border);
   border-radius: var(--radius-sm); padding: 10px 12px; }
+
+/* The mail preview: a reading view, laid out like the message rather than like a form. */
+.mail-preview { border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
+.mail-preview-head { display: grid; grid-template-columns: 90px 1fr; gap: 4px 12px;
+  margin: 0; padding: 12px 14px; background: var(--surface-muted);
+  border-bottom: 1px solid var(--border); font-size: 13px; }
+.mail-preview-head dt { color: var(--ink-faint); font-size: 10.5px; font-weight: 600;
+  letter-spacing: .06em; text-transform: uppercase; padding-top: 2px; }
+.mail-preview-head dd { margin: 0; word-break: break-word; }
+.mail-preview-body { margin: 0; padding: 14px; background: var(--surface);
+  font-family: var(--font-ui); font-size: 13px; line-height: 1.6;
+  white-space: pre-wrap; word-break: break-word; max-height: 360px; overflow-y: auto; }
