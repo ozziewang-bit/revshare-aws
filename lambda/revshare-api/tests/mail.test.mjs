@@ -188,8 +188,8 @@ test('the send list separates what can be sent from what cannot', () => {
   for (const group of ['Ready to send', 'Already sent', 'No email address']) {
     assert.ok(src.includes(group), `the send list must show "${group}"`);
   }
-  assert.match(src, /mailRecipients\(r\.contractId\)\.length/,
-    'membership of those groups must come from whether an address exists');
+  assert.match(src, /effectiveRecipients\(r\.contractId\)\.length/,
+    'membership of those groups must follow the batch recipient decision');
 });
 
 // ── Choosing recipients (2026-09-25) ───────────────────────────────────────────────────────
@@ -225,15 +225,79 @@ test('a merchant with nothing on file offers nothing, rather than a blank row', 
   assert.deepEqual(knownIn([])('nope'), []);
 });
 
-test('the dialog ticks finance addresses and leaves the rest to a person', () => {
+test('the dialog shows the recipients the batch decided, and does not re-ask', () => {
+  // Deciding per row AS WELL was considered and rejected: the top saying one thing while a row
+  // was quietly changed is exactly how a test send reaches a merchant.
   const src = grab('mailSendDialog');
-  assert.match(src, /k\.source === 'finance contact' \? 'checked' : ''/,
-    'finance addresses start ticked; an ordinary contact is a decision');
-  assert.match(src, /ms-extra/, 'and any address can be typed, which is how a test is sent');
+  assert.match(src, /effectiveRecipients\(result\.contractId\)/,
+    'the dialog reads the batch decision');
+  for (const gone of ['ms-known', 'ms-extra', 'knownAddresses(']) {
+    assert.ok(!src.includes(gone), `${gone} is a per-row picker and must not return`);
+  }
 });
 
 test('the dialog says when a send is not going to the merchant', () => {
   // A test send must not look identical to the real thing.
   const src = grab('mailSendDialog');
-  assert.match(src, /this is a test/, 'it must say so when no recipient is the merchant\u2019s own');
+  assert.match(src, /not the merchant/,
+    'it must say so when the batch is routed somewhere other than the merchant');
+});
+
+// ── Recipients decided once for the batch (2026-09-25) ─────────────────────────────────────
+// "Once, at the top" (user). Two modes: each merchant's own address — the real job — or a fixed
+// set, which is how a whole run is tested without a merchant receiving anything.
+const sendToIn = (contracts, state) => new Function('CONTRACTS', 'MAIL_SEND_TO',
+  grab('splitAddresses') + '\n' + grab('mailRecipients') + '\n'
+  + grab('allMerchantAddresses') + '\n' + grab('effectiveRecipients')
+  + '\nreturn { allMerchantAddresses, effectiveRecipients };')(contracts, state);
+
+const CONTRACTS_FIXTURE = [
+  { contractId: 'c1', merchantName: '7-Eleven', financeContactEmail: 'wiparatron@cpall.co.th' },
+  { contractId: 'c2', merchantName: 'IMPACT', contactEmail: 'KornjiraS@impact.co.th, creditcontrol@impact.co.th' },
+  { contractId: 'c3', merchantName: 'Shared Co', contactEmail: 'WIPARATRON@cpall.co.th' },
+  { contractId: 'c4', merchantName: 'Gone', archived: true, contactEmail: 'old@x.com' },
+  { contractId: 'c5', merchantName: 'No address' },
+];
+
+test('merchant mode sends each merchant its own address', () => {
+  const f = sendToIn(CONTRACTS_FIXTURE, { mode: 'merchant', addresses: [] });
+  assert.deepEqual(f.effectiveRecipients('c1'), ['wiparatron@cpall.co.th']);
+  assert.deepEqual(f.effectiveRecipients('c5'), [], 'and none where there is none');
+});
+
+test('fixed mode sends EVERY merchant to the chosen addresses', () => {
+  // This is what makes a whole-list test possible: the recipient stops depending on the row.
+  const f = sendToIn(CONTRACTS_FIXTURE, { mode: 'fixed', addresses: ['ozzie.wang@inforich.com'] });
+  assert.deepEqual(f.effectiveRecipients('c1'), ['ozzie.wang@inforich.com']);
+  assert.deepEqual(f.effectiveRecipients('c5'), ['ozzie.wang@inforich.com'],
+    'including merchants that have no address of their own');
+});
+
+test('the picker offers every address on file, grouped by address', () => {
+  // One address can serve several merchants; listing it twice would let it be ticked twice and
+  // sent twice.
+  const all = sendToIn(CONTRACTS_FIXTURE, { mode: 'merchant', addresses: [] }).allMerchantAddresses();
+  const shared = all.find(a => a.address.toLowerCase() === 'wiparatron@cpall.co.th');
+  assert.ok(shared, 'the shared address is offered');
+  assert.deepEqual(shared.merchants.sort(), ['7-Eleven', 'Shared Co']);
+  assert.equal(all.filter(a => a.address.toLowerCase() === 'wiparatron@cpall.co.th').length, 1);
+});
+
+test('an archived merchant contributes no addresses', () => {
+  const all = sendToIn(CONTRACTS_FIXTURE, { mode: 'merchant', addresses: [] }).allMerchantAddresses();
+  assert.ok(!all.some(a => a.address === 'old@x.com'));
+});
+
+test('the batch mode is reset on every visit, never remembered', () => {
+  // A test set left switched on from yesterday, silently applying to a real send, is the worst
+  // outcome this screen has.
+  const src = grab('renderMailSendTab');
+  assert.match(src, /MAIL_SEND_TO = \{ mode: 'merchant', addresses: \[\] \}/,
+    'the screen must reset the mode when it loads');
+});
+
+test('a fixed batch warns, in the list itself, that nothing reaches a merchant', () => {
+  const src = grab('drawMailSendList');
+  assert.match(src, /not to the merchants/,
+    'the banner must say where the batch is actually going');
 });

@@ -1195,3 +1195,8 @@ p.rc-warn {
 .mail-to-free > span { display: block; margin: 0 0 5px; font-size: 10.5px; font-weight: 600;
   letter-spacing: .06em; text-transform: uppercase; color: var(--ink-faint); }
 .mail-to .mail-meta { margin: 10px 0 0; }
+
+/* The address picker's scrolling list. Capped so the dialog stays a dialog with 38 addresses,
+   and more when the merchant list fills out. */
+.mail-pick-list { max-height: 260px; overflow-y: auto; border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 10px 12px; }
