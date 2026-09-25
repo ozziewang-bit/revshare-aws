@@ -246,14 +246,6 @@ test('a merchant with nothing on file offers nothing, rather than a blank row', 
   assert.deepEqual(knownIn([])('nope'), []);
 });
 
-test('the dialog shows the merchant\u2019s own address, or the one assigned', () => {
-  const src = grab('mailSendDialog');
-  assert.match(src, /mailRecipients\(result\.contractId\)/, 'the merchant\u2019s own address');
-  assert.match(src, /assign \? splitAddresses/, 'or the assigned one, read at send time');
-  for (const gone of ['ms-known', 'ms-extra', 'MAIL_SEND_TO']) {
-    assert.ok(!src.includes(gone), `${gone} belonged to a removed design`);
-  }
-});
 
 test('the dialog says when a send is not going to the merchant', () => {
   // An assigned send must not look identical to the real thing.
@@ -266,9 +258,9 @@ test('the dialog says when a send is not going to the merchant', () => {
 // The whole-batch redirect was built, used once, and removed: it made "where is this going" a
 // question about screen state rather than about the row. A single statement can still go
 // somewhere else, per report, as an act with a reason — and it is recorded as one.
-const recipientsFor = (contracts) => new Function('CONTRACTS',
+const recipientsFor = (contracts, assigned = []) => new Function('CONTRACTS', 'MAIL_ASSIGNED',
   splitSrc() + '\n' + grab('mailRecipients') + '\n' + grab('effectiveRecipients')
-  + '\nreturn effectiveRecipients;')(contracts);
+  + '\nreturn effectiveRecipients;')(contracts, assigned);
 
 const BOOK = [
   { contractId: 'c1', merchantName: '7-Eleven', financeContactEmail: 'wiparatron@cpall.co.th' },
@@ -281,16 +273,24 @@ test('a statement goes to its merchant\u2019s finance address by default', () =>
   assert.deepEqual(f('c2'), [], 'a contact email is not a finance address');
 });
 
-test('an assignment replaces it for that report only', () => {
-  const f = recipientsFor(BOOK);
-  assert.deepEqual(f('c1', ['ozzie.wang@inforich.com']), ['ozzie.wang@inforich.com']);
-  assert.deepEqual(f('c1'), ['wiparatron@cpall.co.th'],
-    'and the next call is unaffected — there is no mode left switched on');
+test('an assigned address replaces it for every merchant', () => {
+  // One choice at the top: a per-row button was tried and made the table unreadable.
+  const f = recipientsFor(BOOK, ['ozzie.wang@inforich.com']);
+  assert.deepEqual(f('c1'), ['ozzie.wang@inforich.com']);
+  assert.deepEqual(f('c2'), ['ozzie.wang@inforich.com'],
+    'including a merchant that has no finance address of its own');
 });
 
-test('an empty assignment falls back rather than sending nowhere', () => {
-  const f = recipientsFor(BOOK);
-  assert.deepEqual(f('c1', []), ['wiparatron@cpall.co.th']);
+test('no assignment means the merchant\u2019s own address', () => {
+  const f = recipientsFor(BOOK, []);
+  assert.deepEqual(f('c1'), ['wiparatron@cpall.co.th']);
+});
+
+test('the assignment cannot outlive the visit that set it', () => {
+  // An assignment left on from yesterday, silently redirecting a real send, is the one thing
+  // this must never do.
+  const src = grab('renderStatementSend');
+  assert.match(src, /MAIL_ASSIGNED = \[\]/, 'the screen clears it on load');
 });
 
 test('the dialog only accepts a stranger address when it was assigned deliberately', () => {
@@ -309,6 +309,12 @@ test('an assigned send is recorded as assigned', () => {
   const src = grab('mailSendDialog');
   assert.match(src, /assigned: !!assign/);
   assert.match(src, /ASSIGNED address/, 'and the confirmation says so before it goes');
+});
+
+test('the list says where an assigned batch is going', () => {
+  const src = grab('drawMailSendList');
+  assert.match(src, /not to the merchants/);
+  assert.match(src, /No assigned address yet/, 'and prompts when the mode is on but empty');
 });
 
 test('the send list says what is left for the period', () => {
@@ -376,12 +382,12 @@ test('a plain message sends each recipient their own copy', () => {
   assert.match(src, /to: \[to\]/, 'each addressed only to itself');
 });
 
-test('a statement screen asks for the period, and nothing else', () => {
-  // Recipients are not a question here any more: a statement goes to its merchant's finance
-  // address, and one report can be redirected deliberately from its own row.
+test('a statement screen asks for the period and where it goes', () => {
   const src = grab('renderStatementSend');
   assert.match(src, /2 · Period/);
-  assert.ok(!src.includes('Send to'), 'no batch-wide recipient control');
+  assert.match(src, /3 · Send to/);
+  assert.match(src, /An assigned address/);
+  assert.ok(!src.includes('massign-btn'), 'and not a button on every row');
 });
 
 test('a statement template with no run says so instead of showing an empty list', () => {

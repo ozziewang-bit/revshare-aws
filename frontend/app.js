@@ -4087,14 +4087,17 @@ function editMailTemplate(t) {
   });
 }
 
-// A statement goes to its merchant's finance address. That is the rule, and it is not a
-// setting — a mode that redirects every statement at once was built, used once, and removed:
-// it made "where is this going" a question about screen state rather than about the row.
+// A statement goes to its merchant's finance address. It can instead go to an ASSIGNED
+// address, chosen once at the top of the screen — a per-row button was tried and made the
+// table unreadable, 106 identical buttons deep.
 //
-// One statement can still be sent somewhere else, deliberately, per report — see the Assign
-// other address action. That is an act with a reason, not a mode you can forget you left on.
-function effectiveRecipients(contractId, assigned) {
-  return assigned && assigned.length ? assigned.slice() : mailRecipients(contractId);
+// Reset on every visit to this screen. An assignment left on from yesterday, silently
+// redirecting a real send, is the one thing this must never do — so it cannot outlive the
+// visit that set it.
+let MAIL_ASSIGNED = [];
+
+function effectiveRecipients(contractId) {
+  return MAIL_ASSIGNED.length ? MAIL_ASSIGNED.slice() : mailRecipients(contractId);
 }
 
 // ── Mailing → Send: the monthly job on one screen ──────────────────────────────────────────
@@ -4159,15 +4162,37 @@ async function renderStatementSend(host, template) {
     return;
   }
   runs.sort((a, b) => (b.periodStart || '').localeCompare(a.periodStart || ''));
+  MAIL_ASSIGNED = [];
   host.innerHTML = `
-    <div class="mail-form" style="max-width:360px;">
+    <div class="mail-form" style="display:grid;grid-template-columns:1fr 1.4fr;gap:0 14px;max-width:760px;">
       <label><span>2 · Period</span><select id="msend-run">${runs.map(r =>
         `<option value="${escape(r.runId)}">${escape(periodTag(r.periodStart))}</option>`).join('')}</select></label>
+      <label><span>3 · Send to</span><select id="msend-mode">
+        <option value="merchant">Each merchant’s own finance address</option>
+        <option value="assigned">An assigned address…</option>
+      </select></label>
     </div>
+    <div id="msend-assign" hidden>
+      <div class="mail-form" style="max-width:760px;">
+        <label><span>Assigned address</span>
+          <input id="msend-addr" placeholder="one or more addresses, separated by commas — every statement goes here"></label>
+      </div>
+    </div>
+    <div id="msend-banner"></div>
     <div id="msend-progress"></div>
     <div id="msend-list">Loading…</div>`;
   const draw = () => drawMailSendList(document.getElementById('msend-run').value, template);
   host.querySelector('#msend-run').addEventListener('change', draw);
+  host.querySelector('#msend-mode').addEventListener('change', (ev) => {
+    const on = ev.target.value === 'assigned';
+    document.getElementById('msend-assign').hidden = !on;
+    if (!on) { MAIL_ASSIGNED = []; document.getElementById('msend-addr').value = ''; }
+    draw();
+  });
+  host.querySelector('#msend-addr').addEventListener('input', (ev) => {
+    MAIL_ASSIGNED = splitAddresses(ev.target.value);
+    draw();
+  });
   draw();
 }
 
@@ -4255,6 +4280,16 @@ async function drawMailSendList(runId, template) {
   await ensureContractCache().catch(() => {});
   const sent = new Map((log || []).map(m => [m.contractId, m]));
 
+  const banner = document.getElementById('msend-banner');
+  if (banner) {
+    const assignedOn = !document.getElementById('msend-assign')?.hidden;
+    banner.innerHTML = !assignedOn ? '' : MAIL_ASSIGNED.length
+      ? `<p class="mail-warn" style="max-width:920px;">Every statement below goes to
+          <strong>${escape(MAIL_ASSIGNED.join(', '))}</strong> — not to the merchants.</p>`
+      : `<p class="mail-warn" style="max-width:920px;">No assigned address yet. Type one above,
+          or switch back to each merchant’s own address.</p>`;
+  }
+
   const ready = [], done = [], noFinance = [];
   for (const r of (run.results || []).slice().sort((a, b) => b.payout - a.payout)) {
     if (sent.has(r.contractId)) done.push(r);
@@ -4293,16 +4328,14 @@ async function drawMailSendList(runId, template) {
     section('Ready to send', ready, 'To', ready.map(r => row(r,
       `${escape(effectiveRecipients(r.contractId).join(', '))}
        <button class="btn-ghost mprev-btn" data-cid="${escape(r.contractId)}" style="margin-left:8px;">Preview</button>
-       <button class="btn-ghost msend-btn" data-cid="${escape(r.contractId)}">Send…</button>
-       <button class="btn-ghost massign-btn" data-cid="${escape(r.contractId)}">Assign other address…</button>`)).join(''))
+       <button class="btn-ghost msend-btn" data-cid="${escape(r.contractId)}">Send…</button>`)).join(''))
     + section('Already sent', done, 'Sent', done.map(r => {
         const m = sent.get(r.contractId);
         return row(r, `${escape(m.sentAt ? new Date(m.sentAt).toLocaleString('en-GB',
           { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '')}
           to ${escape(m.to || '')} by ${escape(m.sentBy || '')}
           <button class="btn-ghost mprev-btn" data-cid="${escape(r.contractId)}" style="margin-left:8px;">Preview</button>
-          <button class="btn-ghost msend-btn" data-cid="${escape(r.contractId)}">Send again…</button>
-          <button class="btn-ghost massign-btn" data-cid="${escape(r.contractId)}">Assign other address…</button>`);
+          <button class="btn-ghost msend-btn" data-cid="${escape(r.contractId)}">Send again…</button>`);
       }).join(''))
     + section('No finance email', noFinance, 'What is on file', noFinance.map(r => {
         const other = fallbackContact(r.contractId);
@@ -4317,9 +4350,7 @@ async function drawMailSendList(runId, template) {
           ? `<span class="muted">contact email: ${escape(other.join(', '))} — copy it into
              <strong>Finance email</strong> on the Merchant view if that is the right person</span>`
           : '<span class="muted">no address at all — add a finance email on the Merchant view</span>';
-        return row(r, `${why}
-          <button class="btn-ghost massign-btn" data-cid="${escape(r.contractId)}"
-            style="margin-left:8px;">Assign other address…</button>`);
+        return row(r, why);
       }).join(''))
     + (ready.length || done.length || noFinance.length ? '' : '<p class="muted">This run paid nobody.</p>');
 
@@ -4330,10 +4361,6 @@ async function drawMailSendList(runId, template) {
   box.querySelectorAll('.mprev-btn').forEach(b => b.addEventListener('click', () => {
     const r = (run.results || []).find(x => x.contractId === b.dataset.cid);
     if (r) mailPreviewDialog(r, run, template, sent.get(r.contractId)?.sentAt || null);
-  }));
-  box.querySelectorAll('.massign-btn').forEach(b => b.addEventListener('click', () => {
-    const r = (run.results || []).find(x => x.contractId === b.dataset.cid);
-    if (r) mailSendDialog(r, run, sent.get(r.contractId)?.sentAt || null, template, true);
   }));
 }
 
@@ -4512,12 +4539,13 @@ const DEFAULT_FROM_ALIAS = { th: 'partner.th@inforich.com', sg: '' };
 // where the field was cleared — still sends rather than failing at the last step.
 const mailFromAlias = (t) => ((t && t.fromAlias) || DEFAULT_FROM_ALIAS[REGION] || '').trim();
 
-function mailSendDialog(result, run, sentAlready, template, assign) {
-  // `assign` is the "Assign other address" action: one report, deliberately sent somewhere
-  // other than the merchant's finance address. It is an act with a reason — recorded as such —
-  // rather than a mode that stays on and quietly redirects the next thing too.
+function mailSendDialog(result, run, sentAlready, template) {
+  // Recipients come from the screen's one choice: the merchant's own finance address, or the
+  // assigned address typed at the top. Reading it here rather than taking it as an argument
+  // means the dialog cannot disagree with the banner above it.
   const ownAddresses = mailRecipients(result.contractId);
-  let recipients = assign ? [] : ownAddresses;
+  const assign = MAIL_ASSIGNED.length > 0;
+  const recipients = effectiveRecipients(result.contractId);
   const { card, close } = ctModal(720);
   const vars = mailVarsFor(result, run);
 
@@ -4539,14 +4567,12 @@ function mailSendDialog(result, run, sentAlready, template, assign) {
     <div class="mail-form">
       <fieldset class="mail-to">
         <legend>To</legend>
-        ${assign ? `
-          <input id="ms-assign" placeholder="address to send this report to">
-          <p class="mail-meta" id="ms-assign-note" style="margin:6px 0 0;">
-            <span class="rc-warn">Assigned</span> — ${escape(result.merchantName)}’s statement will go here
-            instead of ${escape(ownAddresses.join(', ') || 'its own address, which is not set')}.</p>`
-        : `<p style="margin:0;font-size:13px;">${escape(recipients.join(', ')) || '<span class="rc-warn">nobody</span>'}</p>
-           <p class="mail-meta" style="margin:6px 0 0;">This merchant’s own finance address. To send
-           this report somewhere else, close and use <strong>Assign other address</strong>.</p>`}
+        <p style="margin:0;font-size:13px;">${escape(recipients.join(', ')) || '<span class="rc-warn">nobody</span>'}</p>
+        <p class="mail-meta" style="margin:6px 0 0;">${assign
+          ? `<span class="rc-warn">Assigned</span> — ${escape(result.merchantName)}’s statement goes here
+             instead of ${escape(ownAddresses.join(', ') || 'its own address, which is not set')}.
+             Change it with “Send to” above.`
+          : 'This merchant’s own finance address. Change it with “Send to” above.'}</p>
       </fieldset>
       <label><span>Subject</span><input id="ms-subject"></label>
       <label><span>Message</span><textarea id="ms-body"></textarea></label>
@@ -4569,7 +4595,6 @@ function mailSendDialog(result, run, sentAlready, template, assign) {
 
   $('#ms-send').addEventListener('click', async () => {
     const btn = $('#ms-send'), err = $('#ms-err');
-    recipients = assign ? splitAddresses($('#ms-assign').value) : ownAddresses;
     const from = mailFromAlias(template);
     const fail = (m) => { err.hidden = false; err.textContent = m; btn.disabled = false; btn.textContent = 'Send'; };
     btn.disabled = true; btn.textContent = 'Sending…'; err.hidden = true;
