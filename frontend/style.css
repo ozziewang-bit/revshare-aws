@@ -1212,3 +1212,8 @@ p.rc-warn {
 .mail-preview-body { margin: 0; padding: 14px; background: var(--surface);
   font-family: var(--font-ui); font-size: 13px; line-height: 1.6;
   white-space: pre-wrap; word-break: break-word; max-height: 360px; overflow-y: auto; }
+
+/* Where the month stands, above the list. Quiet, but the first thing read on arriving. */
+.msend-progress { margin: 14px 0 4px; font-size: 13px; color: var(--ink-soft); }
+.msend-progress strong { color: var(--ink); }
+.msend-done { color: var(--gain); font-weight: 600; }

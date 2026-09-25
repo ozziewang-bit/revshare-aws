@@ -4087,35 +4087,14 @@ function editMailTemplate(t) {
   });
 }
 
-// Who this batch goes to, decided ONCE for the whole screen rather than per row. Two modes:
-// each merchant's own address (the real job), or a fixed set you choose (a test, or a batch
-// you want routed somewhere specific). Deciding per row as well was considered and rejected —
-// the top saying one thing while a row was quietly changed is exactly how a test send reaches
-// a merchant.
-let MAIL_SEND_TO = { mode: 'merchant', addresses: [] };
-
-// Every address the app holds, across every live merchant, each with the merchants it belongs
-// to. One address can serve several merchants, so they are grouped rather than listed twice.
-function allMerchantAddresses() {
-  const byAddress = new Map();
-  for (const c of CONTRACTS || []) {
-    if (c.archived) continue;
-    for (const a of [...splitAddresses(c.financeContactEmail), ...splitAddresses(c.contactEmail)]) {
-      const key = a.toLowerCase();
-      if (!byAddress.has(key)) byAddress.set(key, { address: a, merchants: [] });
-      const e = byAddress.get(key);
-      if (!e.merchants.includes(c.merchantName)) e.merchants.push(c.merchantName);
-    }
-  }
-  return [...byAddress.values()].sort((a, b) => a.address.localeCompare(b.address));
-}
-
-// What one row will actually send to, under the current mode. In fixed mode every merchant
-// resolves to the same chosen addresses, which is what makes a whole-list test possible.
-function effectiveRecipients(contractId) {
-  return MAIL_SEND_TO.mode === 'fixed'
-    ? MAIL_SEND_TO.addresses.slice()
-    : mailRecipients(contractId);
+// A statement goes to its merchant's finance address. That is the rule, and it is not a
+// setting — a mode that redirects every statement at once was built, used once, and removed:
+// it made "where is this going" a question about screen state rather than about the row.
+//
+// One statement can still be sent somewhere else, deliberately, per report — see the Assign
+// other address action. That is an act with a reason, not a mode you can forget you left on.
+function effectiveRecipients(contractId, assigned) {
+  return assigned && assigned.length ? assigned.slice() : mailRecipients(contractId);
 }
 
 // ── Mailing → Send: the monthly job on one screen ──────────────────────────────────────────
@@ -4156,7 +4135,6 @@ async function renderMailSendTab(host) {
   const onTemplate = () => {
     const step2 = document.getElementById('msend-step2');
     const raw = document.getElementById('msend-tpl').value;
-    MAIL_SEND_TO = { mode: 'merchant', addresses: [] };
     if (raw === '') {
       step2.innerHTML = '<p class="muted">Choose a template to continue. '
         + 'What it is decides what comes next — a statement needs a period, a plain message does not.</p>';
@@ -4182,29 +4160,14 @@ async function renderStatementSend(host, template) {
   }
   runs.sort((a, b) => (b.periodStart || '').localeCompare(a.periodStart || ''));
   host.innerHTML = `
-    <div class="mail-form" style="display:grid;grid-template-columns:1fr 1.2fr;gap:0 14px;max-width:760px;">
+    <div class="mail-form" style="max-width:360px;">
       <label><span>2 · Period</span><select id="msend-run">${runs.map(r =>
         `<option value="${escape(r.runId)}">${escape(periodTag(r.periodStart))}</option>`).join('')}</select></label>
-      <label><span>3 · Send to</span>
-        <div style="display:flex;gap:6px;">
-          <select id="msend-mode" style="flex:1;">
-            <option value="merchant">Each merchant’s own address</option>
-            <option value="fixed">A fixed set of addresses…</option>
-          </select>
-          <button type="button" id="msend-pick" class="btn" hidden>Choose…</button>
-        </div></label>
     </div>
-    <div id="msend-banner"></div>
+    <div id="msend-progress"></div>
     <div id="msend-list">Loading…</div>`;
   const draw = () => drawMailSendList(document.getElementById('msend-run').value, template);
   host.querySelector('#msend-run').addEventListener('change', draw);
-  host.querySelector('#msend-mode').addEventListener('change', (ev) => {
-    MAIL_SEND_TO.mode = ev.target.value;
-    document.getElementById('msend-pick').hidden = ev.target.value !== 'fixed';
-    if (ev.target.value === 'fixed' && !MAIL_SEND_TO.addresses.length) pickSendAddresses(draw);
-    else draw();
-  });
-  host.querySelector('#msend-pick').addEventListener('click', () => pickSendAddresses(draw));
   draw();
 }
 
@@ -4216,10 +4179,8 @@ async function renderMessageSend(host, template) {
   host.innerHTML = `
     <div class="mail-form" style="max-width:760px;">
       <label><span>2 · Send to</span>
-        <div style="display:flex;gap:6px;align-items:center;">
-          <button type="button" id="mmsg-pick" class="btn">Choose addresses…</button>
-          <span class="mail-meta" id="mmsg-count" style="margin:0;"></span>
-        </div></label>
+        <input id="mmsg-to" placeholder="one or more addresses, separated by commas"></label>
+      <p class="mail-meta" id="mmsg-count" style="margin:-9px 0 14px;"></p>
       <label><span>3 · Subject</span><input id="mmsg-subject"
         value="${escape(renderTemplate(template.subject, { merchant: '', entity: '' }))}"></label>
       <label><span>Message</span><textarea id="mmsg-body">${escape(template.body || '')}</textarea></label>
@@ -4229,22 +4190,25 @@ async function renderMessageSend(host, template) {
       <div class="mail-actions"><button id="mmsg-send" class="btn-primary" disabled>Send</button></div>
     </div>`;
 
+  // Whatever is typed, restated as the app reads it — an address it rejected (a space in it,
+  // say) would otherwise look accepted right up to the moment nothing arrives.
+  const typed = () => splitAddresses(host.querySelector('#mmsg-to').value);
   const refresh = () => {
-    const n = MAIL_SEND_TO.addresses.length;
-    host.querySelector('#mmsg-count').textContent = n
-      ? `${n} recipient${n === 1 ? '' : 's'}: ${MAIL_SEND_TO.addresses.join(', ')}`
-      : 'nobody chosen yet';
-    host.querySelector('#mmsg-send').disabled = !n;
+    const list = typed();
+    const raw = host.querySelector('#mmsg-to').value.trim();
+    const dropped = raw ? raw.split(/[;,]/).map(a => a.trim()).filter(Boolean).length - list.length : 0;
+    host.querySelector('#mmsg-count').innerHTML = list.length
+      ? `${list.length} recipient${list.length === 1 ? '' : 's'}: ${escape(list.join(', '))}`
+        + (dropped ? ` · <span class="rc-warn">${dropped} entr${dropped === 1 ? 'y is' : 'ies are'} not a valid address and will be ignored</span>` : '')
+      : (raw ? '<span class="rc-warn">none of that is a valid address</span>' : 'nobody yet');
+    host.querySelector('#mmsg-send').disabled = !list.length;
   };
-  host.querySelector('#mmsg-pick').addEventListener('click', () => {
-    MAIL_SEND_TO.mode = 'fixed';
-    pickSendAddresses(refresh);
-  });
+  host.querySelector('#mmsg-to').addEventListener('input', refresh);
   refresh();
 
   host.querySelector('#mmsg-send').addEventListener('click', async () => {
     const btn = host.querySelector('#mmsg-send'), err = host.querySelector('#mmsg-err');
-    const list = MAIL_SEND_TO.addresses.slice();
+    const list = typed();
     const from = mailFromAlias(template);
     if (!from) { err.hidden = false; err.textContent = 'This template has no sender address.'; return; }
     // Asked for while the click is still live — see gmailToken.
@@ -4280,69 +4244,6 @@ async function renderMessageSend(host, template) {
   });
 }
 
-// Choose the fixed set: any address the app holds for any merchant, plus anything typed. Shows
-// which merchants each address belongs to, because "creditcontrol@impact.co.th" means nothing
-// on its own.
-function pickSendAddresses(onDone) {
-  const all = allMerchantAddresses();
-  const chosen = new Set(MAIL_SEND_TO.addresses.map(a => a.toLowerCase()));
-  const { card, close } = ctModal(680);
-  card.innerHTML = `
-    <h3 style="margin:0 0 4px;">Send this batch to</h3>
-    <p class="muted" style="margin:0 0 12px;font-size:12.5px;">
-      Every statement in this run goes to these addresses instead of the merchants’ own.
-      Use it to send yourself the whole batch as a test.</p>
-    <div class="mail-form">
-      <label><span>Type any addresses</span>
-        <input id="pa-free" value="${escape(MAIL_SEND_TO.addresses.filter(a =>
-          !all.some(k => k.address.toLowerCase() === a.toLowerCase())).join(', '))}"
-        placeholder="you@inforich.com, someone.else@inforich.com"></label>
-      <label><span>Or pick from the ${all.length} addresses on file</span>
-        <input id="pa-search" placeholder="filter by address or merchant"></label>
-    </div>
-    <div id="pa-list" class="mail-pick-list"></div>
-    <p class="mail-meta" id="pa-count"></p>
-    <div class="mail-actions">
-      <button id="pa-cancel" class="btn-ghost">Cancel</button>
-      <button id="pa-save" class="btn-primary">Use these</button>
-    </div>`;
-
-  const listEl = card.querySelector('#pa-list');
-  const countEl = card.querySelector('#pa-count');
-  const drawList = () => {
-    const q = card.querySelector('#pa-search').value.toLowerCase().trim();
-    const rows = all.filter(k => !q || k.address.toLowerCase().includes(q)
-      || k.merchants.some(m => String(m).toLowerCase().includes(q)));
-    listEl.innerHTML = rows.length ? rows.map(k => `
-      <label class="mail-to-opt"><input type="checkbox" class="pa-box" value="${escape(k.address)}"
-        ${chosen.has(k.address.toLowerCase()) ? 'checked' : ''}>
-        <span>${escape(k.address)} <em>${escape(k.merchants.slice(0, 3).join(', '))}${
-          k.merchants.length > 3 ? ` +${k.merchants.length - 3}` : ''}</em></span></label>`).join('')
-      : '<p class="muted" style="margin:0;font-size:12.5px;">Nothing matches.</p>';
-    listEl.querySelectorAll('.pa-box').forEach(b => b.addEventListener('change', () => {
-      if (b.checked) chosen.add(b.value.toLowerCase()); else chosen.delete(b.value.toLowerCase());
-      countEl.textContent = `${chosen.size} picked from the list`;
-    }));
-    countEl.textContent = `${chosen.size} picked from the list`;
-  };
-  card.querySelector('#pa-search').addEventListener('input', drawList);
-  drawList();
-
-  card.querySelector('#pa-cancel').addEventListener('click', close);
-  card.querySelector('#pa-save').addEventListener('click', () => {
-    const typed = splitAddresses(card.querySelector('#pa-free').value);
-    const picked = all.filter(k => chosen.has(k.address.toLowerCase())).map(k => k.address);
-    const merged = [...typed, ...picked];
-    MAIL_SEND_TO.addresses = merged.filter((a, i) =>
-      merged.findIndex(b => b.toLowerCase() === a.toLowerCase()) === i);
-    MAIL_SEND_TO.mode = MAIL_SEND_TO.addresses.length ? 'fixed' : 'merchant';
-    const sel = document.getElementById('msend-mode');
-    if (sel) sel.value = MAIL_SEND_TO.mode;
-    close();
-    onDone();
-  });
-}
-
 async function drawMailSendList(runId, template) {
   const box = document.getElementById('msend-list');
   if (!box) return;
@@ -4353,22 +4254,6 @@ async function drawMailSendList(runId, template) {
   ]);
   await ensureContractCache().catch(() => {});
   const sent = new Map((log || []).map(m => [m.contractId, m]));
-
-  const fixed = MAIL_SEND_TO.mode === 'fixed';
-  const banner = document.getElementById('msend-banner');
-  if (banner) {
-    const owners = fixed ? fixedSetOwners(MAIL_SEND_TO.addresses) : [];
-    banner.innerHTML = !fixed ? '' : owners.length
-      // A chosen address that belongs to a merchant means statements WILL reach a merchant —
-      // and the wrong one. Saying "nothing reaches a merchant" here would be a false comfort.
-      ? `<p class="mail-warn" style="max-width:920px;">Every statement below goes to
-          <strong>${escape(MAIL_SEND_TO.addresses.join(', '))}</strong>.
-          <strong>${escape(owners.join('; '))}</strong> belongs to a merchant — every merchant’s
-          figures would be sent to it. Remove it unless that is genuinely intended.</p>`
-      : `<p class="mail-warn" style="max-width:920px;">Every statement below goes to
-          <strong>${escape(MAIL_SEND_TO.addresses.join(', ') || 'nobody — none chosen')}</strong>,
-          not to the merchants. Nothing reaches a merchant while this is set.</p>`;
-  }
 
   const ready = [], done = [], noFinance = [];
   for (const r of (run.results || []).slice().sort((a, b) => b.payout - a.payout)) {
@@ -4383,6 +4268,18 @@ async function drawMailSendList(runId, template) {
     <td class="rc-c-money">${fmt2(r.payout)}</td>
     <td>${extra}</td></tr>`;
 
+  // What is left, in one line, so the state of the month is readable without counting rows.
+  const progress = document.getElementById('msend-progress');
+  if (progress) {
+    const total = ready.length + done.length + noFinance.length;
+    progress.innerHTML = `<p class="msend-progress">
+      <strong>${done.length} of ${total} sent</strong> for ${escape(periodTag(run.periodStart))}
+      · <strong>${ready.length}</strong> still to send
+      ${noFinance.length ? `· <strong>${noFinance.length}</strong> cannot be sent yet` : ''}
+      ${ready.length === 0 && done.length ? '· <span class="msend-done">this period is complete</span>' : ''}
+    </p>`;
+  }
+
   const section = (title, rows, tone, body) => rows.length ? `
     <section style="margin-top:18px;">
       <h3 style="display:flex;align-items:baseline;gap:10px;margin:0 0 6px;font-size:14px;">
@@ -4396,14 +4293,16 @@ async function drawMailSendList(runId, template) {
     section('Ready to send', ready, 'To', ready.map(r => row(r,
       `${escape(effectiveRecipients(r.contractId).join(', '))}
        <button class="btn-ghost mprev-btn" data-cid="${escape(r.contractId)}" style="margin-left:8px;">Preview</button>
-       <button class="btn-ghost msend-btn" data-cid="${escape(r.contractId)}">Send…</button>`)).join(''))
+       <button class="btn-ghost msend-btn" data-cid="${escape(r.contractId)}">Send…</button>
+       <button class="btn-ghost massign-btn" data-cid="${escape(r.contractId)}">Assign other address…</button>`)).join(''))
     + section('Already sent', done, 'Sent', done.map(r => {
         const m = sent.get(r.contractId);
         return row(r, `${escape(m.sentAt ? new Date(m.sentAt).toLocaleString('en-GB',
           { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '')}
           to ${escape(m.to || '')} by ${escape(m.sentBy || '')}
           <button class="btn-ghost mprev-btn" data-cid="${escape(r.contractId)}" style="margin-left:8px;">Preview</button>
-          <button class="btn-ghost msend-btn" data-cid="${escape(r.contractId)}">Send again…</button>`);
+          <button class="btn-ghost msend-btn" data-cid="${escape(r.contractId)}">Send again…</button>
+          <button class="btn-ghost massign-btn" data-cid="${escape(r.contractId)}">Assign other address…</button>`);
       }).join(''))
     + section('No finance email', noFinance, 'What is on file', noFinance.map(r => {
         const other = fallbackContact(r.contractId);
@@ -4414,7 +4313,8 @@ async function drawMailSendList(runId, template) {
           : other.length
           ? `<span class="muted">contact email: ${escape(other.join(', '))} — copy it into
              <strong>Finance email</strong> on the Merchant view if that is the right person</span>`
-          : '<span class="muted">no address at all — add a finance email on the Merchant view</span>');
+          : '<span class="muted">no address at all — add a finance email on the Merchant view</span>')
+          + ` <button class="btn-ghost massign-btn" data-cid="${escape(r.contractId)}">Assign other address…</button>`;
       }).join(''))
     + (ready.length || done.length || noFinance.length ? '' : '<p class="muted">This run paid nobody.</p>');
 
@@ -4425,6 +4325,10 @@ async function drawMailSendList(runId, template) {
   box.querySelectorAll('.mprev-btn').forEach(b => b.addEventListener('click', () => {
     const r = (run.results || []).find(x => x.contractId === b.dataset.cid);
     if (r) mailPreviewDialog(r, run, template, sent.get(r.contractId)?.sentAt || null);
+  }));
+  box.querySelectorAll('.massign-btn').forEach(b => b.addEventListener('click', () => {
+    const r = (run.results || []).find(x => x.contractId === b.dataset.cid);
+    if (r) mailSendDialog(r, run, sent.get(r.contractId)?.sentAt || null, template, true);
   }));
 }
 
@@ -4493,7 +4397,7 @@ function statementWorkbook(result, index) {
 // used — not against what the screen showed a minute ago.
 //
 // Returns a list of reasons this send must NOT happen. Empty means go.
-function statementSendBlockers(result, run, recipients, attachmentFor) {
+function statementSendBlockers(result, run, recipients, attachmentFor, assigned) {
   const problems = [];
 
   // 1. The file must belong to the merchant named in the letter. Both come from `result`, so
@@ -4503,10 +4407,11 @@ function statementSendBlockers(result, run, recipients, attachmentFor) {
     problems.push(`The attached file was built for a different merchant (${attachmentFor || 'unknown'}).`);
   }
 
-  // 2. In merchant mode every recipient must be one of THIS merchant's own finance addresses.
-  //    Sending 7-Eleven's payout to IMPACT is the worst thing this screen could do, and the
-  //    addresses are compared here rather than trusted from the row that was clicked.
-  if (MAIL_SEND_TO.mode !== 'fixed') {
+  // 2. Unless this send was deliberately assigned elsewhere, every recipient must be one of
+  //    THIS merchant's own finance addresses. Sending 7-Eleven's payout to IMPACT is the worst
+  //    thing this screen could do, so the addresses are compared here rather than trusted from
+  //    the row that was clicked.
+  if (!assigned) {
     const own = new Set(mailRecipients(result.contractId).map(a => a.toLowerCase()));
     const strangers = recipients.filter(a => !own.has(a.toLowerCase()));
     if (strangers.length) {
@@ -4519,25 +4424,13 @@ function statementSendBlockers(result, run, recipients, attachmentFor) {
   return problems;
 }
 
-// Does a fixed set belong to a merchant? If so the banner must not claim nothing reaches a
-// merchant — it would be a reassurance that is false.
-function fixedSetOwners(addresses) {
-  const owners = [];
-  for (const k of allMerchantAddresses()) {
-    if ((addresses || []).some(a => a.toLowerCase() === k.address.toLowerCase())) {
-      owners.push(`${k.address} (${k.merchants.join(', ')})`);
-    }
-  }
-  return owners;
-}
-
 // Exactly what this merchant would receive, with nothing to press by accident. The send dialog
 // shows the same text, but it is a form with a Send button — reading fourteen of those to check
 // the wording means fourteen chances to send one early. This is the reading view; Send is
 // reached deliberately from it.
 function mailPreviewDialog(result, run, template, sentAlready) {
   const vars = mailVarsFor(result, run);
-  const to = effectiveRecipients(result.contractId);
+  const to = mailRecipients(result.contractId);
   const subject = renderTemplate(template.subject, vars);
   const body = renderTemplate(template.body, vars);
   const unfilled = [...new Set((subject + '\n' + body).match(/\{\{\w+\}\}/g) || [])];
@@ -4614,8 +4507,12 @@ const DEFAULT_FROM_ALIAS = { th: 'partner.th@inforich.com', sg: '' };
 // where the field was cleared — still sends rather than failing at the last step.
 const mailFromAlias = (t) => ((t && t.fromAlias) || DEFAULT_FROM_ALIAS[REGION] || '').trim();
 
-function mailSendDialog(result, run, sentAlready, template) {
-  const recipients = effectiveRecipients(result.contractId);
+function mailSendDialog(result, run, sentAlready, template, assign) {
+  // `assign` is the "Assign other address" action: one report, deliberately sent somewhere
+  // other than the merchant's finance address. It is an act with a reason — recorded as such —
+  // rather than a mode that stays on and quietly redirects the next thing too.
+  const ownAddresses = mailRecipients(result.contractId);
+  let recipients = assign ? [] : ownAddresses;
   const { card, close } = ctModal(720);
   const vars = mailVarsFor(result, run);
 
@@ -4637,11 +4534,14 @@ function mailSendDialog(result, run, sentAlready, template) {
     <div class="mail-form">
       <fieldset class="mail-to">
         <legend>To</legend>
-        <p style="margin:0;font-size:13px;">${escape(recipients.join(', ')) || '<span class="rc-warn">nobody</span>'}</p>
-        <p class="mail-meta" style="margin:6px 0 0;">${
-          MAIL_SEND_TO.mode === 'fixed'
-            ? 'Fixed for this batch — <span class="rc-warn">this is not the merchant’s own address</span>. Change it with “Send to” above.'
-            : 'This merchant’s own address. Change it with “Send to” above.'}</p>
+        ${assign ? `
+          <input id="ms-assign" placeholder="address to send this report to">
+          <p class="mail-meta" id="ms-assign-note" style="margin:6px 0 0;">
+            <span class="rc-warn">Assigned</span> — ${escape(result.merchantName)}’s statement will go here
+            instead of ${escape(ownAddresses.join(', ') || 'its own address, which is not set')}.</p>`
+        : `<p style="margin:0;font-size:13px;">${escape(recipients.join(', ')) || '<span class="rc-warn">nobody</span>'}</p>
+           <p class="mail-meta" style="margin:6px 0 0;">This merchant’s own finance address. To send
+           this report somewhere else, close and use <strong>Assign other address</strong>.</p>`}
       </fieldset>
       <label><span>Subject</span><input id="ms-subject"></label>
       <label><span>Message</span><textarea id="ms-body"></textarea></label>
@@ -4664,7 +4564,7 @@ function mailSendDialog(result, run, sentAlready, template) {
 
   $('#ms-send').addEventListener('click', async () => {
     const btn = $('#ms-send'), err = $('#ms-err');
-    const recipients = effectiveRecipients(result.contractId);
+    recipients = assign ? splitAddresses($('#ms-assign').value) : ownAddresses;
     const from = mailFromAlias(template);
     const fail = (m) => { err.hidden = false; err.textContent = m; btn.disabled = false; btn.textContent = 'Send'; };
     btn.disabled = true; btn.textContent = 'Sending…'; err.hidden = true;
@@ -4682,12 +4582,13 @@ function mailSendDialog(result, run, sentAlready, template) {
       const filename = `${sanitizeFilename(result.merchantName)}.xlsx`;
 
       // Checked against what is about to be sent, not what was rendered.
-      const blockers = statementSendBlockers(result, run, recipients, result.contractId);
+      const blockers = statementSendBlockers(result, run, recipients, result.contractId, !!assign);
       if (blockers.length) return fail('Not sent — ' + blockers.join(' '));
 
       const rows = index.orders ? (index.ordersByContract.get(result.contractId) || []).length : 0;
       const ok = confirm(
-        `Send this statement?\n\n`
+        (assign ? `Send this statement to an ASSIGNED address?\n(not ${result.merchantName}'s own)\n\n`
+                : `Send this statement?\n\n`)
         + `Merchant:   ${result.merchantName}\n`
         + `Period:     ${periodTag(run.periodStart)}\n`
         + `Payout:     ${fmt2(result.payout)} ${vars.currency}\n`
@@ -4710,7 +4611,7 @@ function mailSendDialog(result, run, sentAlready, template) {
                                to: recipients.join(', '), subject: $('#ms-subject').value,
                                attachment: filename, gmailId: sent.id, fromAlias: from,
                                period: periodTag(run.periodStart), payout: Number(result.payout) || 0,
-                               attachmentRows: rows }),
+                               attachmentRows: rows, assigned: !!assign }),
       });
       close();
       drawMailSendList(run.runId);

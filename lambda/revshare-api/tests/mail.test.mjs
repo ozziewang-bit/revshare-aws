@@ -246,81 +246,76 @@ test('a merchant with nothing on file offers nothing, rather than a blank row', 
   assert.deepEqual(knownIn([])('nope'), []);
 });
 
-test('the dialog shows the recipients the batch decided, and does not re-ask', () => {
-  // Deciding per row AS WELL was considered and rejected: the top saying one thing while a row
-  // was quietly changed is exactly how a test send reaches a merchant.
+test('the dialog shows the merchant\u2019s own address, or the one assigned', () => {
   const src = grab('mailSendDialog');
-  assert.match(src, /effectiveRecipients\(result\.contractId\)/,
-    'the dialog reads the batch decision');
-  for (const gone of ['ms-known', 'ms-extra', 'knownAddresses(']) {
-    assert.ok(!src.includes(gone), `${gone} is a per-row picker and must not return`);
+  assert.match(src, /mailRecipients\(result\.contractId\)/, 'the merchant\u2019s own address');
+  assert.match(src, /assign \? splitAddresses/, 'or the assigned one, read at send time');
+  for (const gone of ['ms-known', 'ms-extra', 'MAIL_SEND_TO']) {
+    assert.ok(!src.includes(gone), `${gone} belonged to a removed design`);
   }
 });
 
 test('the dialog says when a send is not going to the merchant', () => {
-  // A test send must not look identical to the real thing.
+  // An assigned send must not look identical to the real thing.
   const src = grab('mailSendDialog');
-  assert.match(src, /not the merchant/,
-    'it must say so when the batch is routed somewhere other than the merchant');
+  assert.match(src, /Assigned/);
+  assert.match(src, /instead of/, 'and names the address it is NOT going to');
 });
 
-// ── Recipients decided once for the batch (2026-09-25) ─────────────────────────────────────
-// "Once, at the top" (user). Two modes: each merchant's own address — the real job — or a fixed
-// set, which is how a whole run is tested without a merchant receiving anything.
-const sendToIn = (contracts, state) => new Function('CONTRACTS', 'MAIL_SEND_TO',
-  splitSrc() + '\n' + grab('mailRecipients') + '\n'
-  + grab('allMerchantAddresses') + '\n' + grab('effectiveRecipients')
-  + '\nreturn { allMerchantAddresses, effectiveRecipients };')(contracts, state);
+// ── One report, one deliberate assignment (2026-09-25) ─────────────────────────────────────
+// The whole-batch redirect was built, used once, and removed: it made "where is this going" a
+// question about screen state rather than about the row. A single statement can still go
+// somewhere else, per report, as an act with a reason — and it is recorded as one.
+const recipientsFor = (contracts) => new Function('CONTRACTS',
+  splitSrc() + '\n' + grab('mailRecipients') + '\n' + grab('effectiveRecipients')
+  + '\nreturn effectiveRecipients;')(contracts);
 
-const CONTRACTS_FIXTURE = [
+const BOOK = [
   { contractId: 'c1', merchantName: '7-Eleven', financeContactEmail: 'wiparatron@cpall.co.th' },
-  { contractId: 'c2', merchantName: 'IMPACT', contactEmail: 'KornjiraS@impact.co.th, creditcontrol@impact.co.th' },
-  { contractId: 'c3', merchantName: 'Shared Co', contactEmail: 'WIPARATRON@cpall.co.th' },
-  { contractId: 'c4', merchantName: 'Gone', archived: true, contactEmail: 'old@x.com' },
-  { contractId: 'c5', merchantName: 'No address' },
+  { contractId: 'c2', merchantName: 'No finance', contactEmail: 'ops@x.com' },
 ];
 
-test('merchant mode sends each merchant its own address', () => {
-  const f = sendToIn(CONTRACTS_FIXTURE, { mode: 'merchant', addresses: [] });
-  assert.deepEqual(f.effectiveRecipients('c1'), ['wiparatron@cpall.co.th']);
-  assert.deepEqual(f.effectiveRecipients('c5'), [], 'and none where there is none');
+test('a statement goes to its merchant\u2019s finance address by default', () => {
+  const f = recipientsFor(BOOK);
+  assert.deepEqual(f('c1'), ['wiparatron@cpall.co.th']);
+  assert.deepEqual(f('c2'), [], 'a contact email is not a finance address');
 });
 
-test('fixed mode sends EVERY merchant to the chosen addresses', () => {
-  // This is what makes a whole-list test possible: the recipient stops depending on the row.
-  const f = sendToIn(CONTRACTS_FIXTURE, { mode: 'fixed', addresses: ['ozzie.wang@inforich.com'] });
-  assert.deepEqual(f.effectiveRecipients('c1'), ['ozzie.wang@inforich.com']);
-  assert.deepEqual(f.effectiveRecipients('c5'), ['ozzie.wang@inforich.com'],
-    'including merchants that have no address of their own');
+test('an assignment replaces it for that report only', () => {
+  const f = recipientsFor(BOOK);
+  assert.deepEqual(f('c1', ['ozzie.wang@inforich.com']), ['ozzie.wang@inforich.com']);
+  assert.deepEqual(f('c1'), ['wiparatron@cpall.co.th'],
+    'and the next call is unaffected — there is no mode left switched on');
 });
 
-test('the picker offers every address on file, grouped by address', () => {
-  // One address can serve several merchants; listing it twice would let it be ticked twice and
-  // sent twice.
-  const all = sendToIn(CONTRACTS_FIXTURE, { mode: 'merchant', addresses: [] }).allMerchantAddresses();
-  const shared = all.find(a => a.address.toLowerCase() === 'wiparatron@cpall.co.th');
-  assert.ok(shared, 'the shared address is offered');
-  assert.deepEqual(shared.merchants.sort(), ['7-Eleven', 'Shared Co']);
-  assert.equal(all.filter(a => a.address.toLowerCase() === 'wiparatron@cpall.co.th').length, 1);
+test('an empty assignment falls back rather than sending nowhere', () => {
+  const f = recipientsFor(BOOK);
+  assert.deepEqual(f('c1', []), ['wiparatron@cpall.co.th']);
 });
 
-test('an archived merchant contributes no addresses', () => {
-  const all = sendToIn(CONTRACTS_FIXTURE, { mode: 'merchant', addresses: [] }).allMerchantAddresses();
-  assert.ok(!all.some(a => a.address === 'old@x.com'));
+test('the dialog only accepts a stranger address when it was assigned deliberately', () => {
+  const f = blockersIn(BOOK, {});
+  const SEVEN = { contractId: 'c1', merchantName: '7-Eleven' };
+  const RUN2 = { runId: 'r1', periodStart: '2026-08-01' };
+  assert.match(f(SEVEN, RUN2, ['someone@else.com'], 'c1', false).join(' '),
+    /not a finance address/, 'an accidental one is still blocked');
+  assert.deepEqual(f(SEVEN, RUN2, ['someone@else.com'], 'c1', true), [],
+    'a deliberate assignment is allowed — that is what the action is for');
 });
 
-test('the batch mode is reset on every visit, never remembered', () => {
-  // A test set left switched on from yesterday, silently applying to a real send, is the worst
-  // outcome this screen has.
-  const src = grab('renderMailSendTab');
-  assert.match(src, /MAIL_SEND_TO = \{ mode: 'merchant', addresses: \[\] \}/,
-    'the screen must reset the mode when it loads');
+test('an assigned send is recorded as assigned', () => {
+  // Otherwise the Sent log cannot tell a statement that went to its merchant from one that
+  // went somewhere else, which is the first question anyone would ask of it.
+  const src = grab('mailSendDialog');
+  assert.match(src, /assigned: !!assign/);
+  assert.match(src, /ASSIGNED address/, 'and the confirmation says so before it goes');
 });
 
-test('a fixed batch warns, in the list itself, that nothing reaches a merchant', () => {
+test('the send list says what is left for the period', () => {
   const src = grab('drawMailSendList');
-  assert.match(src, /not to the merchants/,
-    'the banner must say where the batch is actually going');
+  assert.match(src, /of \$\{total\} sent/);
+  assert.match(src, /still to send/);
+  assert.match(src, /this period is complete/);
 });
 
 // ── The template decides what the send screen asks (2026-09-25) ────────────────────────────
@@ -381,10 +376,12 @@ test('a plain message sends each recipient their own copy', () => {
   assert.match(src, /to: \[to\]/, 'each addressed only to itself');
 });
 
-test('a statement screen asks for the period as step 2', () => {
+test('a statement screen asks for the period, and nothing else', () => {
+  // Recipients are not a question here any more: a statement goes to its merchant's finance
+  // address, and one report can be redirected deliberately from its own row.
   const src = grab('renderStatementSend');
   assert.match(src, /2 · Period/);
-  assert.match(src, /3 · Send to/);
+  assert.ok(!src.includes('Send to'), 'no batch-wide recipient control');
 });
 
 test('a statement template with no run says so instead of showing an empty list', () => {
@@ -408,7 +405,7 @@ test('the preview renders the same text the send would', () => {
   const src = grab('mailPreviewDialog');
   assert.match(src, /renderTemplate\(template\.subject, vars\)/);
   assert.match(src, /renderTemplate\(template\.body, vars\)/);
-  assert.match(src, /effectiveRecipients\(result\.contractId\)/);
+  assert.match(src, /mailRecipients\(result\.contractId\)/);
 });
 
 test('the preview warns about placeholders the template left unfilled', () => {
@@ -480,7 +477,7 @@ const BOOKS = [
 
 test('a clean send has nothing blocking it', () => {
   const f = blockersIn(BOOKS, { mode: 'merchant', addresses: [] });
-  assert.deepEqual(f(SEVEN, RUN, ['wiparatron@cpall.co.th'], 'c1'), []);
+  assert.deepEqual(f(SEVEN, RUN, ['wiparatron@cpall.co.th'], 'c1', false), []);
 });
 
 test('a file built for another merchant blocks the send', () => {
@@ -488,7 +485,7 @@ test('a file built for another merchant blocks the send', () => {
   // change threads a different row into one of them — which is exactly the change that would
   // otherwise ship silently.
   const f = blockersIn(BOOKS, { mode: 'merchant', addresses: [] });
-  const out = f(SEVEN, RUN, ['wiparatron@cpall.co.th'], 'c2');
+  const out = f(SEVEN, RUN, ['wiparatron@cpall.co.th'], 'c2', false);
   assert.equal(out.length, 1);
   assert.match(out[0], /built for a different merchant/);
 });
@@ -496,32 +493,15 @@ test('a file built for another merchant blocks the send', () => {
 test('another merchant’s address blocks the send', () => {
   // Sending 7-Eleven's payout figures to IMPACT is the worst thing this screen could do.
   const f = blockersIn(BOOKS, { mode: 'merchant', addresses: [] });
-  const out = f(SEVEN, RUN, ['ap@impact.co.th'], 'c1');
+  const out = f(SEVEN, RUN, ['ap@impact.co.th'], 'c1', false);
   assert.equal(out.length, 1);
   assert.match(out[0], /not a finance address for 7-Eleven/);
 });
 
-test('a deliberate fixed set is allowed, because that is what it is for', () => {
-  // Test sends go somewhere that is not the merchant's address ON PURPOSE. The banner carries
-  // the warning there; blocking it would make testing impossible.
-  const f = blockersIn(BOOKS, { mode: 'fixed', addresses: ['ozzie.wang@inforich.com'] });
-  assert.deepEqual(f(SEVEN, RUN, ['ozzie.wang@inforich.com'], 'c1'), []);
-});
-
 test('no recipient and no run both block', () => {
   const f = blockersIn(BOOKS, { mode: 'merchant', addresses: [] });
-  assert.match(f(SEVEN, RUN, [], 'c1').join(' '), /no recipient/i);
+  assert.match(f(SEVEN, RUN, [], 'c1', false).join(' '), /no recipient/i);
   assert.match(f(SEVEN, null, ['wiparatron@cpall.co.th'], 'c1').join(' '), /not attached to a run/);
-});
-
-test('a fixed set containing a merchant address is named, not reassured away', () => {
-  // The banner used to say "nothing reaches a merchant" unconditionally. If the chosen address
-  // belongs to IMPACT, every merchant's figures would reach IMPACT — the opposite of comfort.
-  const f = new Function('CONTRACTS',
-    splitSrc() + '\n' + grab('allMerchantAddresses') + '\n'
-    + grab('fixedSetOwners') + '\nreturn fixedSetOwners;')(BOOKS);
-  assert.deepEqual(f(['ozzie.wang@inforich.com']), []);
-  assert.match(f(['ap@impact.co.th'])[0], /IMPACT/);
 });
 
 test('the send restates merchant, period, payout and recipient before it goes', () => {
