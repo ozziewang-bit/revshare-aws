@@ -470,20 +470,27 @@ async function openFeatureRequests() {
 
 function renderNav() {
   const nav = document.getElementById('topnav');
-  // Four destinations. Analytics reads the same runs Run share lists, and Device types / Users
-  // are both configuration, so each pair is one screen with tabs rather than its own nav slot.
+  // FIVE destinations since 2026-09-25. The nav was folded to four on purpose (Analytics reads
+  // the same runs Run share lists; Device types / Users are both configuration), and Mailing
+  // was added back out of Settings by explicit decision: what gets written to a merchant is
+  // not configuration, it is work someone does, and burying it two clicks deep under Settings
+  // made it read as a preference. If a sixth is ever proposed, re-read this and the §1b note.
+  //
   // Run share is NOT gated on runCalcs: reads are open backend-side, and gating the nav here
   // was also hiding Analytics from read-only users. Creating a run is still gated, on the
-  // + New run button.
+  // + New run button. Mailing is the same shape — anyone may read what was sent, sending is
+  // gated where it happens.
   nav.innerHTML = `
     <button id="nav-contracts" class="nav-btn active">Merchant view</button>
     <button id="nav-bulk-runs" class="nav-btn">Run share</button>
+    <button id="nav-mailing" class="nav-btn">Mailing</button>
     <button id="nav-archived" class="nav-btn">Archived</button>
     <button id="nav-settings" class="nav-btn">Settings</button>`;
   nav.querySelector('#nav-archived').addEventListener('click', () => { setActiveNav('nav-archived'); renderArchivedScreen(); });
   nav.querySelector('#nav-bulk-runs').addEventListener('click', () => { setActiveNav('nav-bulk-runs'); renderBulkRunsList(); });
   nav.querySelector('#nav-contracts').addEventListener('click', () => { setActiveNav('nav-contracts'); renderContractsScreen(); });
   nav.querySelector('#nav-settings').addEventListener('click', () => { setActiveNav('nav-settings'); renderSettingsScreen(); });
+  nav.querySelector('#nav-mailing').addEventListener('click', () => { setActiveNav('nav-mailing'); renderMailingScreen(); });
   // Lives in the brand bar, not the nav, so it survives every screen change.
   const frBtn = document.getElementById('feature-request');
   if (frBtn && !frBtn.dataset.wired) { frBtn.dataset.wired = '1'; frBtn.addEventListener('click', openFeatureRequests); }
@@ -526,9 +533,6 @@ async function renderSettingsScreen(tab = 'device-types') {
   const main = document.getElementById('main');
   setActiveNav('nav-settings');
   const tabs = [{ id: 'device-types', label: 'Device types' }];
-  // Readable by anyone — checking what is being sent to merchants should not need admin; only
-  // editing does, which the tab itself enforces.
-  tabs.push({ id: 'mail-templates', label: 'Mail templates' });
   if (can('admin')) tabs.push({ id: 'users', label: 'Users' });
   if (!tabs.some(t => t.id === tab)) tab = 'device-types';
   main.innerHTML = `<div class="page-head"><h2>Settings</h2></div>
@@ -537,7 +541,6 @@ async function renderSettingsScreen(tab = 'device-types') {
   wireSubTabs(main, id => renderSettingsScreen(id));
   const body = document.getElementById('settings-body');
   if (tab === 'users') await renderUsersScreen(body);
-  else if (tab === 'mail-templates') await renderMailTemplatesTab();
   else await renderDeviceTypesScreen(body);
 }
 
@@ -3905,9 +3908,55 @@ const round4 = v => Math.round(Number(v) * 10000) / 10000;
 // ── Settings → Mail templates ──────────────────────────────────────────────────────────────
 // Admin-only to edit, because a template is the wording that reaches a merchant under the
 // company's name. Everyone can read one, so anyone can check what is being sent.
-async function renderMailTemplatesTab() {
+// Mailing: its own destination, because writing to a merchant is work, not configuration.
+// Two tabs for now — the templates, and what has actually gone out. The sending workspace
+// (pick a period, work down the list) is the next piece and is being designed.
+async function renderMailingScreen(tab = 'templates') {
   const main = document.getElementById('main');
-  const box = document.getElementById('settings-body') || main;
+  setActiveNav('nav-mailing');
+  const tabs = [{ id: 'templates', label: 'Templates' }, { id: 'sent', label: 'Sent' }];
+  if (!tabs.some(t => t.id === tab)) tab = 'templates';
+  main.innerHTML = `<div class="page-head"><h2>Mailing</h2></div>
+    ${subTabsHtml(tabs, tab)}
+    <div id="mailing-body">Loading…</div>`;
+  wireSubTabs(main, id => renderMailingScreen(id));
+  const body = document.getElementById('mailing-body');
+  if (tab === 'sent') await renderMailSentTab(body);
+  else await renderMailTemplatesTab(body);
+}
+
+// Everything sent, newest first, across every run. Answers "did Central get its September
+// statement, and who sent it" without opening a run. Reading is open to anyone signed in —
+// checking what left the company under its own name should not need a permission.
+async function renderMailSentTab(host) {
+  host.innerHTML = '<p class="muted">Loading…</p>';
+  let runs = [];
+  try { runs = await api('/bulk-runs'); } catch { /* shown as empty below */ }
+  const logs = (await Promise.all((runs || []).map(r =>
+    api(`/bulk-runs/${encodeURIComponent(r.runId)}/mail-log`)
+      .then(l => (l || []).map(m => ({ ...m, period: periodTag(r.periodStart) })))
+      .catch(() => [])))).flat();
+  logs.sort((a, b) => (b.sentAt || '').localeCompare(a.sentAt || ''));
+  if (!logs.length) {
+    host.innerHTML = '<p class="muted">Nothing has been sent yet. Statements are sent from a run — '
+      + 'open <strong>Run share</strong>, choose a month, and use the Statement column.</p>';
+    return;
+  }
+  host.innerHTML = `<table class="ts"><thead><tr>
+      <th>Sent</th><th>Period</th><th>Merchant</th><th>To</th><th>Subject</th><th>By</th>
+    </tr></thead><tbody>${logs.map(m => `<tr>
+      <td>${escape(m.sentAt ? new Date(m.sentAt).toLocaleString('en-GB',
+            { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '')}</td>
+      <td>${escape(m.period || '')}</td>
+      <td>${escape(m.merchantName || '')}</td>
+      <td>${escape(m.to || '')}</td>
+      <td>${escape(m.subject || '')}</td>
+      <td>${escape(m.sentBy || '')}</td>
+    </tr>`).join('')}</tbody></table>`;
+}
+
+async function renderMailTemplatesTab(host) {
+  const box = host || document.getElementById('main');
   const templates = await loadMailTemplates();
   const admin = can('admin');
   const help = MAIL_PLACEHOLDERS.map(([k, d]) => `<code>${escape(k)}</code> — ${escape(d)}`).join('<br>');
@@ -3937,7 +3986,7 @@ async function renderMailTemplatesTab() {
       const t = templates[b.dataset.i];
       if (!confirm(`Delete the template "${t.name || 'Untitled'}"? Mail already sent is unaffected.`)) return;
       await api('/mail-templates/' + encodeURIComponent(t.id), { method: 'DELETE' });
-      renderMailTemplatesTab();
+      renderMailingScreen('templates');
     }));
   };
   draw();
@@ -3981,7 +4030,7 @@ function editMailTemplate(t) {
     try {
       await api('/mail-templates', { method: 'PUT', body: JSON.stringify(payload) });
       close();
-      renderMailTemplatesTab();
+      renderMailingScreen('templates');
     } catch (e) { err.hidden = false; err.textContent = e.message; }
   });
 }
