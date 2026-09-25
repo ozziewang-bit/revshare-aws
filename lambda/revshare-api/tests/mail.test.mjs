@@ -41,13 +41,27 @@ test('a placeholder present but empty renders as empty, because that IS the valu
   assert.equal(renderTemplate('[{{entity}}]', { entity: '' }), '[]');
 });
 
-test('the finance address wins, and several addresses in one field are split', () => {
-  // Real shape from the live data: IMPACT carries two addresses in one field.
+test('a statement reads the finance column, and ONLY that', () => {
+  // It used to fall back to the ordinary contact, which quietly sent a remittance advice to an
+  // ops or marketing address. A statement is a financial document: it goes to the person who
+  // handles money, or it does not go. Several addresses in one field still split — IMPACT
+  // really does carry two.
   const f = recipientsWith([
     { contractId: 'c1', financeContactEmail: 'ap@x.com', contactEmail: 'ops@x.com' },
     { contractId: 'c2', contactEmail: 'KornjiraS@impact.co.th, creditcontrol@impact.co.th' },
+    { contractId: 'c3', financeContactEmail: 'a@x.com, b@x.com' },
   ]);
-  assert.deepEqual(f('c1'), ['ap@x.com']);
+  assert.deepEqual(f('c1'), ['ap@x.com'], 'the contact email is NOT used as well');
+  assert.deepEqual(f('c2'), [], 'a contact email alone does not make a merchant sendable');
+  assert.deepEqual(f('c3'), ['a@x.com', 'b@x.com']);
+});
+
+test('what is on file is still reported, so the gap reads as a to-do', () => {
+  // 17 merchants in the August run have a contact email and no finance one. Saying only
+  // "missing" would hide the address someone could copy across.
+  const f = new Function('CONTRACTS',
+    grab('splitAddresses') + '\n' + grab('fallbackContact') + '\nreturn fallbackContact;')(
+    [{ contractId: 'c2', contactEmail: 'KornjiraS@impact.co.th, creditcontrol@impact.co.th' }]);
   assert.deepEqual(f('c2'), ['KornjiraS@impact.co.th', 'creditcontrol@impact.co.th']);
 });
 
@@ -185,7 +199,7 @@ test('the send list separates what can be sent from what cannot', () => {
   // Three groups because they need three different things: work, a record, and a gap in the
   // merchant list that no amount of mailing fixes.
   const src = grab('drawMailSendList');
-  for (const group of ['Ready to send', 'Already sent', 'No email address']) {
+  for (const group of ['Ready to send', 'Already sent', 'No finance email']) {
     assert.ok(src.includes(group), `the send list must show "${group}"`);
   }
   assert.match(src, /effectiveRecipients\(r\.contractId\)\.length/,

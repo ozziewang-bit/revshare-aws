@@ -4323,11 +4323,11 @@ async function drawMailSendList(runId, template) {
       : '';
   }
 
-  const ready = [], done = [], noAddress = [];
+  const ready = [], done = [], noFinance = [];
   for (const r of (run.results || []).slice().sort((a, b) => b.payout - a.payout)) {
     if (sent.has(r.contractId)) done.push(r);
     else if (effectiveRecipients(r.contractId).length) ready.push(r);
-    else noAddress.push(r);
+    else noFinance.push(r);
   }
 
   const row = (r, extra) => `<tr>
@@ -4356,9 +4356,14 @@ async function drawMailSendList(runId, template) {
           to ${escape(m.to || '')} by ${escape(m.sentBy || '')}
           <button class="btn-ghost msend-btn" data-cid="${escape(r.contractId)}" style="margin-left:8px;">Send again…</button>`);
       }).join(''))
-    + section('No email address', noAddress, 'Fix', noAddress.map(r => row(r,
-      `<span class="muted">add a finance email on the Merchant view</span>`)).join(''))
-    + (ready.length || done.length || noAddress.length ? '' : '<p class="muted">This run paid nobody.</p>');
+    + section('No finance email', noFinance, 'What is on file', noFinance.map(r => {
+        const other = fallbackContact(r.contractId);
+        return row(r, other.length
+          ? `<span class="muted">contact email: ${escape(other.join(', '))} — copy it into
+             <strong>Finance email</strong> on the Merchant view if that is the right person</span>`
+          : '<span class="muted">no address at all — add a finance email on the Merchant view</span>');
+      }).join(''))
+    + (ready.length || done.length || noFinance.length ? '' : '<p class="muted">This run paid nobody.</p>');
 
   box.querySelectorAll('.msend-btn').forEach(b => b.addEventListener('click', () => {
     const r = (run.results || []).find(x => x.contractId === b.dataset.cid);
@@ -4546,13 +4551,27 @@ function mailVarsFor(result, run) {
   };
 }
 
-// Where a merchant's mail goes: the finance contact first, because that is who a remittance
-// advice is for, falling back to the ordinary contact. Several addresses in one field is
-// normal in this data (IMPACT carries two), so commas and semicolons both split.
+// Where a revenue-share statement goes: the FINANCE email column, and only that (user,
+// 2026-09-25). It used to fall back to the ordinary contact, which quietly sent a remittance
+// advice to whoever happened to be on file — an ops contact, a marketing address. A statement
+// is a financial document and goes to the person who handles money, or it does not go.
+//
+// The cost is visible rather than hidden: 17 merchants in the August run have a contact email
+// but no finance one, QSNCC (28,180) and IMPACT (9,070) among them. They now appear under
+// "No finance email" WITH the address that is on file, so the gap reads as a to-do list.
+//
+// Several addresses in one field is normal here (IMPACT carries two), so commas and semicolons
+// both split.
 function mailRecipients(contractId) {
   const c = CONTRACTS.find(x => x.contractId === contractId);
-  const raw = (c && (c.financeContactEmail || c.contactEmail)) || '';
-  return splitAddresses(raw);
+  return splitAddresses(c && c.financeContactEmail);
+}
+
+// What else is known about a merchant with no finance email — so the row can say what to do
+// rather than only that something is missing.
+function fallbackContact(contractId) {
+  const c = CONTRACTS.find(x => x.contractId === contractId);
+  return splitAddresses(c && c.contactEmail);
 }
 
 // A function declaration, not an arrow const: the tests extract by `function name(`, and an
