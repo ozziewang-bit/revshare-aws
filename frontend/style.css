@@ -1240,3 +1240,48 @@ p.rc-warn {
 #main.main-wide > p,
 #main.main-wide > .muted,
 #main.main-wide > .page-head + p { max-width: 92ch; }
+
+/* Row editor (2026-09-29) — section headings inside the one Edit dialog. Scoped to the modal
+   card so they cannot restyle headings anywhere else on the Merchant view. */
+.ct-modal-card .ct-ed-h {
+  margin: 20px 0 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line, #e5e7eb);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--muted, #6b7280);
+}
+.ct-modal-card .ct-ed-h:first-of-type { margin-top: 8px; }
+
+/* Upload page (2026-09-29). Scoped to .up-* so the Merchant view and Reconcile keep their own
+   spacing — the mismatch table below deliberately reuses Reconcile's .rc-* classes. */
+.up-drop { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; }
+.up-file {
+  flex: 1 1 320px; min-width: 300px;
+  border: 1px solid var(--line, #e5e7eb); border-radius: 10px;
+  padding: 14px 16px; background: var(--card, #fff);
+}
+.up-file-t { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+.up-file-d { display: block; font-size: 12px; line-height: 1.5; margin-bottom: 10px; }
+.up-file input[type="file"] { display: block; width: 100%; }
+.up-sum {
+  border: 1px solid var(--line, #e5e7eb); border-radius: 10px;
+  padding: 12px 14px; margin-bottom: 18px; font-size: 13px;
+}
+.up-sum-row { padding: 3px 0; line-height: 1.55; }
+.up-added { color: #2b8a3e; font-size: 12.5px; font-weight: 600; }
+
+/* `hidden` must beat the layout rule. `.mail-actions { display:flex }` is an AUTHOR style, so it
+   overrides the user-agent's `[hidden] { display:none }` no matter the specificity — which left
+   the Upload page's Review and Import buttons visible, and clickable, with no file chosen. */
+.mail-actions[hidden], .up-sum[hidden], [hidden] { display: none !important; }
+
+/* The held-upload banner: says what is on screen when there is no file in the picker above it. */
+.up-held {
+  display: flex; justify-content: space-between; align-items: center; gap: 12px;
+  border: 1px solid var(--line, #e5e7eb); border-left: 3px solid var(--ink, #111);
+  border-radius: 10px; padding: 10px 14px; margin-bottom: 12px; font-size: 13px;
+}
+.up-deleted { color: var(--loss, #c92a2a); font-size: 12.5px; font-weight: 600; }

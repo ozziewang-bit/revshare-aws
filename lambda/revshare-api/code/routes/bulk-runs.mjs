@@ -1,4 +1,4 @@
-import { listMerchants, putMerchantsBatch, putBulkRun, listBulkRuns, getBulkRun, getBulkRunInputs, deleteBulkRun, listMachineModels, ulid, listContracts, getContract } from '../db.mjs';
+import { listMerchants, putBulkRun, listBulkRuns, getBulkRun, getBulkRunInputs, deleteBulkRun, listMachineModels, ulid, listContracts, getContract } from '../db.mjs';
 import * as dbModule from '../db.mjs';
 import { evaluateRun } from '../engine.mjs';
 import { ruleHasValue, contractNeedsTerms, indexContractsByName, resolveLabel, merchantRowChanged, indexOrderAliases } from '../payout.mjs';
@@ -217,9 +217,16 @@ export function indexMachines(machines) {
 // persisted, so the brand does not appear in the Merchant view; `newMerchants` now reports
 // brands the roster has and your table does not.
 //
-// `persist: false` additionally suppresses the store-registry write, which is what makes
-// infra/rerun-bulk-run.mjs's dry run honest: without it, merely previewing a re-run would
-// mutate the registry.
+// A RUN WRITES NOTHING (2026-09-29). It used to upsert the store registry from the roster, which
+// meant a shop only became known to the app after a run had been done — and a merchant that came
+// and went left rows behind that nothing corrected. The registry is now written by the UPLOAD,
+// from the two files, which is where shop names come from in the first place.
+//
+// The batch writer is no longer imported by this module AT ALL, exactly as the contract writer
+// stopped being imported in the 2026-09-03 change: reintroducing either write means adding an
+// import back, which is a visible act rather than a line that drifts in. `persist` stays in the
+// signature because infra/rerun-bulk-run.mjs passes it, and it now changes nothing — a run
+// persists nothing either way, which is what makes a dry run honest by construction.
 export async function applyMerchantRoster(merchants, { persist = true } = {}) {
   const [contracts, existingMerchants] = await Promise.all([listContracts(), listMerchants()]);
   let index = indexContractsByName(contracts);
@@ -271,12 +278,12 @@ export async function applyMerchantRoster(merchants, { persist = true } = {}) {
     const row = { merchantId, createdAt: ex?.createdAt, name: src.name,
       contractId: contract.contractId, partnerId: ex?.partnerId ?? null,
       machineModel: src.model || null, externalId: src.externalId || ex?.externalId || null, notes: ex?.notes || '' };
+    // Still computed, because the run needs the resolved row in memory — simply never written.
     if (merchantRowChanged(ex, row)) toWrite.push(row);
     roster.push({ merchantId, name: src.name, nameLower, contractId: contract.contractId,
       model: src.model || null, externalId: row.externalId });
     seen[contract.contractId] = contract;
   }
-  if (toWrite.length && persist) await putMerchantsBatch(toWrite);
 
   // Machine counts the roster DIFFERS from what each contract stores. Reported so step 2 can
   // say so, and deliberately NOT written — see the note at the top of this function. To apply
@@ -319,11 +326,24 @@ export function groupOrders(orders, merchantMap) {
 // POST /bulk-runs/prepare — apply the uploaded merchant list, return rule-readiness for the wizard.
 export async function prepareBulkRunRoute(event) {
   const body = JSON.parse(event.body || '{}');
-  const merchants = Array.isArray(body.merchants) ? body.merchants : [];
+  // A run no longer asks for the merchant list (2026-09-29): it is uploaded on the Upload page
+  // and STORED. The request may still carry one — an open tab on the old wizard, the CLI — and
+  // that still wins, so nothing that worked before stops working.
+  let merchants = Array.isArray(body.merchants) ? body.merchants : [];
+  let rosterSource = merchants.length ? 'uploaded' : null;
+  if (!merchants.length) {
+    const stored = await dbModule.getRosterRows();
+    merchants = (stored && stored.merchants) || [];
+    rosterSource = 'stored';
+  }
   if (!merchants.length) return resp(400, { error: 'no_merchants' });
   const { roster, merchantsNeedingTerms, unassigned, newMerchants, unitsDiffer } = await applyMerchantRoster(merchants);
   const merchantBrandCount = new Set(roster.map(r => r.contractId)).size;
-  return resp(200, { rosterCount: roster.length, merchantBrandCount, newMerchants, unassigned, merchantsNeedingTerms, unitsDiffer });
+  // The wizard says where the roster came from and when it was last refreshed, so "this run used
+  // a three-week-old merchant list" is visible rather than assumed.
+  const rosterMeta = rosterSource === 'stored' ? await dbModule.getRosterMeta() : null;
+  return resp(200, { rosterCount: roster.length, merchantBrandCount, newMerchants, unassigned,
+                     merchantsNeedingTerms, unitsDiffer, rosterSource, rosterMeta });
 }
 
 // Why a contract is or is not paid, as a pure decision — so the ordering of these rules is
@@ -491,11 +511,26 @@ export async function computeBulkRun({ runId, orders = [], merchants = [], machi
 
 export async function createBulkRunRoute(event) {
   const body = JSON.parse(event.body || '{}');
-  const { orders = [], merchants = [], machines = [], excluded = [], periodStart, periodEnd } = body;
+  const { orders = [], periodStart, periodEnd } = body;
+  let { merchants = [], machines = [], excluded = [] } = body;
   if (!periodStart || !periodEnd) return resp(400, { error: 'missing_fields', required: ['periodStart','periodEnd'] });
+
+  // Same fallback as prepare. The roster the run computes against is STORED at upload time and
+  // read here — as parsed rows, so `flat_per_machine` and per-machine MG keep counting stations
+  // exactly as they always have (§1h: BTS is 36 stations, not 103 cabinets).
+  let rosterSource = merchants.length ? 'uploaded' : 'stored';
+  if (!merchants.length) {
+    const stored = await dbModule.getRosterRows();
+    if (stored) {
+      merchants = stored.merchants || [];
+      if (!machines.length) machines = stored.machines || [];
+      if (!excluded.length) excluded = stored.excluded || [];
+    }
+  }
   if (!merchants.length) return resp(400, { error: 'no_merchants' });
 
   const bulkRun = await computeBulkRun({ orders, merchants, machines, excluded, periodStart, periodEnd });
+  bulkRun.rosterSource = rosterSource;
   // Store the inputs alongside the run so it can be recomputed later without a re-upload.
   await putBulkRun(bulkRun, { merchants, orders, machines, excluded, periodStart, periodEnd });
   return resp(201, bulkRun);

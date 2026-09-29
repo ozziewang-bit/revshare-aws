@@ -63,3 +63,59 @@ test('the frontend roster parser keeps every code distinct', () => {
   assert.equal(parse('LL20'), 'LL20');
   assert.equal(parse('S8'), 'S8');
 });
+
+// ════════════════════════════════════════════════════════════════════════════════════════════
+// The Merchant view's Units total (2026-09-29)
+//
+// SEACON Bangkae stores `units: { LL40: 3 }` and showed **Units 0** beside an **LL40 3** column
+// on the same row. The per-model columns are built from the region's configured Device Types
+// (UNIT_MODELS_FALLBACK's comment records that fix), but `unitsTotal` summed its OWN hardcoded
+// list — ['S5','S8','M10','L20','L40'] — which the 2026-08-27 L40→LL40 rekey never updated. It
+// named a code that exists in neither region and omitted the three that do.
+//
+// Measured on live data before the fix: 50 of 304 TH contracts and 114 of 554 SG contracts
+// understated their machines — 384 machines invisible in that column.
+//
+// The total of a row's machines is the sum of the machines on that row. There is no allow-list
+// to keep in step, which is the only way this cannot rot again.
+// ════════════════════════════════════════════════════════════════════════════════════════════
+const appSrc = readFileSync(new URL('../../../frontend/app.js', import.meta.url), 'utf8');
+const grabFn = (n) => {
+  const i = appSrc.indexOf(`const ${n} =`);
+  if (i < 0) throw new Error('missing ' + n);
+  return appSrc.slice(i, appSrc.indexOf('\n', i) + 1);
+};
+const unitsTotal = new Function(grabFn('unitsTotal') + 'return unitsTotal;')();
+
+test('Units totals a contract whose machines are LL40 — the SEACON case', () => {
+  assert.equal(unitsTotal({ units: { LL40: 3 } }), 3);
+});
+
+test('Units totals every distinct code, not a fixed five', () => {
+  for (const m of DISTINCT) {
+    assert.equal(unitsTotal({ units: { [m]: 2 } }), 2, `${m} must count toward the total`);
+  }
+  assert.equal(unitsTotal({ units: { S10: 1, T8: 1, T10: 1, T20: 1, T35: 1 } }), 5);
+});
+
+test('Units agrees with the sum of the per-model columns shown beside it', () => {
+  // ICON SIAM, live: the grid showed 2 while the row holds 11.
+  const c = { units: { S8: 1, S5: 1, LL40: 9 } };
+  assert.equal(unitsTotal(c), Object.values(c.units).reduce((a, b) => a + b, 0));
+  assert.equal(unitsTotal(c), 11);
+});
+
+test('Units is unmoved by the shapes that are not a count', () => {
+  assert.equal(unitsTotal({}), 0);
+  assert.equal(unitsTotal({ units: {} }), 0);
+  assert.equal(unitsTotal({ units: null }), 0);
+  assert.equal(unitsTotal({ units: { S5: null, S8: undefined, M10: '', LL40: 'x' } }), 0);
+  assert.equal(unitsTotal({ units: { S5: '4' } }), 4, 'a numeric string still counts');
+});
+
+// The regression itself: no hardcoded model list may decide the total.
+test('unitsTotal reads no fixed model list', () => {
+  const src = grabFn('unitsTotal');
+  assert.doesNotMatch(src, /UNIT_MODEL_KEYS/,
+    'the total must come from the row, not an allow-list that a rekey can outdate');
+});

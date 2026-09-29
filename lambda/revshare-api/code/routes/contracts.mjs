@@ -1,11 +1,16 @@
 import { listContracts, getContract, putContract, deleteContract, listPartners, ulid,
          getLastUpload, putLastUpload, putUploadDoc, getUploadDoc } from '../db.mjs';
+import * as dbModule from '../db.mjs';
 import { normalizeContractRow, buildImportPlan, uploadDocFrom,
          contractWrites } from '../contracts.mjs';
 
 // Fields a client may write. `sheetTerms` is import-preview data and is not stored;
 // share terms live on the partner's rule, never on the contract row.
 const WRITABLE = [
+  // `entityId` points at an ENTITY record (2026-09-29). `counterParty` is KEPT beside it and is
+  // never rewritten: a contract with no entityId still reads its own string, so nothing that
+  // exists today changes until someone deliberately links it.
+  'entityId',
   'merchantName', 'merchantType', 'counterParty', 'partnerId', 'installedUnits',
   'units', 'startDate', 'endDate', 'terminationNoticeDays',
   'autoRenewal', 'contractLink', 'notes',
@@ -96,6 +101,98 @@ export async function deleteContractRoute(event) {
   return resp(204, null);
 }
 
+// POST /registry — write the store registry from the two uploaded files (2026-09-29).
+//
+// The registry used to be a side effect of running a payout: `applyMerchantRoster` upserted a row
+// per roster shop. That meant a shop was unknown to the app until a run had been done, and a
+// merchant that came and went left rows nothing ever corrected. Shop names come from the FILES,
+// so the files write them.
+//
+// ADDITIVE, and narrowly so:
+//   • a shop already in the registry keeps its merchantId, its externalId and its notes
+//   • only `contractId`, `machineModel` and `externalId` can be refreshed, and only from a value
+//     the file actually carries — a blank never clears one
+//   • a shop the files do not mention is NEVER touched and never deleted: merchants come and go,
+//     and the registry is not the place to decide one has gone
+export async function putRegistryRoute(event) {
+  const body = JSON.parse(event.body || '{}');
+  const shops = Array.isArray(body.shops) ? body.shops : [];
+  if (!shops.length) return resp(400, { error: 'no_shops' });
+
+  const [existing, contracts] = await Promise.all([dbModule.listMerchants(), listContracts()]);
+  const live = new Set(contracts.filter(c => !c.archived).map(c => c.contractId));
+  const byName = new Map();
+  for (const m of existing) {
+    const k = String(m.name ?? '').toLowerCase().trim();
+    if (!k) continue;
+    // Prefer the row that already points at a live contract — a store name commonly has several.
+    const have = byName.get(k);
+    if (!have || (!live.has(have.contractId) && live.has(m.contractId))) byName.set(k, m);
+  }
+
+  const rows = [];
+  let created = 0, updated = 0, unchanged = 0;
+  for (const shop of shops) {
+    const name = String(shop.name ?? '').trim();
+    const contractId = String(shop.contractId ?? '').trim();
+    if (!name || !contractId || !live.has(contractId)) continue;
+    const k = name.toLowerCase();
+    const ex = byName.get(k);
+    const row = {
+      merchantId: ex?.merchantId || ulid(),
+      createdAt: ex?.createdAt,
+      name,
+      contractId,
+      partnerId: ex?.partnerId ?? null,
+      machineModel: shop.machineModel || ex?.machineModel || null,
+      externalId: shop.externalId || ex?.externalId || null,
+      notes: ex?.notes || '',
+    };
+    if (!ex) { created++; rows.push(row); continue; }
+    const same = ex.contractId === row.contractId
+      && (ex.machineModel || null) === row.machineModel
+      && (ex.externalId || null) === row.externalId;
+    if (same) { unchanged++; continue; }
+    updated++; rows.push(row);
+  }
+  if (rows.length) await dbModule.putMerchantsBatch(rows);
+  return resp(200, { created, updated, unchanged, written: rows.length });
+}
+
+// POST /roster — store the parsed Businessmen list so a run does not ask for it again
+// (2026-09-29). Rows, not counts: the engine counts roster rows and a row is a STATION, while
+// `units` counts cabinets. Storing counts here would have paid BTS 412,000 instead of 144,000.
+//
+// A REVIEW does not store it, for the same reason a review writes no merchant row: nothing you
+// have not applied should become what the next run is computed from.
+export async function putRosterRoute(event) {
+  const body = JSON.parse(event.body || '{}');
+  const merchants = Array.isArray(body.merchants) ? body.merchants : [];
+  if (!merchants.length) return resp(400, { error: 'no_merchants' });
+
+  // Remembering the file is ONE act, so the brand list it contained is recorded here too — that
+  // is what the Merchant view's ⦿ marks compare against. It creates and changes no merchant:
+  // `putLastUpload` writes a single CONFIG row of names, nothing else.
+  let lastUpload = null;
+  if (Array.isArray(body.names) && body.names.length) {
+    lastUpload = await putLastUpload(body.names.filter(Boolean), { by: event.auth?.email || null });
+  }
+  const rec = await dbModule.putRoster({
+    merchants,
+    excluded: Array.isArray(body.excluded) ? body.excluded : [],
+    machines: Array.isArray(body.machines) ? body.machines : [],
+    machinesAt: body.machinesAt || null,
+    machineStoreCount: body.machineStoreCount ?? null,
+    by: event.auth?.email || null,
+  });
+  return resp(200, { ...rec, lastUpload });
+}
+
+// GET /roster — the pointer only, so a screen can say when the merchant list was last refreshed.
+export async function getRosterRoute() {
+  return resp(200, (await dbModule.getRosterMeta()) || { at: null });
+}
+
 export async function importContractsRoute(event) {
   const body = JSON.parse(event.body || '{}');
   const rawRows = Array.isArray(body.rows) ? body.rows : [];
@@ -131,7 +228,15 @@ export async function importContractsRoute(event) {
     const { key } = await putUploadDoc(doc);
     lastUpload = await putLastUpload(normalized.map(r => r.merchantName).filter(Boolean), {
       s3Key: key,
-      counts: { brands: doc.brands.length, created: plan.creates.length, updated: plan.updates.length },
+      // Named the same way the RESPONSE is, and for the same reason: a review that records
+      // `created: 25` is a stored claim that 25 merchants were added, which is how the 21 Sep
+      // review-only upload came to look applied while every contract kept its old updatedAt.
+      // The stored record outlives the response, so it is the one that most needs to be honest.
+      counts: dryRun
+        ? { brands: doc.brands.length, dryRun: true,
+            wouldCreate: plan.creates.length, wouldUpdate: plan.updates.length }
+        : { brands: doc.brands.length,
+            created: plan.creates.length, updated: plan.updates.length },
     });
   }
 

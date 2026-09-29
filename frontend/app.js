@@ -482,6 +482,7 @@ function renderNav() {
   // gated where it happens.
   nav.innerHTML = `
     <button id="nav-contracts" class="nav-btn active">Merchant view</button>
+    <button id="nav-upload" class="nav-btn">Upload</button>
     <button id="nav-bulk-runs" class="nav-btn">Run share</button>
     <button id="nav-mailing" class="nav-btn">Mailing</button>
     <button id="nav-archived" class="nav-btn">Archived</button>
@@ -489,6 +490,9 @@ function renderNav() {
   nav.querySelector('#nav-archived').addEventListener('click', () => { setActiveNav('nav-archived'); renderArchivedScreen(); });
   nav.querySelector('#nav-bulk-runs').addEventListener('click', () => { setActiveNav('nav-bulk-runs'); renderBulkRunsList(); });
   nav.querySelector('#nav-contracts').addEventListener('click', () => { setActiveNav('nav-contracts'); renderContractsScreen(); });
+  // Not gated: reading what a file WOULD change is harmless, and the two buttons that write are
+  // gated where they act — same shape as Run share, whose nav item is open while + New run is not.
+  nav.querySelector('#nav-upload').addEventListener('click', () => { setActiveNav('nav-upload'); renderUploadScreen(); });
   nav.querySelector('#nav-settings').addEventListener('click', () => { setActiveNav('nav-settings'); renderSettingsScreen(); });
   nav.querySelector('#nav-mailing').addEventListener('click', () => { setActiveNav('nav-mailing'); renderMailingScreen(); });
   // Lives in the brand bar, not the nav, so it survives every screen change.
@@ -551,7 +555,11 @@ async function renderSettingsScreen(tab = 'device-types') {
   else await renderDeviceTypesScreen(body);
 }
 
-const PERM_LABELS = { editPartners:'Edit partners & rules', runCalcs:'Run calcs', deleteRuns:'Delete runs', manageMerchants:'Manage merchants', manageDeviceTypes:'Device types', admin:'Admin' };
+// Every key in PERMS must appear here. This map drives the Users screen's columns AND what a
+// Save sends; putUserRoute rebuilds the row over all of PERMS, so a permission with no
+// checkbox is written back as false. applyRuleBatch was missing until 2026-09-29 and was
+// silently revoked whenever anyone saved a row that held it.
+const PERM_LABELS = { editPartners:'Edit partners & rules', runCalcs:'Run calcs', deleteRuns:'Delete runs', manageMerchants:'Manage merchants', manageDeviceTypes:'Device types', applyRuleBatch:'Apply rule batch', manageMailTemplates:'Mail templates', admin:'Admin' };
 async function renderUsersScreen(host) {
   const main = host || document.getElementById('main');
   main.innerHTML = `${host ? '' : '<h2>Users</h2>'}<p class="muted">Grant per-feature access. Anyone with a company Google account can sign in (read-only) until granted more.</p><div id="users-out">Loading…</div>`;
@@ -561,7 +569,7 @@ async function renderUsersScreen(host) {
   document.getElementById('users-out').innerHTML = `
     <div style="margin:10px 0;"><input id="new-user-email" placeholder="email@inforich.com" style="width:240px"> <button id="add-user" class="btn-primary">Add user</button></div>
     <table class="ts"><thead><tr><th>Email</th>${keys.map(k => `<th>${escape(PERM_LABELS[k])}</th>`).join('')}<th></th></tr></thead>
-    <tbody>${users.map(rowHtml).join('') || '<tr><td colspan="9" class="muted">No granted users yet.</td></tr>'}</tbody></table>`;
+    <tbody>${users.map(rowHtml).join('') || '<tr><td colspan="${keys.length + 2}" class="muted">No granted users yet.</td></tr>'}</tbody></table>`;
   const save = async tr => {
     const email = tr.dataset.email;
     const permissions = {}; tr.querySelectorAll('input[data-perm]').forEach(c => permissions[c.dataset.perm] = c.checked);
@@ -858,6 +866,20 @@ let MACHINE_MODELS_CACHE = [];
 // An import never deletes, so a merchant that has dropped off your list stays here silently —
 // this is what lets the grid mark it. Recomputed into MISSING_UPLOAD (contractIds) on paint.
 let LAST_UPLOAD = null;
+
+// The legal entity a payout is settled with, as records (2026-09-29). ONE ENTITY COVERS MANY
+// BRANDS — Central Pattana holds Ladprao, Eastville and Westgate. It replaced a free-text
+// `counterParty` re-typed on every contract, which split one company in two whenever someone
+// typed a space differently.
+let ENTITIES = [];
+const entityById = id => ENTITIES.find(e => e.entityId === id) || null;
+// A contract that has never been linked still reads its own `counterParty` string, untouched.
+// That is what makes this additive: nothing had to be rewritten for the entity to exist.
+function entityName(c) {
+  const e = c && c.entityId ? entityById(c.entityId) : null;
+  return e ? (e.name || '') : String((c && c.counterParty) || '').trim();
+}
+const loadEntities = () => api('/entities').then(r => (ENTITIES = r || [])).catch(() => (ENTITIES = []));
 let MISSING_UPLOAD = new Set();
 // How many reconcile items the tab last computed, so the Reconcile(N) badge survives a repaint
 // (e.g. switching back from Reconcile to Merchants and looking at the tab strip again) without
@@ -1302,13 +1324,29 @@ function refreshContractGridColumns() {
 // 23 columns is ~2400px — more than a laptop can show at once even full-width. Rather than
 // hiding data behind a horizontal scrollbar, let the user switch whole groups off. `id` has
 // no toggle: the merchant is what identifies the row.
+// TWO CATEGORIES, stated by the user 2026-09-29:
+//
+//   MERCHANT INFORMATION — brand, branches, machines, contacts. Read from the file you upload;
+//                          never edited in the app.
+//   MERCHANT TERMS       — contract, finance AND share terms. ONE data set, maintained by hand.
+//
+// The three terms groups keep their own keys because the editor and the new-merchant form build
+// their sections from them, but the GRID shows them as a single category: they are agreed,
+// signed and settled together, so reading one without the others is reading half a contract.
 const CONTRACT_GROUPS = [
   { key: 'contact',  label: 'Contact'  },
   { key: 'machines', label: 'Machines' },
-  { key: 'contract', label: 'Contract' },
-  { key: 'finance',  label: 'Finance Information' },
-  { key: 'terms',    label: 'Share terms' },
+  { key: 'contract', label: 'Contract',            category: 'terms' },
+  { key: 'finance',  label: 'Finance Information', category: 'terms' },
+  { key: 'terms',    label: 'Share terms',         category: 'terms' },
 ];
+// What the grid's category row shows for a merged category, and the one key its toggle writes.
+const CONTRACT_CATEGORIES = { terms: 'Merchant terms' };
+// A column's category is its group's, falling back to the group itself.
+function contractCategoryOf(groupKey) {
+  const g = CONTRACT_GROUPS.find(x => x.key === groupKey);
+  return (g && g.category) || groupKey;
+}
 // The screen OPENS COLLAPSED (2026-09-04). Six groups spread is ~2,900px, well past a laptop,
 // so the honest default is the compact list — merchant, type, branch, and one narrow stub per
 // group, each of which reopens it. Someone who wants a column spends one click, instead of
@@ -1336,12 +1374,17 @@ const groupOpen = key => CONTRACT_GROUPS_ON[key] === true;
 function contractLayout() {
   const segs = [];
   for (const col of CONTRACT_GRID_COLUMNS) {
-    const key = col.group || 'id';
+    const groupKey = col.group || 'id';
+    // Contract, Finance and Share terms collapse into one segment — one header, one toggle, one
+    // data set. Everything else is its own group exactly as before.
+    const key = contractCategoryOf(groupKey);
     let seg = segs[segs.length - 1];
     if (!seg || seg.key !== key) {
       const g = CONTRACT_GROUPS.find(x => x.key === key);
-      segs.push(seg = { key, label: g ? g.label : '', toggleable: !!g,
-                        open: !g || groupOpen(key), cols: [] });
+      const label = CONTRACT_CATEGORIES[key] || (g ? g.label : '');
+      const toggleable = !!(g || CONTRACT_CATEGORIES[key]);
+      segs.push(seg = { key, label, toggleable,
+                        open: !toggleable || groupOpen(key), cols: [] });
     }
     seg.cols.push(col);
   }
@@ -1396,7 +1439,7 @@ function contractHeadHtml() {
       colRow.push(`<th style="min-width:${cell.col.width}px" class="${colClasses(cell, i)}">${escape(cell.col.label)}</th>`);
     }
   });
-  colRow.push('<th class="ct-gsep" style="min-width:135px">Edit terms</th><th style="min-width:96px"></th>');
+  colRow.push('<th class="ct-gsep" style="min-width:135px">Edit</th><th style="min-width:96px"></th>');
 
   return `<tr class="ct-ghead-row">${groupRow.join('')}</tr>`
        + `<tr class="ct-chead-row">${colRow.join('')}</tr>`;
@@ -1417,8 +1460,16 @@ const AUTO_RENEWAL_OPTIONS = ['Yes', 'No'];
 // Units is derived, never typed: it is the sum of the per-model counts. Verified against
 // the source workbook — all 208 rows have a total equal to their model sum, so nothing is
 // lost by computing it, and it can no longer drift from the models beneath it.
-const UNIT_MODEL_KEYS = ['S5', 'S8', 'M10', 'L20', 'L40'];
-const unitsTotal = c => UNIT_MODEL_KEYS.reduce((a, m) => a + (Number((c.units || {})[m]) || 0), 0);
+// The total of a row's machines is the sum of the machines ON that row — no allow-list.
+// It used to reduce over a fixed ['S5','S8','M10','L20','L40'], which the 2026-08-27 L40→LL40
+// rekey never updated (§11): it named `L40`, which exists in neither region's data, and omitted
+// `LL40`, `LL20` and `S10-A`, which is what both regions actually store. The per-model COLUMNS
+// beside it are built from Device Types (see UNIT_MODELS_FALLBACK), so the row rendered
+// `Units 0` next to `LL40 3` — 50 TH and 114 SG contracts understated, 384 machines invisible.
+// Summing the row's own keys is the only version that cannot drift from the columns, and it
+// follows the rule §1f already set for those columns: showing a machine under an unexpected
+// code beats hiding a machine that is really there.
+const unitsTotal = c => Object.values((c && c.units) || {}).reduce((a, n) => a + (Number(n) || 0), 0);
 
 // Presentation derived from the column's type, computed once and used by BOTH the header
 // and the body so the two can never drift out of alignment.
@@ -1552,7 +1603,9 @@ function contractRowHtml(c) {
   const cells = CT_CELLS.map((cell, i) => {
     if (cell.stub) return '<td class="ct-cell ct-gsep ct-ghead-stub"></td>';
     const col = cell.col;
-    const v = cellValue(c, col.key);
+    // Reads the ENTITY record when the contract is linked, and the contract's own string when
+    // it is not — so an unlinked row looks exactly as it always did.
+    const v = col.key === 'counterParty' ? (entityName(c) || null) : cellValue(c, col.key);
     let disp;
     if (col.type && col.type.startsWith('term-')) disp = termCellHtml(c, col);
     else if (col.type === 'computed') disp = `<span class="ct-computed" title="Sum of the per-model counts — edit those instead">${unitsTotal(c)}</span>`;
@@ -1569,7 +1622,10 @@ function contractRowHtml(c) {
     // The End-date highlight only helps if that column is on screen; the Merchant column is
     // frozen, so the icon rides there and the row stays spottable however far you scroll.
     // Say why a cell does not open, rather than letting a click do nothing unexplained.
-    const editable = EDITABLE_GROUPS.has(col.group) && col.type !== 'computed';
+    // NOTHING in the grid is edited in place any more (2026-09-29). Contract, Finance and
+    // Share terms are changed through the row's Edit button, which saves once, validates once,
+    // and cannot be triggered by a stray click on a table cell.
+    const editable = false;
     if (i === 0) {
       // Two independent row-level flags ride the frozen Merchant column so they stay visible
       // however far right the grid is scrolled: renewal risk, and "this will block a run".
@@ -1598,7 +1654,7 @@ function contractRowHtml(c) {
   // Edit-terms column: the row owns its terms directly now, so this is just a control,
   // never a partner badge.
   const editCell = can('manageMerchants')
-    ? `<button class="btn-ghost ct-pe-btn" data-id="${escape(c.contractId)}">${ruleIsAbsent(c.rule) && !c.noPayout ? 'Set terms…' : 'Edit…'}</button>`
+    ? `<button class="btn-ghost ct-pe-btn" data-id="${escape(c.contractId)}" title="Edit this merchant's contract, finance details and share terms">Edit…</button>`
     : '';
   // Archive is the soft exit — the contract ended, the row stops being paid, but its history
   // stays. Delete is the hard one, kept next to it deliberately so the gentler option is the
@@ -1608,6 +1664,138 @@ function contractRowHtml(c) {
       + `<button class="btn-ghost ct-del-btn" data-id="${escape(c.contractId)}" title="Delete this merchant row">×</button>`
     : '';
   return `<tr data-id="${escape(c.contractId)}">${cells}<td class="ct-cell ct-gsep">${editCell}</td><td class="ct-cell ct-c ct-actions">${actions}</td></tr>`;
+}
+
+
+
+// The contract-entity control, used by both the row editor and Add-to-list (2026-09-29).
+//
+// One box that does both jobs: type to filter the entities you already have, or type a name
+// nobody has used and it is created on save. A plain dropdown could only ever assign, and a
+// separate "new entity" button made creating one feel like a different task from choosing one —
+// which is how the free-text field it replaced ended up with one company spelled two ways.
+function entityPickerHtml(id, entityId) {
+  const cur = entityId ? entityById(entityId) : null;
+  return `<label><span>Contract entity</span>
+    <input id="${id}" list="${id}-list" value="${escape(cur ? cur.name : '')}"
+           placeholder="type to filter, or type a new company to create it"
+           autocomplete="off">
+    <datalist id="${id}-list">${ENTITIES.map(e => {
+      const n = CONTRACTS.filter(c => !c.archived && c.entityId === e.entityId).length;
+      return `<option value="${escape(e.name)}">${n ? `${n} brand${n === 1 ? '' : 's'}` : 'no brands yet'}</option>`;
+    }).join('')}</datalist></label>`;
+}
+
+// Turn what was typed into an entityId, creating the entity only when the name is genuinely new.
+// Matching ignores case and spacing — the same comparison the backend refuses duplicates on, so
+// the two can never disagree about whether a name is new.
+async function resolveEntityInput(value) {
+  const name = String(value || '').trim();
+  if (!name) return null;
+  const squash = x => String(x || '').toLowerCase().replace(/\s+/g, '');
+  const found = ENTITIES.find(e => squash(e.name) === squash(name));
+  if (found) return found.entityId;
+  const made = await api('/entities', { method: 'PUT', body: JSON.stringify({ name }) });
+  await loadEntities();
+  return made.entityId;
+}
+
+// ── The row editor (2026-09-29) ─────────────────────────────────────────────────────────────
+// One Edit button per row, one dialog, one save. Editing used to happen cell by cell in the
+// grid, which meant a stray click could open a field and a mistyped value was saved the moment
+// focus left — on a table that is mostly data a FILE owns and nobody should be typing into.
+//
+// Three sections, matching the two categories of merchant data:
+//   Contract · Finance · Share terms   — all manual, all here
+// Everything else on the row (brand, branches, machine counts, contacts) comes from the weekly
+// upload and is not editable anywhere, by design.
+function openContractEditor(contractId) {
+  const c = CONTRACTS.find(x => x.contractId === contractId);
+  if (!c || !can('manageMerchants')) return;
+  const { card, close } = ctModal(760);
+
+  const cols = CONTRACT_GRID_COLUMNS.filter(col =>
+    (col.group === 'contract' || col.group === 'finance')
+    && col.type !== 'computed' && !(col.type || '').startsWith('term-'));
+
+  const field = (col) => {
+    const v = c[col.key] == null ? '' : String(c[col.key]);
+    if (col.key === 'counterParty') return '';            // the entity picker replaces it
+    if (col.type === 'date') return `<label><span>${escape(col.label)}</span><input type="date" data-k="${col.key}" value="${escape(v)}"></label>`;
+    if (col.type === 'number') return `<label><span>${escape(col.label)}</span><input type="number" data-k="${col.key}" value="${escape(v)}"></label>`;
+    if (col.type === 'select') {
+      const opts = col.key === 'autoRenewal' ? ['', 'Yes', 'No'] : ['', ...MERCHANT_TYPES];
+      return `<label><span>${escape(col.label)}</span><select data-k="${col.key}">${opts.map(o =>
+        `<option value="${escape(o)}"${v === o ? ' selected' : ''}>${escape(o || '—')}</option>`).join('')}</select></label>`;
+    }
+    return `<label><span>${escape(col.label)}</span><input type="text" data-k="${col.key}" value="${escape(v)}"></label>`;
+  };
+
+  const contractCols = cols.filter(x => x.group === 'contract');
+  const financeCols  = cols.filter(x => x.group === 'finance');
+  const linked = c.entityId ? entityById(c.entityId) : null;
+
+  card.innerHTML = `
+    <h3 style="margin:0 0 4px;">${escape(c.merchantName || 'Merchant')}</h3>
+    <p class="muted" style="margin:0 0 16px;font-size:12.5px;">
+      Brand, branches, machine counts and contacts come from your merchant upload and are not
+      edited here. These three sections are the parts you maintain by hand.</p>
+
+    <h4 class="ct-ed-h">Contract</h4>
+    <div class="mail-form">
+      ${entityPickerHtml('ce-entity', c.entityId)}
+      <p class="mail-hint" id="ce-entity-note">${linked
+        ? `Settled with <strong>${escape(linked.name)}</strong>. One entity can cover several brands.`
+        : (String(c.counterParty || '').trim()
+            ? `Not linked yet. This row still reads its own text: <strong>${escape(c.counterParty)}</strong>. Picking an entity does not erase it.`
+            : 'Not linked to an entity.')}</p>
+      ${contractCols.map(field).join('')}
+    </div>
+
+    <h4 class="ct-ed-h">Finance</h4>
+    <div class="mail-form">${financeCols.map(field).join('')}</div>
+
+    <h4 class="ct-ed-h">Share terms</h4>
+    <div class="mail-form">
+      <p class="mail-hint" style="margin:0 0 8px;">${c.noPayout
+        ? 'Marked <strong>None</strong> — not paid, and skipped in every run.'
+        : (ruleIsAbsent(c.rule)
+            ? '<span class="rc-warn">No terms set. This merchant will block step 4 of a run until terms are set, or it is marked None.</span>'
+            : `Current terms: ${termCellHtml(c, { key: 'term.summary' })}`)}</p>
+      <div><button type="button" id="ce-terms" class="btn">Edit share terms…</button></div>
+    </div>
+
+    <p class="nm-err" id="ce-err" hidden></p>
+    <div class="mail-actions">
+      <button id="ce-cancel" class="btn-ghost">Cancel</button>
+      <button id="ce-save" class="btn-primary">Save</button>
+    </div>`;
+
+  card.querySelector('#ce-terms').addEventListener('click', () => { close(); openTermsEditor(contractId); });
+  card.querySelector('#ce-cancel').addEventListener('click', close);
+
+  card.querySelector('#ce-save').addEventListener('click', async () => {
+    const btn = card.querySelector('#ce-save'), err = card.querySelector('#ce-err');
+    btn.disabled = true; err.hidden = true;
+    // Only the fields this dialog actually shows are sent. Nothing the file owns is in the
+    // payload at all, so a save here cannot touch brand, branches, machines or contacts.
+    const body = {};
+    card.querySelectorAll('[data-k]').forEach(el => {
+      const raw = el.value == null ? '' : String(el.value).trim();
+      body[el.dataset.k] = raw === '' ? null : (el.type === 'number' ? Number(raw) : raw);
+    });
+    try {
+      // Created here if the name is new, so linking never sends you to another screen mid-edit.
+      body.entityId = await resolveEntityInput(card.querySelector('#ce-entity').value);
+      const saved = await api('/contracts/' + encodeURIComponent(contractId), {
+        method: 'PUT', body: JSON.stringify(body) });
+      Object.assign(c, saved || body);
+      close();
+      paintContracts();
+    } catch (e) {
+      btn.disabled = false; err.hidden = false; err.textContent = 'Could not save: ' + e.message;
+    }
+  });
 }
 
 // ── Merchant view: add / delete / link ─────────────────────────────────────
@@ -2028,6 +2216,10 @@ function withModeDropdown(bytes, sheetName, modeCol, lastRow) {
   } catch { return null; }
 }
 
+// NO CALLER since 2026-09-29 — the Download sheet button was removed from the Merchant view.
+// Kept because the format is still real: tests/sheet-grid-shape and tests/finance-columns pin
+// it against the grid's own columns, and infra/import-merchant-sheet.mjs reads that shape.
+// Same situation as parseAllMerchantSheet (§1n). Delete both together or neither.
 function downloadMerchantTemplate() {
   const rows = CONTRACTS.filter(c => !c.archived && !CLOSED_NAME.test(c.merchantName || ''))
     .slice()
@@ -2157,6 +2349,11 @@ async function parseAllMerchantSheet(file) {
 // Merchant view owns two views of the same merchant list (the grid, and the read-only
 // reconciliation of that list against your last weekly upload) — same in-screen-tabs pattern
 // Run share and Settings already use. The nav button stays "Merchant view"/active for both.
+// NO CALLER since 2026-09-29 — the Merchant view lost its tab strip when Reconcile was removed
+// from it. Kept with renderReconcileTab and classifyDifferences, which are still pinned by
+// tests/reconcile-classifier (552 lines) and tests/reconcile-day-grouping: the classifier is the
+// only thing that knows how to explain a rename or a brand group, and the Upload page's
+// adjustments are likely to want it back. Delete the whole family together or not at all.
 function merchantHead(active) {
   return subTabsHtml([{ id: 'merchants', label: 'Merchants' },
                       { id: 'reconcile', label: `Reconcile${RECONCILE_COUNT ? ` (${RECONCILE_COUNT})` : ''}` }],
@@ -2174,8 +2371,7 @@ async function renderContractsScreen() {
   // do not go through it, so take one here too — the last paint started is the one that wins.
   const token = newPaintToken();
   el.classList.add('main-wide');   // also covers the boot path, which doesn't go via setActiveNav
-  el.innerHTML = `<h1>Merchant view</h1>${merchantHead('merchants')}<p class="muted">Loading…</p>`;
-  wireMerchantTabs();
+  el.innerHTML = `<h1>Merchant view</h1><p class="muted">Loading…</p>`;
   const [contracts, machineModels, lastUpload] = await Promise.all([
     api('/contracts'), api('/machine-models'),
     // Never fatal: the grid is worth showing without the marks, so an older backend or a
@@ -2185,28 +2381,37 @@ async function renderContractsScreen() {
   CONTRACTS = contracts;
   MACHINE_MODELS_CACHE = machineModels;
   LAST_UPLOAD = lastUpload && lastUpload.names && lastUpload.names.length ? lastUpload : null;
+  await loadEntities();
   if (!paintIsCurrent(token)) return;   // the user is somewhere else now — do not paint over it
   refreshContractGridColumns();
   el.innerHTML = `
-    <h1>Merchant view</h1>
-    ${merchantHead('merchants')}
+    <div class="page-head" style="margin-bottom:6px;align-items:center;">
+      <h1 style="margin:0;">Merchant view</h1>
+      ${can('manageMerchants') ? '<button type="button" id="ct-add" class="btn btn-primary">+ Add merchants</button>' : ''}
+    </div>
     <div class="ct-toolbar">
       <input id="ct-search" class="input" placeholder="Search merchant…" style="max-width:240px">
+      ${!ENTITIES.length ? '' : `
+      <input id="ct-entity" class="input" list="ct-entities" style="max-width:240px"
+             placeholder="Filter by contract entity…"
+             title="One entity can cover several brands. Type any part of the name, or pick from the list.">
+      <datalist id="ct-entities">${ENTITIES.map(e => {
+        const n = contracts.filter(c => !c.archived && c.entityId === e.entityId).length;
+        return `<option value="${escape(e.name)}">${n ? `${n} brand${n === 1 ? '' : 's'}` : ''}</option>`;
+      }).join('')}</datalist>`}
       <select id="ct-status" class="input" style="max-width:230px">
-        <option value="">All merchants</option>
+        <option value="">Merchant alert</option>
         <option value="needs">◆ Needs terms</option>
         <option value="due">⚠ Contract due or overdue</option>
         ${LAST_UPLOAD ? '<option value="missing">⦿ Not in latest upload</option>' : ''}
       </select>
-      ${can('manageMerchants') ? '<button type="button" id="ct-add" class="btn btn-primary">+ Add merchants</button>' : ''}
-      <button type="button" id="ct-template" class="btn" title="Download the current merchant list as .xlsx, in the exact format Upload sheet reads — edit it and upload it back">Download sheet</button>
+
       <span class="muted" id="ct-count"></span>
     </div>
     <div class="ct-scroll"><table class="ct-table"><thead>${contractHeadHtml()}</thead>
       <tbody id="ct-body"></tbody></table></div>`;
-  wireMerchantTabs();
-  ['ct-search', 'ct-status'].forEach(id =>
-    el.querySelector('#' + id).addEventListener('input', paintContracts));
+  ['ct-search', 'ct-status', 'ct-entity'].forEach(id =>
+    el.querySelector('#' + id)?.addEventListener('input', paintContracts));
   // Delegated on <thead>, which survives its own innerHTML being replaced on every toggle.
   el.querySelector('.ct-table thead').addEventListener('click', ev => {
     const th = ev.target.closest('[data-group]');
@@ -2216,18 +2421,18 @@ async function renderContractsScreen() {
   el.querySelector('#ct-body').addEventListener('click', ev => {
     if (ev.target.closest('a')) return;          // let the contract link open normally
     const peBtn = ev.target.closest('.ct-pe-btn');
-    if (peBtn) { openTermsEditor(peBtn.dataset.id); return; }
+    if (peBtn) { openContractEditor(peBtn.dataset.id); return; }
     const terms = ev.target.closest('.ct-terms');
     if (terms) { openTermsView(terms.closest('tr').dataset.id); return; }
     const delBtn = ev.target.closest('.ct-del-btn');
     if (delBtn) { deleteContractRow(delBtn.dataset.id); return; }
     const archBtn = ev.target.closest('.ct-arch-btn');
     if (archBtn) { setContractArchived(archBtn.dataset.id, true); return; }
-    const td = ev.target.closest('td.ct-cell');
-    if (td && td.dataset.key) startCellEdit(td);
+    // Nothing else. The table is read-only: clicking a cell does not edit, and does not open
+    // the editor either. The row's Edit button is the only way in, so nothing is ever changed
+    // by a click that was meant to select text or follow a link.
   });
   el.querySelector('#ct-new')?.addEventListener('click', createContractRow);
-  el.querySelector('#ct-template')?.addEventListener('click', downloadMerchantTemplate);
   el.querySelector('#ct-add')?.addEventListener('click', openAddMerchants);
 }
 
@@ -2536,6 +2741,987 @@ async function renderReconcileTab() {
   if (strip) { strip.outerHTML = merchantHead('reconcile'); wireMerchantTabs(); }
   const outEl = document.getElementById('rc-out');
   if (outEl) outEl.innerHTML = reconcileHtml(items, upload, runState);
+}
+
+
+
+// ── The held upload (2026-09-29) ───────────────────────────────────────────────────────────
+// An upload is not a moment, it is a piece of work: you drop the file in once and then go
+// through the differences one at a time, over hours or days. So the PARSED FILE is kept, and the
+// page comes back to it after a reload, after wandering off to Merchant view, after a deploy.
+//
+// The file itself cannot be kept — a browser will not let a page hold a file selection across a
+// reload, which is exactly how an afternoon's work was lost once. The parsed rows can be, and
+// they are all the page ever needed.
+//
+// IndexedDB rather than localStorage: a roster is ~2,400 rows and would crowd a 5MB quota. It is
+// a CACHE, never a source of truth — the merchant list itself still lives in DynamoDB, and
+// clearing this loses nothing but the convenience.
+const UP_DB = 'mcrm-upload', UP_STORE = 'draft';
+
+function upDb() {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open(UP_DB, 1);
+    r.onupgradeneeded = () => { if (!r.result.objectStoreNames.contains(UP_STORE)) r.result.createObjectStore(UP_STORE); };
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+
+// Everything here fails SOFT. Private mode, a full disk or a blocked database must never stop
+// someone uploading — the page simply stops remembering.
+async function saveUploadDraft(draft) {
+  try {
+    const db = await upDb();
+    await new Promise((res, rej) => {
+      const tx = db.transaction(UP_STORE, 'readwrite');
+      // `put` itself throws synchronously on a value structured-clone cannot copy, which the
+      // transaction's onerror never sees — so it is caught here, not only there.
+      tx.objectStore(UP_STORE).put(draft, REGION);
+      tx.oncomplete = () => res();
+      tx.onerror = () => rej(tx.error);
+      tx.onabort = () => rej(tx.error);
+    });
+    return true;
+  } catch (e) {
+    // Never blocks the upload — but the page must stop claiming the file will still be here.
+    console.warn('upload draft not held:', e);
+    return false;
+  }
+}
+
+async function loadUploadDraft() {
+  try {
+    const db = await upDb();
+    return await new Promise((res, rej) => {
+      const tx = db.transaction(UP_STORE, 'readonly');
+      const q = tx.objectStore(UP_STORE).get(REGION);
+      q.onsuccess = () => res(q.result || null);
+      q.onerror = () => rej(q.error);
+    });
+  } catch { return null; }
+}
+
+async function clearUploadDraft() {
+  try {
+    const db = await upDb();
+    await new Promise((res) => {
+      const tx = db.transaction(UP_STORE, 'readwrite');
+      tx.objectStore(UP_STORE).delete(REGION);
+      tx.oncomplete = res; tx.onerror = res;
+    });
+  } catch { /* nothing to do */ }
+}
+
+// ── Upload (2026-09-29) ─────────────────────────────────────────────────────────────────────
+// The weekly job, promoted out of a dialog and onto a nav page: drop in the merchant file and
+// the machine list, and SEE what disagrees before anything is written.
+//
+// It is deliberately the same shape as Reconcile — the same table, the same coloured group
+// bands, the same "In your app / In your file / Why" columns — because it answers the same
+// question at a different moment. Reconcile compares your list against the file you already
+// recorded; this compares it against the file in your hand.
+//
+// Nothing here writes on its own. Review records the file and changes no merchant row; Import
+// applies it. Per-row adjustments are NOT built yet — that is the next conversation.
+const UPLOAD_GROUPS = [
+  // Step 1 — the two files against each other.
+  { key: 'noBrand',  title: 'In your machine list, not in your merchant file', tone: 'loss',  unit: 'stores' },
+  { key: 'noMach',   title: 'In your merchant file, no machines recorded',     tone: 'quiet', unit: 'stores' },
+  // Step 2 — the joined set against the app.
+  { key: 'added',    title: 'New merchants this file would add',        tone: 'info',  unit: 'merchants' },
+  { key: 'changed',  title: 'Merchants this file would change',         tone: 'warn',  unit: 'merchants' },
+  { key: 'missing',  title: 'In your list, not in this file',           tone: 'quiet', unit: 'merchants' },
+  { key: 'moved',    title: 'Shops your file moved to a different merchant', tone: 'warn', unit: 'stores' },
+  { key: 'unknown',  title: 'Shops your file names under a merchant you do not carry', tone: 'warn', unit: 'stores' },
+  { key: 'unlinked', title: 'Shops in the registry with no merchant',    tone: 'warn',  unit: 'stores' },
+  { key: 'unchanged',title: 'Already up to date',                       tone: 'quiet', unit: 'merchants' },
+];
+
+let UPLOAD_STATE = { parsed: null, machines: null, diff: null, misses: null };
+
+async function renderUploadScreen() {
+  const el = document.getElementById('main');
+  setActiveNav('nav-upload');
+  const token = newPaintToken();
+  if (!paintIsCurrent(token)) return;
+  el.innerHTML = `
+    <div class="page-head" style="margin-bottom:6px;align-items:center;">
+      <h1 style="margin:0;">Upload</h1>
+    </div>
+    <p class="muted" style="margin:0 0 18px;font-size:13px;max-width:760px;">
+      Your weekly files. Everything below is shown <strong>before</strong> anything is written —
+      contract dates, the contract entity, finance details and revenue-share terms are never
+      touched by an upload, whatever the file contains.</p>
+
+    <div class="up-drop">
+      <label class="up-file">
+        <span class="up-file-t">Merchant list <span class="muted">(.xlsx)</span></span>
+        <span class="muted up-file-d">One row per shop. The brand is the <strong>Merchant label</strong>
+          column; store names are counted as branches. Approved rows only.</span>
+        <input type="file" id="up-merchants" accept=".xlsx,.xls" class="input">
+      </label>
+      <label class="up-file">
+        <span class="up-file-t">Machine list <span class="muted">(.xlsx) — optional</span></span>
+        <span class="muted up-file-d">The platform's Machine List export. Updates machine counts
+          only, matched to merchants by store name.</span>
+        <input type="file" id="up-machines" accept=".xlsx,.xls" class="input">
+      </label>
+    </div>
+
+    <div id="up-summary"></div>
+    <div id="up-filterbar" hidden style="margin:0 0 12px;">
+      <input id="up-filter" class="input" style="max-width:280px"
+             placeholder="Filter by merchant or shop name…"
+             title="Narrows every section below. Counts show matches out of the total.">
+      <span class="muted" id="up-done" style="margin-left:12px;"></span>
+    </div>
+    <div id="up-out"><p class="muted">Choose a file to see what would change.</p></div>
+    <p class="nm-err" id="up-err" hidden></p>`;
+
+  if (!CONTRACTS.length) await ensureContractCache().catch(() => {});
+
+  // Come back to the work in progress rather than an empty file picker.
+  let held = null;
+  try { held = await loadUploadDraft(); } catch { held = null; }
+  if (held && (held.parsed || held.machines)) {
+    if (!paintIsCurrent(token)) return;
+    try {
+      await restoreUploadDraft(held);
+    } catch (e) {
+      // A held file that cannot be put back is worth saying out loud — the alternative is a page
+      // that looks like it never had one.
+      console.warn('could not restore the held upload:', e);
+      const out = document.getElementById('up-out');
+      if (out) out.innerHTML = `<p class="rc-warn">A file you loaded earlier could not be
+        restored (${escape(e.message || 'unknown error')}). Choose it again.</p>`;
+    }
+  }
+
+  el.querySelector('#up-out').addEventListener('click', ev => {
+    const b = ev.target.closest('.up-add-btn');
+    if (b) { openAddFromFile(b.dataset.name, b); return; }
+    const u = ev.target.closest('.up-upd-btn');
+    if (u) { updateFromFile(u.dataset.name, u); return; }
+    const ar = ev.target.closest('.up-arch-btn');
+    if (ar) { archiveFromUpload(ar.dataset.id, ar); return; }
+    const dl = ev.target.closest('.up-del-btn');
+    if (dl) { deleteFromUpload(dl.dataset.id, dl); return; }
+    const mv = ev.target.closest('.up-mov-btn');
+    if (mv) repointStoreFromFile(mv.dataset.store, mv.dataset.brand, mv);
+  });
+  el.querySelector('#up-filter').addEventListener('input', () => refreshUploadTable());
+  el.querySelector('#up-merchants').addEventListener('change', () => previewUpload(token));
+  el.querySelector('#up-machines').addEventListener('change', () => previewUpload(token));
+}
+
+
+// Put a held upload back on screen. The differences are recomputed against the CURRENT merchant
+// list, so the table reflects every adjustment made since the file was read — the "new merchants"
+// count falls as you add them, without anything being re-uploaded.
+async function restoreUploadDraft(held) {
+  const { parsed, machines, roster } = held;
+  const join = joinUploadFiles(roster, machines);
+  const misses = machines ? matchMachineStores(machines.byStore, await loadRegistry(), roster, CONTRACTS) : null;
+  const diff = parsed ? diffWeeklyRows(parsed, CONTRACTS) : null;
+  UPLOAD_STATE = { ...held, diff, misses, join };
+  const sum = document.getElementById('up-summary');
+  const out = document.getElementById('up-out');
+  if (!sum || !out) return;
+  sum.innerHTML = heldBannerHtml(held) + uploadSummaryHtml(parsed, machines, misses, roster);
+  out.innerHTML = uploadTableHtml(diff, misses, machines, join);
+  const fb = document.getElementById('up-filterbar'); if (fb) fb.hidden = false;
+  document.getElementById('up-forget')?.addEventListener('click', async () => {
+    if (!confirm('Forget this file? Nothing that has already been added to your merchant list is undone.')) return;
+    await clearUploadDraft();
+    UPLOAD_STATE = { parsed: null, machines: null, diff: null, misses: null, roster: null };
+    sum.innerHTML = '';
+    out.innerHTML = '<p class="muted">Choose a file to see what would change.</p>';
+
+  });
+}
+
+// Says what is on screen and where it came from, because a table that survived a reload with no
+// file in the picker above it is otherwise a mystery.
+function heldBannerHtml(held) {
+  const when = held.at ? new Date(held.at) : null;
+  const names = [held.fileName, held.machineFileName].filter(Boolean).map(escape).join(' · ');
+  return `<div class="up-held">
+    <span>Working from <strong>${names || 'a file you loaded earlier'}</strong>${when
+      ? ` <span class="muted">· read ${escape(when.toLocaleString('en-GB',
+          { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}</span>` : ''}</span>
+    <button type="button" id="up-forget" class="btn-ghost">Forget this file</button>
+  </div>`;
+}
+
+async function previewUpload(token) {
+  const out = document.getElementById('up-out');
+  const sum = document.getElementById('up-summary');
+  const err = document.getElementById('up-err');
+  const mf = document.getElementById('up-merchants').files[0];
+  const kf = document.getElementById('up-machines').files[0];
+  err.hidden = true;
+  if (!mf && !kf) { out.innerHTML = '<p class="muted">Choose a file to see what would change.</p>'; sum.innerHTML = ''; return; }
+  out.innerHTML = '<p class="muted">Reading…</p>';
+  try {
+    const parsed = mf ? await parseWeeklyMerchantFile(mf) : null;
+    const machines = kf ? await parseMachineCountFile(kf) : null;
+    // The roster view of the very same workbook — one row per station, carrying the store name
+    // and device type a run needs. Parsed here so the page can say how many shops a run would
+    // see, and stored on Import so the run never asks for this file again.
+    const roster = mf ? await parseMerchantList(mf).catch(() => null) : null;
+    // The SAME matcher the import runs, so a store reported here as unplaced is exactly a store
+    // the import will skip. Sharing it is what keeps the preview honest.
+    // Step 1 — the two files to each other. Step 2 — that set against the app.
+    const join = joinUploadFiles(roster, machines);
+    const misses = machines ? matchMachineStores(machines.byStore, await loadRegistry(), roster, CONTRACTS) : null;
+    const diff = parsed ? diffWeeklyRows(parsed, CONTRACTS) : null;
+    UPLOAD_STATE = { parsed, machines, diff, misses, roster, join,
+                     fileName: mf ? mf.name : UPLOAD_STATE.fileName || null,
+                     machineFileName: kf ? kf.name : UPLOAD_STATE.machineFileName || null,
+                     at: new Date().toISOString() };
+    // Held so the work survives a reload. The DIFF is deliberately not stored — it is recomputed
+    // against the current merchant list every time, so a merchant you add during the session
+    // drops out of "new" on its own rather than lingering as a stale finding.
+    const heldOk = await saveUploadDraft({ parsed, machines, roster,
+                      fileName: UPLOAD_STATE.fileName,
+                      machineFileName: UPLOAD_STATE.machineFileName,
+                      at: UPLOAD_STATE.at });
+    if (token != null && !paintIsCurrent(token)) return;
+    // Remember the FILE — the roster a run reads and the brand list the ⦿ marks compare against.
+    // No merchant is created or changed by this; those are the buttons on each row.
+    const remembered = await rememberUploadedFile(parsed, machines, roster);
+    const warn = (msg) => `<div class="up-held" style="border-left-color:var(--warn,#e67700);">
+        <span>${msg}</span></div>`;
+    sum.innerHTML =
+        (heldOk ? '' : warn(`This file could <strong>not</strong> be held in this browser — a
+          reload will lose it and you will need to choose it again.`))
+      + ((remembered.ok || !roster?.merchants?.length) ? '' : warn(`This file was read, but could
+          not be recorded for Run share (${escape(remembered.error || 'unknown error')}). A run
+          will still use the previous one.`))
+      + uploadSummaryHtml(parsed, machines, misses, roster);
+    out.innerHTML = uploadTableHtml(diff, misses, machines, join);
+    const fb = document.getElementById('up-filterbar'); if (fb) fb.hidden = false;
+
+  } catch (e) {
+    out.innerHTML = '';
+    err.hidden = false;
+    err.textContent = e.message;
+  }
+}
+
+function uploadSummaryHtml(parsed, machines, misses, roster) {
+  if (!parsed && !machines) return '';
+  const bits = [];
+  if (parsed) {
+    bits.push(`<div class="up-sum-row"><strong>${parsed.rows.length}</strong> merchant/brand(s)
+      from ${parsed.branchRows.toLocaleString('en-US')} approved store row(s)
+      <span class="muted">— sheet “${escape(parsed.sheet)}”, header row ${parsed.headerRow}</span></div>`);
+    if (parsed.hasReviewColumn && parsed.skippedNotApproved) {
+      bits.push(`<div class="muted up-sum-row">${parsed.skippedNotApproved.toLocaleString('en-US')} row(s) skipped — not Approved.</div>`);
+    }
+    if (!parsed.hasReviewColumn) {
+      bits.push('<div class="muted up-sum-row">No review-state column, so every named row is included.</div>');
+    }
+    // The single most consequential thing this parser can get wrong — say it loudly.
+    if (parsed.brandFromBranch) {
+      bits.push('<div class="rc-warn up-sum-row">No <strong>Merchant label</strong> column. The store name is being read as the brand, so every shop becomes its own merchant.</div>');
+    }
+    bits.push(`<div class="up-sum-row">Columns read: ${parsed.fields.map(f => `<span class="badge badge-neutral">${escape(f)}</span>`).join(' ')}</div>`);
+    if (parsed.unmapped.length) {
+      bits.push(`<div class="muted up-sum-row">Ignored: ${parsed.unmapped.slice(0, 10).map(escape).join(', ')}${parsed.unmapped.length > 10 ? '…' : ''}</div>`);
+    }
+  }
+  if (roster && roster.merchants.length) {
+    // Stations, not cabinets — this is the count a payout multiplies by.
+    bits.push(`<div class="up-sum-row"><strong>${roster.merchants.length.toLocaleString('en-US')}</strong>
+      approved shop row(s) would be stored as the run's merchant list
+      ${roster.excluded.length ? `<span class="muted">· ${roster.excluded.length.toLocaleString('en-US')} not-Approved row(s) travel with it so a run can name them</span>` : ''}</div>`);
+  }
+  if (roster && machines) {
+    const j = joinUploadFiles(roster, machines);
+    bits.push(`<div class="up-sum-row"><strong>Your two files together:</strong>
+      ${j.stores.size.toLocaleString('en-US')} shop(s) across ${j.brands.size.toLocaleString('en-US')} brand(s)
+      ${j.onlyInMachineFile.length ? `<span class="rc-warn">· ${j.onlyInMachineFile.length} shop(s) with machines but no brand</span>` : ''}
+      ${j.onlyInMerchantFile.length ? `<span class="muted">· ${j.onlyInMerchantFile.length} shop(s) with no machines</span>` : ''}</div>`);
+  }
+  if (machines) {
+    const placed = misses ? misses.totals.size : 0;
+    bits.push(`<div class="up-sum-row"><strong>${(machines.byStore.size ?? Object.keys(machines.byStore).length).toLocaleString('en-US')}</strong>
+      store(s) in the machine list · <strong>${placed}</strong> merchant(s) would have counts updated
+      ${misses?.matchedViaFile ? `<span class="muted">· ${misses.matchedViaFile} placed by your merchant file</span>` : ''}
+      ${misses?.conflicts?.length ? `<span class="rc-warn">· ${misses.conflicts.length} shop(s) moved merchant</span>` : ''}</div>`);
+  }
+  return `<div class="up-sum">${bits.join('')}</div>`;
+}
+
+function uploadTableHtml(diff, misses, machines, join, filter) {
+  if (!diff && !misses) return '';
+  // EVERY SHOP APPEARS IN EXACTLY ONE BUCKET. The first cut let a shop fall into two — "not in
+  // your merchant file" and "nothing can place" overlapped without saying so, and neither
+  // contained the other, so the two counts could not be reconciled by reading them. Precedence:
+  // the file-to-file gap is stated first, and the placement buckets then cover only what is left.
+  const key = v => String(v ?? '').toLowerCase().trim();
+  const unplaced = new Set([...(misses?.unknown || []), ...(misses?.unlinked || [])].map(x => key(x.store)));
+  const noBrandKeys = new Set(!join?.bothFiles ? [] : (join.onlyInMachineFile || []).map(x => key(x.store)));
+  // Brands this file would ADD. A shop whose brand is on that list needs no separate complaint:
+  // adding the merchant places the shop, and the action is one section up. Nagging about both
+  // made the same fact appear twice with no hint they were the same fact.
+  const addingBrands = new Set((diff?.added || []).map(a => key(a.name)));
+  // Brands that DO exist but are archived. "There is no merchant of that name" was wrong about
+  // them — the merchant is there, it is just ended, and the fix is to unarchive it, not to add
+  // a second one.
+  const archivedBrands = new Map((CONTRACTS || []).filter(c => c.archived)
+    .map(c => [key(c.merchantName), c.merchantName]));
+  // One real shop, one row. The two files routinely spell a store with different capitals, and
+  // both spellings were rendering.
+  const onceByStore = (rows) => {
+    const seen = new Set();
+    return (rows || []).filter(x => { const k = key(x.store); if (seen.has(k)) return false; seen.add(k); return true; });
+  };
+
+  const buckets = {
+    // Only meaningful when BOTH files are present — with one file there is nothing to join.
+    noBrand:   !join?.bothFiles ? [] : onceByStore(join.onlyInMachineFile).map(x => {
+                 // Saying "these machines belong to nobody" about a shop the registry DID place
+                 // was simply false. The gap is still worth reporting; the consequence is not.
+                 const stillPlaced = !unplaced.has(key(x.store));
+                 return { app: '', file: escape(x.store),
+                   why: `${machineCountText(x, machines)} Your merchant file does not list this shop. `
+                      + (stillPlaced
+                          ? `The app's store index still knows it, so its machines are counted — `
+                            + `but this week's file does not account for it.`
+                          : `Nothing else knows it either, so these machines are counted toward `
+                            + `nobody this week.`) };
+               }),
+    noMach:    !join?.bothFiles ? [] : (join.onlyInMerchantFile || [])
+                 .filter(x => !addingBrands.has(key(x.brand)))
+                 .map(x => ({
+                 app: escape(x.brand), file: escape(x.store),
+                 why: `Your merchant file lists this shop under <strong>${escape(x.brand)}</strong>, `
+                    + `but the machine list records no machines at it.` })),
+    added:     (diff?.added || []).map(a => ({ app: '', file: escape(a.name),
+                 why: uploadAddedWhy(a, join),
+                 act: `<button class="btn-ghost up-add-btn" data-name="${escape(a.name)}">Add to list…</button>` })),
+    changed:   (diff?.changed || []).map(c => ({ app: escape(c.name), file: escape(c.name), why: uploadChangedWhy(c),
+                 act: `<button class="btn-ghost up-upd-btn" data-name="${escape(c.name)}">Update to the list</button>` })),
+    missing:   (diff?.missing || []).map(m => ({ app: escape(m.merchantName || ''), file: '',
+                 why: uploadMissingWhy(m),
+                 // Archive first, and in reach: the contract ended but its terms, its history
+                 // and the runs that paid it all stay. Delete is beside it, second, because it
+                 // is the one that cannot be undone.
+                 act: `<button class="btn-ghost up-arch-btn" data-id="${escape(m.contractId)}">Archive</button>`
+                    + ` <button class="btn-ghost up-del-btn" data-id="${escape(m.contractId)}" style="color:var(--loss);">Delete</button>` })),
+    // Only when there ARE some — a band reading "0 merchants" is noise on a screen whose whole
+    // job is to show what differs.
+    unchanged: diff && diff.unchanged > 0
+      ? [{ app: '', file: '', why: `${diff.unchanged} merchant(s) already match this file.`, plain: true }]
+      : [],
+    // matchMachineStores pushes {store, machines} OBJECTS, not strings — the comment above it
+    // says so, and mapping these as strings printed "[object Object]" on every row.
+    moved:     (misses?.conflicts || []).map(x => {
+                 const was = (CONTRACTS.find(c => c.contractId === x.registryContractId) || {}).merchantName;
+                 return { app: escape(was || '(a merchant no longer in your list)'),
+                          file: escape(x.store),
+                          why: `${machineCountText(x, machines)} The registry still puts this shop `
+                             + `under <strong>${escape(was || 'another merchant')}</strong>, but your `
+                             + `merchant file now says <strong>${escape(x.fileBrand)}</strong>. `
+                             + `The file already wins for this upload's counts — updating repoints `
+                             + `the shop itself, so every later run and assignment follows it too.`,
+                          act: `<button class="btn-ghost up-mov-btn" data-store="${escape(x.store)}"`
+                             + ` data-brand="${escape(x.fileBrand)}">Update with file data</button>` };
+               }),
+    // Already reported above as a file-to-file gap — not repeated here.
+    unknown:   onceByStore(misses?.unknown)
+                 .filter(x => !noBrandKeys.has(key(x.store)) && !addingBrands.has(key(x.fileBrand)))
+                 .map(x => ({ app: '', file: escape(x.store),
+                              why: machineMissWhy(x, machines, 'unknown', archivedBrands) })),
+    // `app` is left EMPTY on purpose. It used to show the store name, which read as "this is in
+    // your app" — and it is not: it is a row in the hidden shop index, not a merchant anyone can
+    // search for. Saying it in the explanation is honest; putting it in that column was not.
+    unlinked:  onceByStore(misses?.unlinked)
+                 .filter(x => !noBrandKeys.has(key(x.store)) && !addingBrands.has(key(x.fileBrand)))
+                 .map(x => ({ app: '', file: escape(x.store),
+                              why: machineMissWhy(x, machines, 'unlinked', archivedBrands) })),
+  };
+  // Filtering happens on the DATA, not by hiding rendered rows, so a group's count always
+  // describes what is actually under it.
+  const q = String(filter || '').toLowerCase().trim();
+  const strip = h => String(h || '').replace(/<[^>]+>/g, '');
+  const body = UPLOAD_GROUPS.map(g => {
+    const all = buckets[g.key] || [];
+    const rows = !q ? all
+      : all.filter(r => (strip(r.app) + ' ' + strip(r.file)).toLowerCase().includes(q));
+    if (!rows.length) return '';
+    if (g.key === 'unchanged') {
+      return `<tr class="rc-grouprow rc-tone-${g.tone}"><td colspan="4">
+        <span class="rc-g-title">${escape(g.title)}</span>
+        <span class="rc-count">${diff.unchanged} ${escape(g.unit)}</span></td></tr>`;
+    }
+    const countLabel = q && rows.length !== all.length
+      ? `${rows.length} of ${all.length} ${escape(g.unit)}`
+      : `${rows.length} ${escape(g.unit)}`;
+    const shown = rows.slice(0, 200);
+    return `<tr class="rc-grouprow rc-tone-${g.tone}"><td colspan="4">
+        <span class="rc-g-title">${escape(g.title)}</span>
+        <span class="rc-count">${countLabel}</span></td></tr>`
+      + `<tr class="rc-colhead"><th class="rc-c-app">Your merchant list</th><th class="rc-c-file">In this file</th>`
+      + `<th class="rc-c-why">What it means</th><th class="rc-c-why">Adjust</th></tr>`
+      + shown.map(r => `<tr>
+          <td class="rc-c-app">${r.app || '<span class="ct-empty">–</span>'}</td>
+          <td class="rc-c-file">${r.file || '<span class="ct-empty">–</span>'}</td>
+          <td class="rc-c-why">${r.why}</td>
+          <td class="rc-c-why">${r.act || '<span class="muted">—</span>'}</td>
+        </tr>`).join('')
+      + (rows.length > shown.length
+          ? `<tr><td colspan="4" class="muted">…and ${rows.length - shown.length} more</td></tr>` : '');
+  }).join('');
+  if (!body) {
+    return q
+      ? `<p class="muted">Nothing left matching “${escape(String(filter).trim())}”.</p>`
+      : '<p class="muted">Nothing differs — this file matches your merchant list.</p>';
+  }
+  return `<div class="rc-wrap"><table class="ts rc-table"><tbody>${body}</tbody></table></div>`;
+}
+
+
+
+
+// Redraw the table from the CURRENT state of your merchant list (2026-09-29).
+//
+// A finished row leaves the table, because the differences are recomputed rather than annotated:
+// once a merchant exists, `diffWeeklyRows` no longer calls it new; once its fields match, it is
+// no longer changed; once a shop is repointed, it is no longer moved. Marking rows "✓ done" and
+// leaving them meant the counts above them slowly stopped meaning anything.
+//
+// Cheap enough to run after every single action — it is one pass over data already in memory,
+// plus the registry, which is cached.
+async function refreshUploadTable(note) {
+  const { parsed, machines, roster } = UPLOAD_STATE;
+  const out = document.getElementById('up-out');
+  if (!out) return;
+  const join = joinUploadFiles(roster, machines);
+  const misses = machines
+    ? matchMachineStores(machines.byStore, await loadRegistry(), roster, CONTRACTS) : null;
+  const diff = parsed ? diffWeeklyRows(parsed, CONTRACTS) : null;
+  UPLOAD_STATE = { ...UPLOAD_STATE, diff, misses, join };
+  const filter = document.getElementById('up-filter')?.value || '';
+  out.innerHTML = uploadTableHtml(diff, misses, machines, join, filter);
+  const done = document.getElementById('up-done');
+  if (done && note) done.textContent = note;
+}
+
+// Everything about ONE merchant that lives outside its contract row: its shops in the store
+// index, and its machine counts. Called by the row actions, so adding or updating a merchant
+// brings its shops with it — there is no bulk step doing this behind your back.
+const broughtText = b => !b.shops ? ''
+  : ` · ${b.shops} shop${b.shops === 1 ? '' : 's'}${b.machines ? `, ${b.machines} machine${b.machines === 1 ? '' : 's'}` : ''}`;
+
+async function applyShopsForBrand(brand, contractId) {
+  const { roster, machines } = UPLOAD_STATE;
+  const key = v => String(v ?? '').toLowerCase().trim();
+  const want = key(brand);
+  const shops = ((roster && roster.merchants) || [])
+    .filter(r => key(r.partnerName) === want)
+    .map(r => ({ name: r.name, contractId, machineModel: r.model || null,
+                 externalId: r.externalId || null }));
+  if (!shops.length) return { shops: 0, machines: 0 };
+
+  try { await api('/registry', { method: 'POST', body: JSON.stringify({ shops }) }); }
+  catch (e) { console.warn('store index not updated for', brand, e); }
+
+  // Machine counts, summed over this merchant's own shops — merchant INFORMATION, owned by the
+  // file, so it follows the file rather than needing a decision of its own.
+  let counted = 0;
+  if (machines && machines.byStore instanceof Map) {
+    const units = {};
+    const lower = new Map([...machines.byStore.entries()].map(([k2, v]) => [key(k2), v]));
+    for (const shop of shops) {
+      for (const [model, n] of Object.entries(lower.get(key(shop.name)) || {})) {
+        units[model] = (units[model] || 0) + n; counted += n;
+      }
+    }
+    if (counted) {
+      const total = Object.values(units).reduce((a, b) => a + b, 0);
+      try {
+        await api('/contracts/' + encodeURIComponent(contractId), {
+          method: 'PUT', body: JSON.stringify({ units, installedUnits: total }) });
+        const c = CONTRACTS.find(x => x.contractId === contractId);
+        if (c) { c.units = units; c.installedUnits = total; }
+      } catch (e) { console.warn('machine counts not applied for', brand, e); }
+    }
+  }
+  return { shops: shops.length, machines: counted };
+}
+
+
+// Does your list already hold this merchant under a slightly different name? (2026-09-29)
+//
+// `diffWeeklyRows` matches on the exact name, so "EBISU Shoten Silom" was offered as a brand-new
+// merchant while "EBISU SHOTEN" sat in the list already — and adding it would have produced two
+// merchants for one shop, with the terms on the wrong one. Reconcile's classifier knew how to
+// spot this; removing that screen from the nav lost it, so the check lives here now.
+//
+// A candidate is never applied automatically. On live data a top-1 name match is wrong at least
+// three times in five (§1o) — `Central` is a chain, `DINK`/`DRINK` is a typo. It is a question
+// the page asks, never an answer it acts on.
+function similarExistingMerchants(name) {
+  const t = String(name || '').trim();
+  if (!t) return [];
+  const k = reconcileKey(t);
+  const out = [];
+  for (const c of CONTRACTS || []) {
+    if (c.archived) continue;
+    const ck = reconcileKey(c.merchantName || '');
+    if (!ck || ck === k) continue;
+    // Either one name contains the other — the branch-suffix case — or the strings are close.
+    const contains = ck.startsWith(k + ' ') || k.startsWith(ck + ' ') || ck === k;
+    const score = contains ? 1 : similarity(t, c.merchantName || '');
+    if (contains || score >= 0.82) out.push({ contract: c, score });
+  }
+  return out.sort((a, b) => b.score - a.score).slice(0, 3);
+}
+
+// Bring ONE merchant from the file into the list, terms and all (2026-09-29).
+//
+// The two categories stay separate here, visibly: everything the FILE says is shown as fact and
+// cannot be typed over, and everything below it — contract, finance, share terms — is the one
+// data set you maintain. Nothing is created until Save, so closing this leaves the list exactly
+// as it was.
+async function openAddFromFile(name, btn) {
+  const { parsed, diff } = UPLOAD_STATE;
+  const row = (diff?.added || []).find(a => a.name === name);
+  if (!row) return;
+  if (!can('manageMerchants')) { alert('You do not have permission to add merchants.'); return; }
+  // The branch count travels beside the row, not inside it.
+  const idx = parsed ? parsed.rows.findIndex(r => String(r[parsed.fields.indexOf('Merchant/Brand')] ?? '').trim() === name) : -1;
+  const branchCount = idx >= 0 ? (parsed.branchCounts?.[idx] ?? null) : null;
+
+  const { card, close } = ctModal(760);
+  const cols = CONTRACT_GRID_COLUMNS.filter(c =>
+    (c.group === 'contract' || c.group === 'finance') && c.key !== 'counterParty'
+    && c.type !== 'computed' && !(c.type || '').startsWith('term-'));
+  const field = (col) => {
+    if (col.type === 'date')   return `<label><span>${escape(col.label)}</span><input type="date" data-k="${col.key}"></label>`;
+    if (col.type === 'number') return `<label><span>${escape(col.label)}</span><input type="number" data-k="${col.key}"></label>`;
+    if (col.type === 'select') {
+      const opts = col.key === 'autoRenewal' ? ['', 'Yes', 'No'] : ['', ...MERCHANT_TYPES];
+      return `<label><span>${escape(col.label)}</span><select data-k="${col.key}">${opts.map(o =>
+        `<option value="${escape(o)}">${escape(o || '—')}</option>`).join('')}</select></label>`;
+    }
+    return `<label><span>${escape(col.label)}</span><input type="text" data-k="${col.key}"></label>`;
+  };
+  const facts = Object.entries(row.vals || {}).filter(([k]) => k !== 'Merchant/Brand');
+
+  // Your list may already hold this merchant under a slightly different name. Say so HERE,
+  // where the second one would be created, not only on the row behind this dialog.
+  const near = similarExistingMerchants(name);
+  const suggestedEntity = near.map(n => n.contract.entityId).find(Boolean) || null;
+
+  card.innerHTML = `
+    <h3 style="margin:0 0 4px;">Add ${escape(name)}</h3>
+    <p class="muted" style="margin:0 0 14px;font-size:12.5px;">
+      Nothing is created until you save.</p>
+    ${!near.length ? '' : `<div class="up-held" style="border-left-color:var(--warn,#e67700);margin-bottom:14px;">
+      <span>Your merchant list already has
+        ${near.map(n => `<strong>${escape(n.contract.merchantName)}</strong>`).join(' and ')}.
+        If this is the same merchant, <strong>close this and update that one instead</strong> —
+        adding it here creates a second merchant, and its terms would live on only one of them.</span>
+    </div>`}
+
+    <h4 class="ct-ed-h">From your file — not editable</h4>
+    <div class="up-sum" style="margin:0 0 4px;">
+      <div class="up-sum-row"><strong>${escape(name)}</strong>${branchCount != null
+        ? ` <span class="muted">· ${branchCount} branch${branchCount === 1 ? '' : 'es'}</span>` : ''}</div>
+      ${facts.length ? facts.map(([k, v]) =>
+        `<div class="up-sum-row muted">${escape(k)}: ${escape(v)}</div>`).join('')
+        : '<div class="up-sum-row muted">No other details in the file.</div>'}
+    </div>
+
+    <h4 class="ct-ed-h">Contract</h4>
+    <div class="mail-form">
+      ${entityPickerHtml('af-entity', suggestedEntity)}
+      ${!suggestedEntity ? '' : `<p class="mail-hint" style="margin:-8px 0 12px;">Taken from
+        <strong>${escape((near.find(n => n.contract.entityId) || {}).contract.merchantName)}</strong>,
+        which looks like the same merchant. Clear it if that is wrong.</p>`}
+      ${cols.filter(c => c.group === 'contract').map(field).join('')}
+    </div>
+
+    <h4 class="ct-ed-h">Finance</h4>
+    <div class="mail-form">${cols.filter(c => c.group === 'finance').map(field).join('')}</div>
+
+    <h4 class="ct-ed-h">Share terms</h4>
+    <div style="display:flex;gap:16px;align-items:flex-start;margin-bottom:12px;flex-wrap:wrap;">
+      <label style="font-size:12.5px;color:var(--ink-soft);">Aggregation
+        <select id="af-agg" class="input" style="min-width:230px;display:block;margin-top:4px;">
+          <option value="whole">Whole — one calculation across all stores</option>
+          <option value="per_store">Per store — calculate each store separately</option>
+        </select></label>
+      <label class="nopay-toggle" style="display:flex;gap:8px;align-items:center;font-size:13px;margin-top:22px;">
+        <input type="checkbox" id="af-nopay"> No revenue share — not paid</label>
+    </div>
+    <div id="af-rule"></div>
+
+    <p class="nm-err" id="af-err" hidden></p>
+    <div class="mail-actions">
+      <button id="af-cancel" class="btn-ghost">Cancel</button>
+      <button id="af-save" class="btn-primary">Save — add to merchant list</button>
+    </div>`;
+
+  const ruleBox = card.querySelector('#af-rule');
+  const editor = renderStructuredRuleEditor(ruleBox, null, MACHINE_MODELS_CACHE, { readOnly: false });
+  const nopay = card.querySelector('#af-nopay');
+  const dim = () => { ruleBox.style.opacity = nopay.checked ? '.45' : '1'; ruleBox.style.pointerEvents = nopay.checked ? 'none' : ''; };
+  nopay.addEventListener('change', dim); dim();
+  card.querySelector('#af-cancel').addEventListener('click', close);
+
+  card.querySelector('#af-save').addEventListener('click', async () => {
+    const save = card.querySelector('#af-save'), err = card.querySelector('#af-err');
+    save.disabled = true; err.hidden = true;
+    try {
+      let rule = null;
+      if (!nopay.checked) {
+        try { rule = editor.getRule(); } catch (e) { throw new Error('Invalid terms: ' + e.message); }
+      }
+      // The file's own columns, mapped through the same table the weekly diff uses — so what is
+      // created here is exactly what an import would have created, plus the terms you just set.
+      const body = { merchantName: name };
+      for (const [label, v] of Object.entries(row.vals || {})) {
+        const key = WEEKLY_FIELD_KEY[label];
+        if (key && key !== 'merchantName') body[key] = v;
+      }
+      if (branchCount != null) body.branchCount = branchCount;
+      card.querySelectorAll('[data-k]').forEach(el => {
+        const raw = String(el.value || '').trim();
+        if (raw) body[el.dataset.k] = el.type === 'number' ? Number(raw) : raw;
+      });
+      const entityId = await resolveEntityInput(card.querySelector('#af-entity').value);
+      if (entityId) body.entityId = entityId;
+      body.aggregationMode = card.querySelector('#af-agg').value;
+      body.noPayout = nopay.checked;
+      if (rule) body.rule = rule;
+
+      const created = await api('/contracts', { method: 'POST', body: JSON.stringify(body) });
+      CONTRACTS.push(created);
+      // Its shops and its machines come with it — that is what the bulk Import used to do for
+      // every merchant at once, now done for the one you chose.
+      const brought = await applyShopsForBrand(name, created.contractId);
+      close();
+      await refreshUploadTable(`✓ Added ${name}${broughtText(brought)}`);
+    } catch (e) {
+      save.disabled = false; err.hidden = false; err.textContent = e.message;
+    }
+  });
+}
+
+
+// Apply ONE merchant's differences, exactly the ones the row states (2026-09-29).
+//
+// This is the only place in the app that writes merchant INFORMATION, and it is safe to do so
+// because those columns are the file's to own: brand, type, branch count, contacts, sales
+// person. It cannot reach contract dates, the contract entity, finance details or share terms —
+// the weekly file carries no such columns, and the body is built from the row's own diff list,
+// so what is written is precisely what the row said would be written.
+async function updateFromFile(name, btn) {
+  const { diff } = UPLOAD_STATE;
+  const row = (diff?.changed || []).find(c => c.name === name);
+  if (!row) return;
+  if (!can('manageMerchants')) { alert('You do not have permission to change merchants.'); return; }
+  const c = CONTRACTS.find(x => !x.archived
+    && String(x.merchantName || '').toLowerCase().trim() === name.toLowerCase().trim());
+  if (!c) { alert('That merchant is no longer in your list.'); return; }
+
+  const body = {};
+  for (const d of row.diffs || []) {
+    const key = WEEKLY_FIELD_KEY[d.field];
+    if (!key || key === 'merchantName') continue;      // the name is the match key, never a change
+    body[key] = key === 'branchCount' ? (Number(d.to) || 0) : d.to;
+  }
+  if (!Object.keys(body).length) return;
+
+  const was = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Updating…';
+  try {
+    const saved = await api('/contracts/' + encodeURIComponent(c.contractId), {
+      method: 'PUT', body: JSON.stringify(body) });
+    Object.assign(c, saved || body);
+    const brought = await applyShopsForBrand(name, c.contractId);
+    await refreshUploadTable(`✓ Updated ${name}${broughtText(brought)}`);
+  } catch (e) {
+    btn.disabled = false; btn.textContent = was;
+    alert('Could not update: ' + e.message);
+  }
+}
+
+
+// A merchant your file no longer mentions. The row says what is actually at stake, because
+// "not in this file" covers two very different situations: a contract that genuinely ended, and
+// a shop that is simply absent from one week's export.
+function uploadMissingWhy(m) {
+  const bits = ['Nothing has been deleted — an import never removes a merchant.'];
+  if (!ruleIsAbsent(m.rule) || m.noPayout) bits.push('It has revenue-share terms set.');
+  if (m.endDate) bits.push(`Contract end: <strong>${escape(m.endDate)}</strong>.`);
+  if (m.branchCount) bits.push(`${m.branchCount} branch${m.branchCount === 1 ? '' : 'es'} recorded.`);
+  return bits.join(' ');
+}
+
+// Archive — the soft exit. The row, its terms and its store links all stay; it simply stops
+// being paid, and `payoutDecision` skips it before it looks at any rule. Reversible from the
+// Archived screen.
+async function archiveFromUpload(contractId, btn) {
+  const c = CONTRACTS.find(x => x.contractId === contractId);
+  if (!c) { alert('That merchant is no longer in your list.'); return; }
+  if (!can('manageMerchants')) { alert('You do not have permission to archive merchants.'); return; }
+  if (!confirm(`Archive "${c.merchantName}"?\n\nIt stops being paid from the next run. Its terms, `
+    + `its history and every run that already paid it are kept, and you can unarchive it from `
+    + `the Archived screen.`)) return;
+  const was = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Archiving…';
+  try {
+    const saved = await api('/contracts/' + encodeURIComponent(contractId), {
+      method: 'PUT', body: JSON.stringify({ archived: true }) });
+    Object.assign(c, saved || { archived: true });
+    await refreshUploadTable(`✓ Archived ${c.merchantName}`);
+  } catch (e) {
+    btn.disabled = false; btn.textContent = was;
+    alert('Could not archive: ' + e.message);
+  }
+}
+
+// Delete — permanent, and says exactly what goes with it. A merchant carrying terms is the
+// costly case: those terms exist nowhere else, and a past run keeps its own frozen snapshot but
+// nothing can recreate the row.
+async function deleteFromUpload(contractId, btn) {
+  const c = CONTRACTS.find(x => x.contractId === contractId);
+  if (!c) { alert('That merchant is no longer in your list.'); return; }
+  if (!can('manageMerchants')) { alert('You do not have permission to delete merchants.'); return; }
+  const hasTerms = !ruleIsAbsent(c.rule) || c.noPayout;
+  if (!confirm(`Delete "${c.merchantName}" permanently?\n\n`
+    + (hasTerms ? 'This also deletes its revenue-share terms, which exist nowhere else.\n\n' : '')
+    + 'This cannot be undone. Archive keeps the row and simply stops paying it.')) return;
+  const was = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Deleting…';
+  try {
+    await api('/contracts/' + encodeURIComponent(contractId), { method: 'DELETE' });
+    const gone = c.merchantName;
+    CONTRACTS = CONTRACTS.filter(x => x.contractId !== contractId);
+    await refreshUploadTable(`✓ Deleted ${gone}`);
+  } catch (e) {
+    btn.disabled = false; btn.textContent = was;
+    alert('Could not delete: ' + e.message);
+  }
+}
+
+
+
+// Why a shop could not be placed — and crucially, whether the merchant FILE knows it. Three
+// different answers needing three different responses:
+//   • the file names a brand you do not carry  -> add that merchant, and the shop places itself
+//   • the file does not mention the shop        -> it is not on this week's list at all
+//   • in the registry but linked to nobody      -> rentals here are paid to no one
+function machineMissWhy(x, machines, kind, archivedBrands) {
+  const head = machineCountText(x, machines);
+  const archived = archivedBrands && x.fileBrand
+    ? archivedBrands.get(String(x.fileBrand).toLowerCase().trim()) : null;
+  if (archived) {
+    return `${head} Your merchant file says this shop belongs to <strong>${escape(archived)}</strong>, `
+      + `which IS in your list but is <strong>archived</strong> — an archived merchant is not paid, `
+      + `so its shops are not placed. Unarchive it from the Archived screen if it is trading again.`;
+  }
+  if (x.fileBrand) {
+    return `${head} Your merchant file says this shop belongs to `
+      + `<strong>${escape(x.fileBrand)}</strong>, but there is no merchant of that name in your `
+      + `list — add it above and this shop places itself.`;
+  }
+  if (kind === 'unlinked') {
+    return `${head} The shop IS in the registry, but its row carries no merchant — its rentals `
+      + `are not paid to anybody. Your merchant file does not name it either.`;
+  }
+  return `${head} Neither your merchant file nor the app's store index mentions this shop. `
+    + `A run will not fix it — runs are left exactly as they were computed. Add the shop to your `
+    + `merchant file, or accept that these machines belong to nobody this week.`;
+}
+
+
+
+// Repoint a shop at the merchant its file says it belongs to (2026-09-29).
+//
+// The file already wins for THIS upload's machine counts — the matcher sees to that. What it
+// cannot do is change the shop itself: the registry row still names the old merchant, so the
+// Assign button, the next machine-list upload and anything else reading the registry keep
+// following a link the file has already contradicted. This makes the move real.
+//
+// Every registry row for that store name is updated, not just the first: a store routinely has
+// several rows (§1c), and leaving siblings pointing at the old merchant is how a shop comes to
+// answer two ways at once — the exact fault that made Mixue look like it had moved.
+async function repointStoreFromFile(store, brand, btn) {
+  if (!can('manageMerchants')) { alert('You do not have permission to change the store registry.'); return; }
+  const target = CONTRACTS.find(c => !c.archived
+    && String(c.merchantName || '').toLowerCase().trim() === String(brand || '').toLowerCase().trim());
+  if (!target) { alert(`There is no merchant called "${brand}" in your list yet. Add it first — the shop can then point at it.`); return; }
+
+  const registry = await loadRegistry().catch(() => null);
+  if (!registry) { alert('Could not read the store registry.'); return; }
+  const k = String(store || '').toLowerCase().trim();
+  const rows = registry.filter(r => String(r.name || '').toLowerCase().trim() === k);
+  if (!rows.length) { alert('That shop is no longer in the store registry.'); return; }
+  const moving = rows.filter(r => r.contractId !== target.contractId);
+  if (!moving.length) { await refreshUploadTable(`${store} already points at ${target.merchantName}`); return; }
+
+  if (!confirm(`Point "${store}" at ${target.merchantName}?\n\n`
+    + `${moving.length} store-registry row(s) change. Nothing else about the shop is touched, and `
+    + `no past run is altered — runs keep the figures they were computed with.`)) return;
+
+  const was = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Updating…';
+  try {
+    for (const r of moving) {
+      // contractId ONLY. The route merges over the stored row, so every other field — the store's
+      // name, its externalId, its machine model — is carried through untouched.
+      await api('/merchants/' + encodeURIComponent(r.merchantId), {
+        method: 'PUT', body: JSON.stringify({ contractId: target.contractId }) });
+      r.contractId = target.contractId;
+    }
+    REGISTRY_CACHE = null;                    // it was just changed underneath us
+    await refreshUploadTable(`✓ ${store} now under ${target.merchantName}`);
+  } catch (e) {
+    btn.disabled = false; btn.textContent = was;
+    alert('Could not update the registry: ' + e.message);
+  }
+}
+
+// STEP 1 of the upload: join the two files to each other (2026-09-29).
+//
+// The merchant file gives store -> brand. The machine file gives store -> machines. Joined on the
+// store name they make ONE merchant-information set — brand, branches, machines — which is the
+// week you are holding. Only then is that set mapped against the app (step 2).
+//
+// The join is also where the first real mismatch lives, and it was missing: a shop in one file
+// and not the other. Machines whose store the merchant file never names cannot be attributed to
+// anybody, and a shop the merchant file lists with no machines recorded is worth knowing about
+// too. Neither is visible once the two are merged, so both are reported here.
+//
+// Pure: no globals, no fetch. Both files in, one set and its gaps out.
+function joinUploadFiles(roster, machines) {
+  const key = v => String(v ?? '').toLowerCase().trim();
+  const byStore = machines && machines.byStore instanceof Map ? machines.byStore : new Map();
+
+  // The merchant file's own view: store -> brand.
+  const brandOf = new Map();
+  for (const r of (roster && roster.merchants) || []) {
+    const k = key(r.name);
+    const brand = String(r.partnerName ?? '').trim();
+    if (k && brand && !brandOf.has(k)) brandOf.set(k, { store: String(r.name).trim(), brand });
+  }
+
+  // The machine file's own view: store -> counts.
+  const machinesOf = new Map();
+  for (const [store, counts] of byStore) {
+    const k = key(store);
+    if (!k) continue;
+    const n = Object.values(counts || {}).reduce((a, b) => a + b, 0);
+    machinesOf.set(k, { store, counts: counts || {}, machines: n });
+  }
+
+  const stores = new Map();
+  const onlyInMerchantFile = [], onlyInMachineFile = [];
+  for (const [k, m] of brandOf) {
+    const mc = machinesOf.get(k);
+    if (mc) stores.set(k, { store: m.store, brand: m.brand, machines: mc.machines, counts: mc.counts });
+    else { stores.set(k, { store: m.store, brand: m.brand, machines: 0, counts: {} });
+           onlyInMerchantFile.push({ store: m.store, brand: m.brand }); }
+  }
+  for (const [k, mc] of machinesOf) {
+    if (brandOf.has(k)) continue;
+    onlyInMachineFile.push({ store: mc.store, machines: mc.machines, counts: mc.counts });
+  }
+
+  // The merchant-information set the app is then compared against: one entry per brand.
+  const brands = new Map();
+  for (const v of stores.values()) {
+    const bk = key(v.brand);
+    const acc = brands.get(bk) || { brand: v.brand, stores: 0, machines: 0, counts: {} };
+    acc.stores++; acc.machines += v.machines;
+    for (const [model, c] of Object.entries(v.counts)) acc.counts[model] = (acc.counts[model] || 0) + c;
+    brands.set(bk, acc);
+  }
+  return { stores, brands, onlyInMerchantFile, onlyInMachineFile,
+           bothFiles: brandOf.size > 0 && machinesOf.size > 0 };
+}
+
+// What is actually at this store, so the row can be found in the machine list you just uploaded.
+// The models matter as much as the count — "S8 x2" is the line to look for.
+function machineCountText(miss, machines) {
+  const n = Number(miss.machines) || 0;
+  const counts = machines?.byStore instanceof Map ? machines.byStore.get(miss.store) : null;
+  const models = counts
+    ? Object.entries(counts).filter(([, c]) => c > 0)
+        .map(([m, c]) => `${escape(m)} ×${c}`).join(', ')
+    : '';
+  return `<strong>${n} machine${n === 1 ? '' : 's'}</strong>${models ? ` (${models})` : ''}.`;
+}
+
+// A new merchant is the costly mistake in this file — one wrong brand column turns 2,357 shops
+// into 2,357 merchants — so the row says what it would arrive with.
+function uploadAddedWhy(a, join) {
+  const vals = Object.entries(a.vals || {}).filter(([k]) => k !== 'Merchant/Brand');
+  const head = vals.length
+    ? 'Would be created with ' + vals.map(([k, v]) => `${escape(k)} <strong>${escape(v)}</strong>`).join(', ')
+    : 'Would be created with no other details.';
+  // The shops and machines it brings with it, from the two files joined. This is why the machine
+  // list no longer complains separately about those shops — adding the merchant places them.
+  // The costly mistake this file can make is a SECOND merchant for one you already have.
+  const near = similarExistingMerchants(a.name);
+  const warn = near.length
+    ? ` <span class="rc-warn">Your list already has `
+      + near.map(n => `<strong>${escape(n.contract.merchantName)}</strong>`).join(' and ')
+      + ` — check this is not the same merchant before adding.</span>`
+    : '';
+  const b = join?.brands?.get(String(a.name ?? '').toLowerCase().trim());
+  if (!b) return head + warn;
+  const models = Object.entries(b.counts || {}).filter(([, c]) => c > 0)
+    .map(([m, c]) => `${escape(m)} ×${c}`).join(', ');
+  return `${head} Brings <strong>${b.stores} shop${b.stores === 1 ? '' : 's'}</strong>`
+    + (b.machines ? ` and ${b.machines} machine${b.machines === 1 ? '' : 's'}${models ? ` (${models})` : ''}` : ' and no machines')
+    + ' from your files.' + warn;
+}
+
+function uploadChangedWhy(c) {
+  return (c.diffs || []).map(d =>
+    `${escape(d.field)}: <span class="muted">${escape(d.from || '—')}</span> → <strong>${escape(d.to)}</strong>`
+  ).join('<br>');
+}
+
+// Remember the file (2026-09-29). NOT an import: no merchant row is created, changed or
+// deleted here. Two things are recorded, and both are about the FILE rather than your list:
+//
+//   • the roster — the shop rows a run reads, so Run share never asks for this file again
+//   • the upload record — what the ⦿ marks on the Merchant view compare against
+//
+// It runs when the file is read, because a file you are working through IS your latest file, and
+// making you press a button to say so was a second answer to a question the page already asked.
+// Every change to a merchant is a row you click, one at a time.
+async function rememberUploadedFile(parsed, machines, roster) {
+  const out = { ok: false, error: null };
+  try {
+    if (roster?.merchants?.length) {
+      const nameIdx = parsed ? parsed.fields.indexOf('Merchant/Brand') : -1;
+      const names = nameIdx >= 0
+        ? parsed.rows.map(r => String(r[nameIdx] ?? '').trim()).filter(Boolean) : [];
+      const res = await api('/roster', { method: 'PUT', body: JSON.stringify({
+        merchants: roster.merchants,
+        names,
+        excluded: roster.excluded || [],
+        machinesAt: machines ? new Date().toISOString() : null,
+        machineStoreCount: machines ? machines.byStore.size : null,
+      }) });
+      if (res?.lastUpload?.names?.length) LAST_UPLOAD = res.lastUpload;
+    }
+    out.ok = true;
+  } catch (e) {
+    out.error = e.message;
+  }
+  return out;
 }
 
 // ── Adding merchants ───────────────────────────────────────────────────────
@@ -2888,9 +4074,9 @@ async function openAddMerchants() {
         }
         close();
         if (dryRun) {
-          // Straight to the answer, rather than an alert the reader has to translate into a
-          // reason to go looking.
-          await renderReconcileTab();
+          // The Reconcile tab this used to open is gone (2026-09-29) — the Upload page shows the
+          // same differences beside the file that produced them. Send the reader there.
+          await renderUploadScreen();
           return;
         }
         await renderContractsScreen();
@@ -2926,28 +4112,100 @@ async function loadRegistry() {
 //   `unlinked` — the shop IS in the registry but its row carries no contractId, so there is no
 //                merchant to add the machines to.
 // Both are dropped either way; the difference is whether the shop or the link is missing.
-function matchMachineStores(byStore, merchants) {
+// THE TWO FILES ARE MAPPED TO EACH OTHER FIRST, AND THE REGISTRY SECOND (user, 2026-09-29).
+//
+// The merchant file gives store -> brand; the machine file gives store -> machines. Joining them
+// on the store name is the week you are actually holding, and it is what says whether a merchant
+// should be ADDED or UPDATED. The registry is derived history — it learns store names from past
+// run rosters — so it answers only for shops this week's files do not mention.
+//
+// Order matters and used to be the other way round. The registry can be stale: a shop that moved
+// brand, or one whose name the platform restated (§1d), resolves to last month's contract there
+// while the file in your hand says otherwise. The file wins, and the two are reported when they
+// disagree rather than one silently overriding the other.
+function matchMachineStores(byStore, merchants, roster, contracts) {
+  // Which contracts still exist and are live. The registry outlives them: 73 rows point at a
+  // DELETED contract and 103 at an archived one (measured 2026-09-29), because deleting a
+  // merchant never cleans up the shop rows that referenced it.
+  const liveIds = new Set();
+  for (const c of contracts || []) if (c && !c.archived && c.contractId) liveIds.add(c.contractId);
+  // Without a contracts list there is no way to tell a live link from a dead one — and "I cannot
+  // judge" must not mean "nothing is live", or every existing caller silently places nothing.
+  // Callers that pass contracts get the check; the older two-argument form behaves as it always did.
+  const knowLive = liveIds.size > 0;
+  const isLive = id => !knowLive || liveIds.has(id);
+
   const linkedOf = new Map(), known = new Set();
   for (const m of merchants || []) {
     const k = String(m.name ?? '').toLowerCase().trim();
     if (!k) continue;
     known.add(k);
-    if (m.contractId && !linkedOf.has(k)) linkedOf.set(k, m.contractId);
+    if (!m.contractId) continue;
+    // PREFER A LIVE CONTRACT. A store name routinely has several registry rows (§1c), and taking
+    // the first one meant a dangling pointer could speak for the shop while its live siblings
+    // were ignored — which is how 'มี่เสวี่ย … เอเชียทีค' appeared to have moved away from Mixue
+    // when two of its three rows said Mixue all along.
+    const have = linkedOf.get(k);
+    if (!have || (!isLive(have) && isLive(m.contractId))) linkedOf.set(k, m.contractId);
+  }
+  // store name -> brand, straight from the uploaded file; brand -> contract, by name.
+  const brandOfStore = new Map(), fromFile = new Map();
+  for (const r of (roster && roster.merchants) || []) {
+    const k = String(r.name ?? '').toLowerCase().trim();
+    const brand = String(r.partnerName ?? '').trim();
+    if (k && brand && !brandOfStore.has(k)) brandOfStore.set(k, brand);
+  }
+  if (brandOfStore.size) {
+    const byBrand = new Map();
+    for (const c of contracts || []) {
+      if (c.archived) continue;
+      const k = String(c.merchantName ?? '').toLowerCase().trim();
+      if (k && !byBrand.has(k)) byBrand.set(k, c.contractId);
+    }
+    for (const [store, brand] of brandOfStore) {
+      const cid = byBrand.get(brand.toLowerCase().trim());
+      if (cid) fromFile.set(store, { cid, brand });
+    }
   }
   const totals = new Map();
   const unknown = [], unlinked = [];
-  let matchedStores = 0, matchedMachines = 0;
+  let matchedStores = 0, matchedMachines = 0, matchedViaFile = 0;
+  const conflicts = [];
   for (const [store, counts] of byStore) {
     const n = Object.values(counts).reduce((a, b) => a + b, 0);
     const k = String(store ?? '').toLowerCase().trim();
-    const cid = linkedOf.get(k);
-    if (!cid) { (known.has(k) ? unlinked : unknown).push({ store, machines: n }); continue; }
+    // Pass 1 — the two files, joined on the store name.
+    const hit = fromFile.get(k);
+    // Pass 2 — the registry, for shops this week's files do not place.
+    // A registry link to a contract that no longer exists places nothing. Counting machines
+    // against a deleted merchant is not a match, it is a number with nowhere to go — and it
+    // would inflate "merchants that would have counts updated" with rows nobody can see.
+    const regRaw = linkedOf.get(k);
+    const fromReg = regRaw && isLive(regRaw) ? regRaw : null;
+    let cid = hit ? hit.cid : fromReg;
+    const viaFile = hit ? hit.brand : null;
+    // A disagreement only counts when BOTH sides name a merchant that still exists. A registry
+    // row pointing at a deleted or archived contract is a stale link, not a competing answer —
+    // reporting it as "this shop moved merchant" would have produced a long list of findings
+    // about merchants that are not there any more.
+    if (hit && fromReg && fromReg !== hit.cid && isLive(fromReg)) {
+      conflicts.push({ store, machines: n, fileBrand: hit.brand, registryContractId: fromReg });
+    }
+    if (!cid) {
+      // Still unplaced — but say whether the FILE at least names the shop, because "we have
+      // never heard of this" and "we know the brand but you do not carry it" need different fixes.
+      const brand = brandOfStore.get(k);
+      (known.has(k) ? unlinked : unknown).push(
+        brand ? { store, machines: n, fileBrand: brand } : { store, machines: n });
+      continue;
+    }
     matchedStores++; matchedMachines += n;
+    if (viaFile) matchedViaFile++;
     const acc = totals.get(cid) || {};
     for (const [model, c] of Object.entries(counts)) acc[model] = (acc[model] || 0) + c;
     totals.set(cid, acc);
   }
-  return { totals, matchedStores, matchedMachines, unknown, unlinked };
+  return { totals, matchedStores, matchedMachines, matchedViaFile, conflicts, unknown, unlinked };
 }
 
 // The store names a machine list could not place, by the two reasons §1l keeps apart: `unknown`
@@ -2957,13 +4215,13 @@ function matchMachineStores(byStore, merchants) {
 // matchMachineStores pushes {store, machines} OBJECTS, not strings — mapping String over them
 // would store "[object Object]" 200 times. And loadRegistry is async and several MB, so this
 // reuses the fetch the dialog already made rather than pulling the registry twice.
-async function machineMissNames(machines) {
-  const { unknown, unlinked } = matchMachineStores(machines.byStore, await loadRegistry());
+async function machineMissNames(machines, roster) {
+  const { unknown, unlinked } = matchMachineStores(machines.byStore, await loadRegistry(), roster, CONTRACTS);
   return { unknown: (unknown || []).map(x => x.store), unlinked: (unlinked || []).map(x => x.store) };
 }
 
-async function importMachineCounts(machines) {
-  const { totals } = matchMachineStores(machines.byStore, await loadRegistry());
+async function importMachineCounts(machines, roster) {
+  const { totals } = matchMachineStores(machines.byStore, await loadRegistry(), roster, CONTRACTS);
   let n = 0;
   for (const [cid, units] of totals) {
     const c = CONTRACTS.find(x => x.contractId === cid);
@@ -3067,6 +4325,9 @@ function paintContracts() {
   const q = (document.getElementById('ct-search')?.value || '').toLowerCase().trim();
   const statusSel = document.getElementById('ct-status');
   const status = statusSel?.value || '';
+  // One entity covers many brands, so filtering by it answers "everything we settle with X".
+  // `__none` is its own answer, not an absence of one — 185 live brands have no entity yet.
+  const entity = (document.getElementById('ct-entity')?.value || '').toLowerCase().trim();
   // Each filter selects exactly the rows carrying the matching row marker, so what the
   // dropdown lists and what the ◆ / ⚠ icons mark can never drift apart.
   // Archived merchants are off this screen entirely — they live on the Archived page. Every
@@ -3080,7 +4341,8 @@ function paintContracts() {
     (!q || (c.merchantName || '').toLowerCase().includes(q)) &&
     (status !== 'needs'   || needsTerms(c)) &&
     (status !== 'due'     || !!renewalFlag(c).cls) &&
-    (status !== 'missing' || MISSING_UPLOAD.has(c.contractId)));
+    (status !== 'missing' || MISSING_UPLOAD.has(c.contractId)) &&
+    (!entity || entityName(c).toLowerCase().includes(entity)));
   rows.sort((a, b) => (a.merchantName || '').localeCompare(b.merchantName || ''));
   body.innerHTML = rows.map(contractRowHtml).join('');
   document.getElementById('ct-count').textContent = `${rows.length} of ${live.length}`;
@@ -3316,15 +4578,48 @@ async function renderBulkRunsList() {
   });
 }
 
+// How stale is the merchant list a run is about to use? Stated plainly, with the age, because
+// "24 days ago" is the difference between a routine run and one that misses a month of new
+// shops. The machine list is reported separately — the two arrive together but mean different
+// things (stations vs cabinets, §1h).
+function wizRosterStatusHtml(meta) {
+  if (!meta || !meta.at) {
+    return '<p class="rc-warn">No merchant list stored yet. Upload one on the <strong>Upload</strong> page before running.</p>';
+  }
+  const when = new Date(meta.at);
+  const days = Math.floor((Date.now() - when.getTime()) / 86400000);
+  const age = days <= 0 ? 'today' : days === 1 ? 'yesterday' : `${days} days ago`;
+  const stale = days >= 14;
+  return `<div class="up-sum" style="margin:0;">
+    <div class="up-sum-row">Merchant list updated <strong>${escape(when.toLocaleDateString('en-GB',
+      { day: 'numeric', month: 'short', year: 'numeric' }))}</strong>
+      <span class="${stale ? 'rc-warn' : 'muted'}">· ${escape(age)}</span>
+      ${meta.by ? `<span class="muted">· by ${escape(meta.by)}</span>` : ''}</div>
+    <div class="up-sum-row muted">${Number(meta.rosterCount || 0).toLocaleString('en-US')} shop row(s)
+      · ${Number(meta.brandCount || 0).toLocaleString('en-US')} brand(s)
+      ${meta.excludedCount ? `· ${Number(meta.excludedCount).toLocaleString('en-US')} not Approved` : ''}</div>
+    ${meta.machinesAt
+      ? `<div class="up-sum-row muted">Machine list updated <strong>${escape(new Date(meta.machinesAt).toLocaleDateString('en-GB',
+          { day: 'numeric', month: 'short', year: 'numeric' }))}</strong>${meta.machineStoreCount
+          ? ` · ${Number(meta.machineStoreCount).toLocaleString('en-US')} store(s)` : ''}</div>`
+      : '<div class="up-sum-row muted">No machine list was uploaded with it.</div>'}
+    ${stale ? '<div class="up-sum-row rc-warn">This list is more than two weeks old — shops opened since then will not be paid.</div>' : ''}
+  </div>`;
+}
+
 function renderNewBulkRunForm() {
   const now = new Date();
   const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
   const main = document.getElementById('main');
 
   // Wizard state
-  const wiz = { periodStart: null, periodEnd: null, merchants: null, prepare: null, orders: null };
+  const wiz = { periodStart: null, periodEnd: null, merchants: null, prepare: null, orders: null, rosterMeta: null };
 
   function pad(n) { return String(n).padStart(2, '0'); }
+
+  // Asked for once, up front: step 2 has to say how old the stored merchant list is before you
+  // decide to run against it.
+  api('/roster').then(m => { wiz.rosterMeta = m && m.at ? m : null; render(); }).catch(() => {});
 
   function render() {
     const step1Done = !!(wiz.periodStart && wiz.periodEnd);
@@ -3355,22 +4650,15 @@ function renderNewBulkRunForm() {
         </div>
       </div>
 
-      <!-- Step 2: Merchant list -->
+      <!-- Step 2: Merchant list — STORED, not uploaded (2026-09-29) -->
       <div class="wizard-step ${!step1Done ? 'wizard-step-locked' : ''}" id="wiz-step2">
-        <div class="wizard-step-head"><span class="wizard-step-num">2</span> Merchant list (Businessmen list)</div>
+        <div class="wizard-step-head"><span class="wizard-step-num">2</span> Merchant list</div>
         <div class="wizard-step-body">
           ${!step1Done ? '<p class="muted">Complete Step 1 first.</p>' : `
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-            <span style="font-size:12.5px;color:var(--ink-soft);">Businessmen list (.xlsx)</span>
-            <button type="button" id="wiz-ml-sample" class="btn-ghost" style="font-size:12px;padding:2px 8px;">↓ Sample file</button>
-          </div>
-          <input type="file" id="wiz-ml-file" accept=".xlsx" style="display:none">
-          <div id="wiz-ml-zone" class="upload-zone" style="cursor:pointer;">
-            <p>Choose the Businessmen list Excel file</p>
-            <button type="button" id="wiz-ml-choose" class="btn">Choose file</button>
-            <div id="wiz-ml-name" class="upload-hint"></div>
-          </div>
-          <div id="wiz-ml-status" style="margin-top:10px;"></div>
+          <p class="muted" style="margin:0 0 10px;font-size:13px;">
+            Taken from your last upload — a run does not ask for this file again. Refresh it on
+            the <strong>Upload</strong> page.</p>
+          <div id="wiz-ml-status">${wizRosterStatusHtml(wiz.rosterMeta)}</div>
           ${step2Done ? `<div style="margin-top:10px;padding:12px 16px;background:#ebfbee;border:1px solid #8ce99a;border-radius:8px;font-size:13.5px;">
             <strong>Roster loaded:</strong> ${wiz.prepare.rosterCount} machines · ${wiz.prepare.merchantBrandCount} merchants
             ${wiz.prepare.newMerchants?.length ? `· <span style="color:#e67700;" title="${escape(wiz.prepare.newMerchants.slice(0, 40).join(', '))}">${wiz.prepare.newMerchants.length} brand(s) not in your merchant list</span>` : ''}
@@ -3381,7 +4669,7 @@ function renderNewBulkRunForm() {
               else. Brands above that you don't carry are not paid and not added; their revenue is
               reported under Skipped on the run.
             </div>
-          </div>` : ''}
+          </div>` : `<div style="margin-top:10px;"><button id="wiz-ml-load" class="btn-primary">Use this merchant list →</button></div>`}
           `}
         </div>
       </div>
@@ -3444,32 +4732,22 @@ function renderNewBulkRunForm() {
       render();
     });
 
-    // Step 2 merchant list
-    if (step1Done) {
-      document.getElementById('wiz-ml-sample')?.addEventListener('click', downloadMerchantListSample);
-      document.getElementById('wiz-ml-choose')?.addEventListener('click', () => document.getElementById('wiz-ml-file').click());
-      document.getElementById('wiz-ml-zone')?.addEventListener('click', e => { if (e.target.id !== 'wiz-ml-choose') document.getElementById('wiz-ml-file').click(); });
-      document.getElementById('wiz-ml-file')?.addEventListener('change', async e => {
-        const file = e.target.files[0];
-        if (!file) return;
-        const nameEl = document.getElementById('wiz-ml-name');
-        if (nameEl) nameEl.textContent = file.name;
+    // Step 2 — the merchant list is already stored. Preparing sends NO merchants, which is the
+    // signal for the backend to use the stored roster (an older tab still posting one wins, so
+    // nothing that worked before breaks).
+    if (step1Done && !step2Done) {
+      document.getElementById('wiz-ml-load')?.addEventListener('click', async () => {
         const status = document.getElementById('wiz-ml-status');
-        status.innerHTML = 'Parsing merchant list…';
+        const btn = document.getElementById('wiz-ml-load');
+        btn.disabled = true; btn.textContent = 'Preparing…';
         try {
-          const { merchants, excluded } = await parseMerchantList(file);
-          if (!merchants.length) { status.innerHTML = '<p style="color:#f03e3e;">No Approved merchants found in file.</p>'; return; }
-          status.innerHTML = `Parsed ${merchants.length} merchants${excluded.length ? ` (${excluded.length} not Approved, excluded)` : ''}. Preparing…`;
-          wiz.merchants = merchants;
-          wiz.excluded = excluded;
-          // The roster is smaller than the orders, but it grows the same way — 2,367 rows today.
-          const prepare = await postLarge('/bulk-runs/prepare', { merchants }, 'merchant list');
+          const prepare = await api('/bulk-runs/prepare', { method: 'POST', body: JSON.stringify({}) });
           wiz.prepare = prepare;
+          wiz.merchants = null;             // the run reads the stored roster too
           render();
-          // Populate rule editors after render
-          renderWizardRuleEditors();
-        } catch (err) {
-          status.innerHTML = `<p style="color:#f03e3e;">Error: ${escape(err.message)}</p>`;
+        } catch (e) {
+          btn.disabled = false; btn.textContent = 'Use this merchant list →';
+          status.innerHTML = `<p class="rc-warn">${escape(e.message)}</p>`;
         }
       });
     }
@@ -3532,7 +4810,10 @@ function renderNewBulkRunForm() {
               // limit uncompressed (32,277 orders ~= 13 MB in September 2026).
               const run = await postLarge('/bulk-runs', {
                 periodStart: wiz.periodStart, periodEnd: wiz.periodEnd,
-                merchants: wiz.merchants, orders: wiz.orders,
+                // Omitted on purpose when null: the backend uses the roster stored at upload
+                // time, so the run is computed from station rows exactly as before (§1h).
+                ...(wiz.merchants ? { merchants: wiz.merchants } : {}),
+                orders: wiz.orders,
                 machines: wiz.machines || [], excluded: wiz.excluded || [],
               }, 'order report');
               renderBulkRunDetail(run.runId);
@@ -3584,7 +4865,8 @@ function renderNewBulkRunForm() {
     // copy of it here that could drift out of sync.
     async function refreshReadiness() {
       try {
-        wiz.prepare = await api('/bulk-runs/prepare', { method: 'POST', body: JSON.stringify({ merchants: wiz.merchants }) });
+        wiz.prepare = await api('/bulk-runs/prepare', { method: 'POST',
+          body: JSON.stringify(wiz.merchants ? { merchants: wiz.merchants } : {}) });
       } catch (e) {
         alert('Could not refresh readiness: ' + e.message);
         return;
@@ -3913,8 +5195,10 @@ const round2 = v => Math.round(Number(v) * 100) / 100;
 const round4 = v => Math.round(Number(v) * 10000) / 10000;
 
 // ── Settings → Mail templates ──────────────────────────────────────────────────────────────
-// Admin-only to edit, because a template is the wording that reaches a merchant under the
-// company's name. Everyone can read one, so anyone can check what is being sent.
+// Editing needs `manageMailTemplates` (2026-09-29, was full `admin`), because a template is the
+// wording that reaches a merchant under the company's name — privileged, but not a reason to
+// hand someone user management and the run-archive lock. Everyone can read one, so anyone can
+// check what is being sent.
 // Mailing: its own destination, because writing to a merchant is work, not configuration.
 // Two tabs for now — the templates, and what has actually gone out. The sending workspace
 // (pick a period, work down the list) is the next piece and is being designed.
@@ -3954,7 +5238,7 @@ async function renderMailSentTab(host) {
   }
   host.innerHTML = `<table class="ts"><thead><tr>
       <th>Sent</th><th>Period</th><th>Merchant</th><th class="rc-c-money">Payout quoted</th>
-      <th>To</th><th>Attached</th><th>By</th>
+      <th>To</th><th>Cc</th><th>Attached</th><th>By</th>
     </tr></thead><tbody>${logs.map(m => `<tr>
       <td>${escape(m.sentAt ? new Date(m.sentAt).toLocaleString('en-GB',
             { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '')}</td>
@@ -3962,6 +5246,7 @@ async function renderMailSentTab(host) {
       <td>${escape(m.merchantName || '')}</td>
       <td class="rc-c-money">${m.payout == null ? '<span class="muted">—</span>' : escape(fmt2(m.payout))}</td>
       <td>${escape(m.to || '')}</td>
+      <td>${m.cc ? escape(m.cc) : '<span class="muted">—</span>'}</td>
       <td>${escape(m.attachment || '')}${m.attachmentRows != null
             ? ` <span class="muted">(${escape(String(m.attachmentRows))} rows)</span>` : ''}</td>
       <td>${escape(m.sentBy || '')}</td>
@@ -3977,14 +5262,14 @@ async function renderMailTemplatesTab(host) {
     box.innerHTML = `<p class="nm-err">Could not load templates: ${escape(e.message)}</p>`;
     return;
   }
-  const admin = can('admin');
+  const mayEdit = can('manageMailTemplates');   // admin implies it (resolvePermissions)
   const help = MAIL_PLACEHOLDERS.map(([k, d]) => `<code>${escape(k)}</code> — ${escape(d)}`).join('<br>');
   box.innerHTML = `
     <p class="muted" style="margin:0 0 12px;font-size:13px;">
       The wording sent to a merchant with its statement. Placeholders are filled in per merchant
       when the mail is written; you see the finished text before anything is sent.</p>
     <div id="mt-list"></div>
-    ${admin ? '<button id="mt-add" class="btn" style="margin-top:12px;">+ New template</button>' : ''}
+    ${mayEdit ? '<button id="mt-add" class="btn" style="margin-top:12px;">+ New template</button>' : ''}
     <details style="margin-top:16px;"><summary class="muted">Placeholders</summary>
       <p class="muted" style="font-size:12.5px;line-height:1.7;">${help}</p></details>`;
 
@@ -3995,9 +5280,10 @@ async function renderMailTemplatesTab(host) {
         <strong>${escape(t.name || 'Untitled')}</strong>
         <div class="muted" style="font-size:12.5px;">${escape(MAIL_KINDS[mailKind(t)].label)}
           · from ${escape(mailFromAlias(t) || '— no sender address for this region —')}
+          ${mailCc(t) ? `· cc ${escape(mailCc(t))}` : ''}
           ${t.attachmentName ? `· attaches ${escape(t.attachmentName)} (${escape(fileSizeLabel(t.attachmentSize))})` : ''}</div>
         <div style="font-size:13px;margin-top:4px;">${escape(t.subject || '')}</div>
-        ${admin ? `<div style="margin-top:6px;display:flex;gap:6px;">
+        ${mayEdit ? `<div style="margin-top:6px;display:flex;gap:6px;">
           <button class="btn-ghost mt-edit" data-i="${i}">Edit</button>
           <button class="btn-ghost mt-del" data-i="${i}">Delete</button></div>` : ''}
       </div>`).join('') : '<p class="muted">No templates yet.</p>';
@@ -4033,6 +5319,13 @@ function editMailTemplate(t) {
       </div>
       <p class="mail-hint">Defaults to the partner group. It must be an address the person
         sending has verified in Gmail under “Send mail as”, or Gmail refuses the message.</p>
+      <div class="mail-row">
+        <label><span>Always Cc</span><input id="mt-cc"
+          value="${escape(t ? (t.cc || '') : (FINANCE_CC[REGION] || ''))}"
+          placeholder="${escape(FINANCE_CC[REGION] || 'no finance address set for this region')}"></label>
+      </div>
+      <p class="mail-hint">Copied on every message this template sends — finance, for the mail
+        that quotes money. Leave it blank to copy nobody. Separate several with commas.</p>
       <label><span>Subject</span><input id="mt-subject" value="${escape(t?.subject || '')}"
         placeholder="ChargeSpot revenue share — {{merchant}} — {{period}}"></label>
       <div id="mt-attach-row"${mailKind(t) === 'message' ? '' : ' hidden'}>
@@ -4102,6 +5395,7 @@ function editMailTemplate(t) {
         name: val('#mt-name').trim(),
         kind: val('#mt-kind'),
         fromAlias: val('#mt-from').trim(),
+        cc: val('#mt-cc').trim(),
         subject: val('#mt-subject').trim(),
         body: val('#mt-body'),
       };
@@ -4256,22 +5550,93 @@ async function renderStatementSend(host, template) {
 // one of them the others' addresses.
 async function renderMessageSend(host, template) {
   await ensureContractCache().catch(() => {});
+  const cc = mailCc(template);
+  const entities = entityOptions(CONTRACTS);
+  // The subject a payment schedule wants carries {{period}}, and this path has no run to read one
+  // from — so it is asked for. Defaults to LAST month: a schedule or a statement is written about
+  // a period that has closed, never the one still running.
+  const lastMonth = (() => {
+    const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  })();
   host.innerHTML = `
     <div class="mail-form" style="max-width:760px;">
-      <label><span>2 · Send to</span>
+      <div class="mail-row">
+        <label><span>2 · Period</span><input type="month" id="mmsg-period" value="${escape(lastMonth)}"></label>
+        <label><span>3 · Contract entity</span>
+          <input id="mmsg-entity" list="mmsg-entities" placeholder="type to filter, or leave blank">
+          <datalist id="mmsg-entities">${entities.map(e =>
+            `<option value="${escape(e)}"></option>`).join('')}</datalist></label>
+      </div>
+      <p class="mail-hint" id="mmsg-entity-note" style="margin:-4px 0 12px;">Pick an entity to fill
+        in its finance addresses below, or just type the addresses yourself.</p>
+      <label><span>4 · Send to</span>
         <input id="mmsg-to" placeholder="one or more addresses, separated by commas"></label>
       <p class="mail-meta" id="mmsg-count" style="margin:-9px 0 14px;"></p>
-      <label><span>3 · Subject</span><input id="mmsg-subject"
-        value="${escape(renderTemplate(template.subject, { merchant: '', entity: '' }))}"></label>
-      <label><span>Message</span><textarea id="mmsg-body">${escape(template.body || '')}</textarea></label>
+      <label><span>5 · Subject</span><input id="mmsg-subject" value=""></label>
+      <label><span>Message</span><textarea id="mmsg-body"></textarea></label>
+      <label><span>Attach files</span><input type="file" id="mmsg-files" multiple></label>
+      <p class="mail-hint" id="mmsg-files-note" style="margin:-4px 0 12px;">Optional, for this send
+        only — nothing is saved to the template. Up to ${escape(fileSizeLabel(MAX_SEND_ATTACHMENTS))} in total.</p>
       <p class="mail-meta">From ${escape(mailFromAlias(template) || '— no sender address —')}
+        ${cc ? `· cc <strong>${escape(cc)}</strong>` : ''}
         · ${template.attachmentName
             ? `attaching <strong>${escape(template.attachmentName)}</strong> (${escape(fileSizeLabel(template.attachmentSize))})`
-            : 'no attachment'}
+            : 'no attachment from the template'}
         · each recipient gets their own copy, so nobody sees the others.</p>
       <p class="nm-err" id="mmsg-err" hidden></p>
       <div class="mail-actions"><button id="mmsg-send" class="btn-primary" disabled>Send</button></div>
     </div>`;
+
+  // Subject and body are regenerated from the template as the period/entity change, but ONLY
+  // while they still hold what we last generated. The moment someone edits either by hand, their
+  // wording wins — re-rendering over a typed correction is the rude version of being helpful.
+  const subjEl = host.querySelector('#mmsg-subject'), bodyEl = host.querySelector('#mmsg-body');
+  let lastGen = { subject: null, body: null };
+  const fillText = () => {
+    const vars = {
+      merchant: host.querySelector('#mmsg-entity').value.trim(),
+      entity: host.querySelector('#mmsg-entity').value.trim(),
+      period: host.querySelector('#mmsg-period').value.trim(),
+    };
+    const nextSubject = renderTemplate(template.subject, vars);
+    const nextBody = renderTemplate(template.body || '', vars);
+    if (subjEl.value === (lastGen.subject ?? '')) subjEl.value = nextSubject;
+    if (bodyEl.value === (lastGen.body ?? '')) bodyEl.value = nextBody;
+    lastGen = { subject: nextSubject, body: nextBody };
+  };
+  fillText();
+
+  // Choosing an entity ADDS its addresses; it never clears what is already typed. The merchants
+  // under it with no finance address are named, because "3 of 5 addressed" is the useful fact and
+  // silently sending to three is not.
+  const onEntity = () => {
+    const note = host.querySelector('#mmsg-entity-note');
+    const name = host.querySelector('#mmsg-entity').value.trim();
+    fillText();
+    if (!name) {
+      note.textContent = 'Pick an entity to fill in its finance addresses below, or just type the addresses yourself.';
+      return;
+    }
+    const { addresses, withAddress, withoutAddress } = addressesForEntity(CONTRACTS, name);
+    const toEl = host.querySelector('#mmsg-to');
+    const already = new Set(splitAddresses(toEl.value).map(a => a.toLowerCase()));
+    const added = addresses.filter(a => !already.has(a.toLowerCase()));
+    if (added.length) toEl.value = [...splitAddresses(toEl.value), ...added].join(', ');
+    refresh();
+    if (!withAddress.length && !withoutAddress.length) {
+      note.innerHTML = `<span class="rc-warn">No live merchant is under “${escape(name)}”.</span>`;
+      return;
+    }
+    note.innerHTML = `${withAddress.length} merchant${withAddress.length === 1 ? '' : 's'} `
+      + `under “${escape(name)}” with a finance address`
+      + (added.length ? ` — added ${added.length}` : ' — already listed')
+      + (withoutAddress.length
+          ? `. <span class="rc-warn">${withoutAddress.length} with none: `
+            + `${escape(withoutAddress.slice(0, 6).join(', '))}`
+            + `${withoutAddress.length > 6 ? `, and ${withoutAddress.length - 6} more` : ''}.</span>`
+          : '.');
+  };
 
   // Whatever is typed, restated as the app reads it — an address it rejected (a space in it,
   // say) would otherwise look accepted right up to the moment nothing arrives.
@@ -4287,6 +5652,27 @@ async function renderMessageSend(host, template) {
     host.querySelector('#mmsg-send').disabled = !list.length;
   };
   host.querySelector('#mmsg-to').addEventListener('input', refresh);
+  host.querySelector('#mmsg-entity').addEventListener('change', onEntity);
+  host.querySelector('#mmsg-period').addEventListener('change', fillText);
+  // States the total as files are chosen, and refuses over the cap HERE rather than after the
+  // Gmail token has been asked for — being told the file is too big is not a reason to have
+  // granted send permission first.
+  host.querySelector('#mmsg-files').addEventListener('change', () => {
+    const chosen = [...(host.querySelector('#mmsg-files').files || [])];
+    const note = host.querySelector('#mmsg-files-note');
+    const total = chosen.reduce((n, f) => n + f.size, 0);
+    if (!chosen.length) {
+      note.innerHTML = `Optional, for this send only — nothing is saved to the template. `
+        + `Up to ${escape(fileSizeLabel(MAX_SEND_ATTACHMENTS))} in total.`;
+    } else if (total > MAX_SEND_ATTACHMENTS) {
+      note.innerHTML = `<span class="rc-warn">${chosen.length} file(s), ${escape(fileSizeLabel(total))} `
+        + `— over the ${escape(fileSizeLabel(MAX_SEND_ATTACHMENTS))} limit. Remove something before sending.</span>`;
+    } else {
+      note.innerHTML = `Attaching ${chosen.length} file(s), ${escape(fileSizeLabel(total))}: `
+        + escape(chosen.map(f => f.name).join(', '));
+    }
+    refresh();
+  });
   refresh();
 
   host.querySelector('#mmsg-send').addEventListener('click', async () => {
@@ -4294,9 +5680,22 @@ async function renderMessageSend(host, template) {
     const list = typed();
     const from = mailFromAlias(template);
     if (!from) { err.hidden = false; err.textContent = 'This template has no sender address.'; return; }
+
+    // Checked before the token is requested, and against the files about to be read rather than
+    // what the note last rendered.
+    const chosen = [...(host.querySelector('#mmsg-files').files || [])];
+    const chosenTotal = chosen.reduce((n, f) => n + f.size, 0);
+    if (chosenTotal > MAX_SEND_ATTACHMENTS) {
+      err.hidden = false;
+      err.textContent = `Those ${chosen.length} file(s) come to ${fileSizeLabel(chosenTotal)}. `
+        + `The limit is ${fileSizeLabel(MAX_SEND_ATTACHMENTS)}.`;
+      return;
+    }
     // Asked for while the click is still live — see gmailToken.
     const tokenReady = gmailToken();
-    if (!confirm(`Send this message to ${list.length} recipient(s)? It cannot be unsent.`)) return;
+    if (!confirm(`Send this message to ${list.length} recipient(s)`
+        + `${cc ? `, copying ${cc}` : ''}`
+        + `${chosen.length ? `, attaching ${chosen.length} file(s)` : ''}? It cannot be unsent.`)) return;
     try {
       await tokenReady;
     } catch (e) {
@@ -4325,12 +5724,31 @@ async function renderMessageSend(host, template) {
       }
     }
 
+    // This send's own files, read ONCE and appended to whatever the template carries — "also
+    // attach" means as well as, not instead of. Read here rather than per recipient for the same
+    // reason the template's file is.
+    if (chosen.length) {
+      try {
+        btn.textContent = 'Reading the files…';
+        for (const f of chosen) {
+          files.push({ bytes: new Uint8Array(await f.arrayBuffer()),
+                       filename: f.name,
+                       type: f.type || 'application/octet-stream' });
+        }
+      } catch (e) {
+        err.hidden = false;
+        err.textContent = `Could not read the attached files: ${e.message}. Nothing was sent.`;
+        btn.disabled = false; btn.textContent = 'Send';
+        return;
+      }
+    }
+
     let sentCount = 0;
     for (const to of list) {
       btn.textContent = `Sending ${sentCount + 1} of ${list.length}…`;
       try {
         await sendGmail(buildMimeMessage({
-          from, to: [to],
+          from, to: [to], cc,
           subject: host.querySelector('#mmsg-subject').value,
           body: host.querySelector('#mmsg-body').value,
           attachments: files,
@@ -4560,6 +5978,7 @@ function mailPreviewDialog(result, run, template, sentAlready) {
     <div class="mail-preview">
       <dl class="mail-preview-head">
         <dt>From</dt><dd>${escape(mailFromAlias(template) || '— no sender address —')}</dd>
+        ${statementCc ? `<dt>Cc</dt><dd>${escape(statementCc)}</dd>` : ''}
         <dt>To</dt><dd>${to.length ? escape(to.join(', ')) : '<span class="rc-warn">nobody</span>'}</dd>
         <dt>Subject</dt><dd><strong>${escape(subject)}</strong></dd>
         <dt>Attached</dt><dd>${escape(sanitizeFilename(result.merchantName))}.xlsx
@@ -4618,9 +6037,29 @@ async function loadMailTemplates() {
 // mail. Gmail rejects an alias the signed-in account has not verified, and says so verbatim.
 const DEFAULT_FROM_ALIAS = { th: 'partner.th@inforich.com', sg: '' };
 
+// Finance is copied on the mail that quotes money — the rev-share statement and the payment
+// schedule (user, 2026-09-29). Same shape as DEFAULT_FROM_ALIAS and for the same reason: SG has
+// no agreed finance address yet, so it stays BLANK rather than borrowing Thailand's and quietly
+// copying Bangkok on Singapore's mail. Only a NEW template is prefilled from this; an existing
+// template's stored `cc` is used verbatim, so a blank one copies nobody.
+const FINANCE_CC = { th: 'finance.th@inforich.com', sg: '' };
+
+// Per-send attachments (2026-09-29). Gmail accepts ~25 MB of attachments, and base64 inflates the
+// raw message by a third, so 15 MB of files is ~20 MB on the wire — comfortably inside, and far
+// past anything finance actually sends. Nothing reaches API Gateway: the browser posts straight to
+// Gmail, so the 10 MB limit of §1p does not apply here.
+const MAX_SEND_ATTACHMENTS = 15 * 1024 * 1024;
+
 // Falls back to the region default, so a template saved before the default existed — or one
 // where the field was cleared — still sends rather than failing at the last step.
 const mailFromAlias = (t) => ((t && t.fromAlias) || DEFAULT_FROM_ALIAS[REGION] || '').trim();
+
+// Deliberately does NOT fall back to FINANCE_CC: a template with no `cc` copies nobody. Falling
+// back would have copied finance on every plain message including the test one, and "always CC"
+// means the two templates that quote money, not every mail the app can send.
+function mailCc(t) {
+  return String((t && t.cc) || '').trim();
+}
 
 function mailSendDialog(result, run, sentAlready, template) {
   // Recipients come from the screen's one choice: the merchant's own finance address, or the
@@ -4629,6 +6068,7 @@ function mailSendDialog(result, run, sentAlready, template) {
   const ownAddresses = mailRecipients(result.contractId);
   const assign = MAIL_ASSIGNED.length > 0;
   const recipients = effectiveRecipients(result.contractId);
+  const statementCc = mailCc(template);
   const { card, close } = ctModal(720);
   const vars = mailVarsFor(result, run);
 
@@ -4672,6 +6112,7 @@ function mailSendDialog(result, run, sentAlready, template) {
   $('#ms-body').value = renderTemplate(template.body, vars);
   $('#ms-meta').textContent =
     `From ${mailFromAlias(template) || '(no sender address on this template)'}`
+    + (statementCc ? ` · cc ${statementCc}` : '')
     + ` · attaching ${result.merchantName}.xlsx`;
 
   $('#ms-cancel').addEventListener('click', close);
@@ -4706,13 +6147,14 @@ function mailSendDialog(result, run, sentAlready, template) {
         + `Period:     ${periodTag(run.periodStart)}\n`
         + `Payout:     ${fmt2(result.payout)} ${vars.currency}\n`
         + `To:         ${recipients.join(', ')}\n`
+        + (statementCc ? `Cc:         ${statementCc}\n` : '')
         + `From:       ${from}\n`
         + `Attached:   ${filename} (${rows ? rows + ' rental rows' : 'summary only'})\n\n`
         + `This cannot be unsent.`);
       if (!ok) { btn.disabled = false; btn.textContent = 'Send'; return; }
 
       const sent = await sendGmail(buildMimeMessage({
-        from, to: recipients, subject: $('#ms-subject').value,
+        from, to: recipients, cc: statementCc, subject: $('#ms-subject').value,
         body: $('#ms-body').value, filename, attachment: bytes,
       }));
       await api(`/bulk-runs/${encodeURIComponent(run.runId)}/mail-log`, {
@@ -4721,7 +6163,8 @@ function mailSendDialog(result, run, sentAlready, template) {
         // period, and what figure the letter quoted. Without the amount, "we sent it" cannot be
         // checked against "we sent the right one".
         body: JSON.stringify({ contractId: result.contractId, merchantName: result.merchantName,
-                               to: recipients.join(', '), subject: $('#ms-subject').value,
+                               to: recipients.join(', '), cc: statementCc || null,
+                               subject: $('#ms-subject').value,
                                attachment: filename, gmailId: sent.id, fromAlias: from,
                                period: periodTag(run.periodStart), payout: Number(result.payout) || 0,
                                attachmentRows: rows, assigned: !!assign }),
@@ -4822,6 +6265,42 @@ function mailRecipients(contractId) {
   return splitAddresses(c && c.financeContactEmail);
 }
 
+// The contract entities worth offering in the send picker: the distinct `counterParty` values
+// over LIVE contracts. Archived ones are excluded for the same reason payoutDecision skips them —
+// an ended contract is not someone to send this month's schedule to.
+function entityOptions(contracts) {
+  const seen = new Map();
+  for (const c of (contracts || [])) {
+    if (!c || c.archived) continue;
+    const name = typeof c.counterParty === 'string' ? c.counterParty.trim() : '';
+    if (name && !seen.has(name.toLowerCase())) seen.set(name.toLowerCase(), name);
+  }
+  return [...seen.values()].sort((a, b) => a.localeCompare(b));
+}
+
+// Everyone to write to for one entity, and — just as important — the merchants under it that
+// carry NO finance address. Returning the gap rather than silently dropping those merchants is
+// what lets the screen say "3 of 5 have an address" instead of quietly addressing three.
+function addressesForEntity(contracts, entity) {
+  const want = String(entity || '').trim().toLowerCase();
+  const addresses = [], withAddress = [], withoutAddress = [];
+  if (!want) return { addresses, withAddress, withoutAddress };
+  const seen = new Set();
+  for (const c of (contracts || [])) {
+    if (!c || c.archived) continue;
+    const name = typeof c.counterParty === 'string' ? c.counterParty.trim().toLowerCase() : '';
+    if (name !== want) continue;
+    const mine = splitAddresses(c.financeContactEmail);
+    if (!mine.length) { withoutAddress.push(c.merchantName || '(unnamed)'); continue; }
+    withAddress.push(c.merchantName || '(unnamed)');
+    for (const a of mine) {
+      const k = a.toLowerCase();
+      if (!seen.has(k)) { seen.add(k); addresses.push(a); }
+    }
+  }
+  return { addresses, withAddress, withoutAddress };
+}
+
 // What else is known about a merchant with no finance email — so the row can say what to do
 // rather than only that something is missing.
 function fallbackContact(contractId) {
@@ -4903,9 +6382,14 @@ function buildMimeMessage(opts) {
   const contentType = opts.contentType
     || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
   const boundary = 'mcrm_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+  // Cc is emitted ONLY when there is one — an empty `Cc:` header is malformed, and Gmail's API
+  // rejects the whole message rather than ignoring it. Accepts a string or a list so a caller
+  // can pass a template's raw field without splitting first.
+  const ccList = (Array.isArray(opts.cc) ? opts.cc : splitAddresses(opts.cc));
   const head = [
     `From: ${from}`,
     `To: ${to.join(', ')}`,
+    ...(ccList.length ? [`Cc: ${ccList.join(', ')}`] : []),
     `Subject: ${encodeHeaderWord(subject)}`,
     'MIME-Version: 1.0',
     `Content-Type: multipart/mixed; boundary="${boundary}"`,

@@ -9,7 +9,10 @@ upload that changes nothing — §1o; the run detail leads with **Contract entit
 groups into a folder per entity — §1j. 2026-09-23: a month of orders outgrew API Gateway's 10 MB
 payload limit and the request body is now **gzipped** — §1p. 2026-09-25: a **Mailing** nav item
 sends each merchant its statement from the partner group address — §1q.)
-Service-worker `CACHE_VERSION` is at `revshare-v193` (bump on every shell change).
+2026-09-29: an **Upload** nav page — the weekly files, the mismatches, and a button per row (§1r);
+**contract entities are records** with their own id (§1s); **a run writes nothing** and reads a
+stored roster (§1t); editing left the Merchant view grid for one Edit dialog (§1u).
+Service-worker `CACHE_VERSION` is at `revshare-v227` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
 end-to-end before touching anything. The codebase is the ultimate source of
@@ -1080,6 +1083,168 @@ run, not per merchant (it is several MB).
 No bulk send — one merchant at a time, deliberately. No SG group address yet, so an SG template
 must name its own sender or it is refused rather than borrowing Thailand's. Nothing chases you
 about unsent periods beyond the Send tab's progress line.
+
+
+## 1r. Upload — the weekly files, and a button per row (2026-09-29)
+
+A sixth nav item. The weekly job moved out of a dialog and onto its own page: drop in the
+**merchant list** and the **machine list**, see what disagrees, then fix it **one row at a time**.
+Reconcile was removed from the Merchant view the same day — comparing your list to a file belongs
+where you are holding the file.
+
+**The pipeline is two steps, in this order** (the user's own words: *"map two files for merchant
+and machine information, and then come up with a merchant information set to map with registry,
+and for those unmapped between two file, you also highlight"*):
+
+1. `joinUploadFiles(roster, machines)` — pure, tested by running it. Store name is the join key.
+   Out comes one merchant-information set (brand → stores → machines) **plus the gaps between the
+   two files**, which had been invisible because the join used to happen implicitly inside the
+   registry matcher.
+2. `matchMachineStores(byStore, registry, roster, contracts)` — that set against the app.
+   **The FILES are asked first, the store index second.** The order was the other way round for
+   an hour and was wrong: the index is derived history, so it can place a shop under last month's
+   merchant while the file in your hand says otherwise.
+
+**Every finding has one row, and a row does one thing:**
+
+| bucket | action |
+|---|---|
+| In your machine list, not in your merchant file | — |
+| In your merchant file, no machines recorded | — |
+| New merchants this file would add | **Add to list…** (a dialog: file data read-only, then Contract · Finance · Share terms; creates nothing until Save) |
+| Merchants this file would change | **Update to the list** (writes exactly the diffs the row prints) |
+| Shops your file moved to a different merchant | **Update with file data** (repoints every registry row for that store) |
+| In your list, not in this file | **Archive** · **Delete** |
+| Shops your file names under a merchant you do not carry | — (add the merchant; the shop then places itself) |
+| Shops in the store index with no merchant | — |
+
+- **NOTHING IS REPORTED TWICE.** Five overlaps were found and closed, and a standing test
+  (`upload-screen.test.mjs`) populates every bucket at once and asserts no shop is named on more
+  than one row. A new bucket that overlaps an existing one fails there. The overlaps were: a
+  brand being added also nagged shop-by-shop; a brand being added also nagged for having no
+  machines; a shop absent from the merchant file but present in the index reported as
+  unattributable when it was placed; an **archived** merchant reported as "no merchant of that
+  name" (which would have created a duplicate); and one shop rendering twice because the two
+  files spell it with different capitals.
+- **A near-duplicate merchant is flagged before you create one.** `similarExistingMerchants`
+  catches branch suffixes and close spellings — live case: the file offered `EBISU Shoten Silom`
+  as new while `EBISU SHOTEN` was already in the list. The dialog says so where the second
+  merchant would be created and pre-fills its entity. Never auto-applied: a top-1 name match is
+  wrong at least three times in five (§1o).
+- **The file is HELD.** Parsed rows go to IndexedDB (`mcrm-upload`), per region, so a reload — or
+  a deploy — comes back to the work rather than an empty file picker. A browser cannot keep a
+  file SELECTION across a reload; the parsed rows are all the page needed. Fails soft, and says
+  so when it cannot hold or cannot restore.
+- **Handled rows LEAVE.** Every action calls `refreshUploadTable`, which recomputes the
+  differences against the current merchant list — so a merchant you add stops being new rather
+  than being annotated "done". The counts above always describe what is left.
+- **Filter by merchant or shop name**, matching either column; group counts read `1 of 38` while
+  filtered, because filtering happens on the data, not by hiding rendered rows.
+- **There is no bulk Import or Review-only button** (removed at the user's request: *"I want to
+  fix one by one"*). What they uniquely did was rehomed: **remembering the file** (the roster a
+  run reads + the brand list the ⦿ marks compare against) happens when the file is READ, since a
+  file you are working through is your latest file; and **a merchant's shops and machine counts**
+  are carried by the row action that adds or updates it (`applyShopsForBrand`).
+
+## 1s. The contract entity is a record (2026-09-29)
+
+`counterParty` was free text re-typed on every contract, so one company split in two the moment
+someone typed a space differently — live: `บริษัท เอ็มแอนด์ เอ็ม 2007 จำกัด` vs the same name
+without the space. **ONE ENTITY COVERS MANY BRANDS**, which is the point.
+
+- New `ENTITY` row family per region; `GET /entities` open, `PUT`/`DELETE` `manageMerchants`.
+  A duplicate name is refused ignoring case AND spacing — the same comparison the frontend uses,
+  so the two cannot disagree about whether a name is new. Deleting one anything points at is
+  refused, and the refusal names the merchants.
+- Contracts gained `entityId`. **`counterParty` is kept and never rewritten** — the entity name
+  is read from the record when linked and from the contract's own string when not, so an
+  unlinked row behaves exactly as it always did. Tests pin that the entity routes cannot write
+  or clear it.
+- `infra/backfill-entities.mjs` — dry run by default, conditional writes only
+  (`attribute_not_exists`). **Applied 2026-09-29: 108 entities created, 119 contracts linked, 0
+  `counterParty` values changed, 0 rows changed beyond `entityId`** (diffed against a snapshot in
+  `~/revshare-backups/2026-09-29-pre-entities/`). It merges nothing: two near-identical names are
+  printed for a human. One junk entity (`-`) was deleted by hand afterwards.
+- **185 of 304 live TH contracts still have no entity.** SG has none — its 554 contracts were
+  seeded from a terms sheet with `counterParty` deliberately blank (§1f), so the dry run plans 0.
+- One control does both jobs: `entityPickerHtml` is a type-to-filter box listing every entity
+  with its brand count, and a name nobody has used is created on save (`resolveEntityInput`).
+
+## 1t. A run writes NOTHING, and no longer asks for the merchant list (2026-09-29)
+
+The user: *"I don't need you to map with run rosters, some of my merchants will come and go, and
+for whatever is run, save it as it is."*
+
+- **The store registry was the last thing a run wrote.** `putMerchantsBatch` is no longer imported
+  by `bulk-runs.mjs` at all — the same treatment the contract writer got in §1m, so bringing the
+  write back is a visible act. `persist` stays in the signature (the CLI passes it) and now gates
+  nothing, which is a stronger guarantee than it had: a dry run and a real run persist identically.
+  Three tests pin it. **This is what created §1c's 4,230 duplicate rows; it cannot grow now.**
+- **The roster is STORED at upload time and read by the run.** `CONFIG`/`ROSTER#LATEST` + the rows
+  in S3 (`rosters/<ulid>.json`); `putRoster`/`getRosterMeta`/`getRosterRows` in `db.mjs`,
+  **hand-mirrored into SG** as that file is never synced (§8). Step 2 of the wizard no longer
+  uploads anything — it states when the merchant list and the machine list were last updated, by
+  whom, and warns in amber past 14 days.
+- **Stored as ROWS, never as counts.** A roster row is a STATION; `units` counts CABINETS. BTS has
+  36 stations holding 103 machines and is paid per station. Had the run read stored counts, BTS
+  would have gone from 144,000 to 412,000 THB/month. **Verified before shipping**: September
+  recomputes to an identical 890,037.55 with 0 per-merchant differences, and running the
+  computation twice left the registry at 6,768 rows unchanged.
+- An uploaded roster in the request still WINS, so an open tab on the old wizard,
+  `infra/rerun-bulk-run.mjs` and every stored run keep working byte for byte.
+- `POST /registry` writes the store index from the two files — additive, and a shop the files do
+  not mention is never touched and never deleted.
+
+## 1u. Editing left the grid (2026-09-29)
+
+Inline cell editing is gone: `const editable = false` in `contractRowHtml`, and a click on a cell
+does nothing. **One Edit button per row** opens one dialog with three sections — Contract ·
+Finance · Share terms — saving once. Share terms still opens the existing rule editor rather than
+being rebuilt inline.
+
+- **Two categories, and the grid now shows them as two.** MERCHANT INFORMATION (brand, branches,
+  machines, contacts) is read from the file and editable nowhere. MERCHANT TERMS — contract,
+  finance AND share terms — is **one data set** maintained by hand, so the grid folds those three
+  groups under a single `Merchant terms` header with one toggle (`CONTRACT_CATEGORIES`).
+- The editor's payload carries only contract/finance fields plus `entityId`; a test asserts
+  `merchantName`, `branchCount`, `contactName` and `installedUnits` cannot appear in it.
+- Toolbar: search, **filter by contract entity** (type-to-filter, hidden when a region has none),
+  Merchant alert. `+ Add merchants` moved to the page header; `Download sheet` removed
+  (`downloadMerchantTemplate` is now dead code, kept because tests pin the sheet's shape).
+
+## 1v. Mail gained per-send attachments, an entity picker, and a finance Cc (2026-09-29)
+
+- `manageMailTemplates` — a new permission, so editing merchant-facing wording no longer requires
+  full `admin`. Fixed alongside: `applyRuleBatch` had no checkbox on the Users screen, and
+  `putUserRoute` rebuilds permissions over all of `PERMS`, so **saving any row silently revoked
+  it** on the 5 users who held it. A test now asserts every `PERMS` key has a label.
+- A plain message can carry **per-send files** (15 MB total, read in the browser, never stored),
+  **in addition to** the template's own. It asks for a **period** so `{{period}}` is filled, and
+  offers a **contract-entity picker** that fills in that entity's finance addresses and names the
+  merchants under it with none.
+- **`cc` is per TEMPLATE, not per kind** — `Payment Schedule` and `Testing` are both plain
+  messages and only one should copy finance. `FINANCE_CC = { th: 'finance.th@inforich.com',
+  sg: '' }`: SG keeps the structure with the value blank, like `DEFAULT_FROM_ALIAS`. Set on the
+  two TH templates that quote money. Recorded in the Sent log.
+
+## 1w. The Units column was undercounting (2026-09-29, fixed)
+
+`unitsTotal` reduced over a hardcoded `['S5','S8','M10','L20','L40']` that the 2026-08-27
+`L40→LL40` rekey never updated: it named `L40`, which exists in neither region's data, and omitted
+`LL40`, `LL20` and `S10-A`, which is what both regions store. **50 of 304 TH and 114 of 554 SG
+contracts understated their machines — 384 machines invisible.** SEACON showed `Units 0` beside an
+`LL40 3` column on the same row, because the per-model COLUMNS are built from Device Types while
+the total was not.
+
+The total is now the sum of the row's own `units`, with no allow-list to keep in step. A latent
+landmine went with it: `app.js:3188` writes `installedUnits = unitsTotal(c)` back to DynamoDB when
+a per-model cell is edited, and the download sheet reads that stored value — with the stale list
+it would have overwritten ICON SIAM's 11 with 2. Unreachable today (machines are not editable),
+and all 574 rows holding units were verified uncorrupted.
+
+Also fixed: `POST /contracts/import` recorded a REVIEW's plan under the keys `created`/`updated`,
+so the 21 Sep review-only upload is stored as "25 created, 258 updated" having written nothing.
+The response was always honest; the stored row, which outlives it, was not.
 
 ## 2. Live URLs and resources
 

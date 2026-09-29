@@ -9,7 +9,10 @@ const resp = (statusCode, body) => ({ statusCode, body: body === null ? '' : JSO
 // write and records what went out.
 // `kind` decides what the send screen asks for: a statement needs a period and attaches a
 // file, a plain message needs neither.
-const WRITABLE = ['name', 'kind', 'subject', 'body', 'fromAlias',
+// `cc` (2026-09-29) is per TEMPLATE, not per kind: the payment-schedule template and a test
+// message are both `kind: message`, so keying the finance CC off the kind would either miss the
+// one that needs it or copy finance on every test send. Stored blank means nobody is copied.
+const WRITABLE = ['name', 'kind', 'subject', 'body', 'fromAlias', 'cc',
                   // A file carried by every message using this template. Only a plain message
                   // may have one: a statement already attaches that merchant's own figures, and
                   // two attachments raise the question of which one matters.
@@ -59,6 +62,9 @@ export async function createMailLogRoute(event) {
     contractId: body.contractId || null,
     merchantName: body.merchantName || null,
     to: body.to,
+    // Recorded so the Sent log shows who else received it — a CC is a real recipient, and
+    // "we copied finance" is a claim worth being able to check months later.
+    cc: body.cc || null,
     subject: body.subject || null,
     attachment: body.attachment || null,
     // Recorded so the log can be reconciled against the run itself: "we sent it" is not the

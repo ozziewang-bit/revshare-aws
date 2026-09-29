@@ -75,3 +75,27 @@ test('the browser sends one file through one path, differing only by dryRun', ()
   assert.match(app, /if \(machines && !dryRun\)/,
     'machine counts are merchant data too — a review must not write them either');
 });
+
+// ── The STORED record must not read as an accomplished fact either (2026-09-29) ─────────────
+// The HTTP response has always said `wouldCreate`/`wouldUpdate` on a review. The row written to
+// CONFIG/UPLOAD#LATEST did not: it recorded `counts: { created, updated }` unconditionally, so
+// the 21 Sep review-only upload is stored as "25 created, 258 updated" when it wrote nothing.
+// Found while working out why SEACON Bangkae had no branch count — the record said the file had
+// been applied, and the contract's own updatedAt (17 Sep) said it had not.
+test('a review records what it WOULD have done, not what it did', () => {
+  const src = readFileSync(new URL('../code/routes/contracts.mjs', import.meta.url), 'utf8');
+  const route = src.slice(src.indexOf('export async function importContractsRoute'));
+  const block = route.slice(route.indexOf('if (body.recordUpload)'), route.indexOf('// Named `would*`'));
+  assert.match(block, /dryRun/,
+    'the stored counts must depend on whether anything was actually written');
+  assert.doesNotMatch(block, /counts: \{ brands: doc\.brands\.length, created:/,
+    'a review must not store its plan under the key `created`');
+});
+
+test('the stored counts name the same thing the response does', () => {
+  const src = readFileSync(new URL('../code/routes/contracts.mjs', import.meta.url), 'utf8');
+  const route = src.slice(src.indexOf('export async function importContractsRoute'));
+  const block = route.slice(route.indexOf('if (body.recordUpload)'), route.indexOf('// Named `would*`'));
+  assert.match(block, /wouldCreate/, 'a review stores wouldCreate, like the response');
+  assert.match(block, /wouldUpdate/);
+});

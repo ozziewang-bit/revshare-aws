@@ -3,7 +3,7 @@
 // verification uses Node 22 crypto.subtle against Google's cached JWKS (no npm dependency).
 import { webcrypto } from 'node:crypto';
 
-export const PERMS = ['editPartners', 'runCalcs', 'deleteRuns', 'manageMerchants', 'manageDeviceTypes', 'applyRuleBatch', 'admin'];
+export const PERMS = ['editPartners', 'runCalcs', 'deleteRuns', 'manageMerchants', 'manageDeviceTypes', 'applyRuleBatch', 'manageMailTemplates', 'admin'];
 
 // Resolve a caller's effective permissions. admin email → all true; else row's permissions
 // (missing keys false); else read-only baseline (all false).
@@ -19,16 +19,33 @@ export function resolvePermissions(email, row, adminEmails) {
 
 // Map a request to the permission it requires. null → any valid token (reads / me).
 export function requiredPermission(method, path) {
-  // Mail (2026-09-25). Editing a template is an admin act — it is the wording that goes to a
-  // merchant under the company's name. SENDING is gated on runCalcs: the people who run a
-  // payout are the people who send its statements. Reading either is open, like every other
-  // read, so anyone can check what was sent without being able to send.
-  if (path === '/mail-templates') return method === 'GET' ? null : 'admin';
-  if (/^\/mail-templates\/[^/]+$/.test(path)) return method === 'GET' ? null : 'admin';
-  // Uploading a file that will be sent under the company's name is an admin act; reading it
-  // back is not, since the send itself has to fetch it.
-  if (/^\/mail-templates\/[^/]+\/attachment$/.test(path)) return method === 'GET' ? null : 'admin';
+  // Mail (2026-09-25). Editing a template is still a privileged act — it is the wording that
+  // goes to a merchant under the company's name — but it is its OWN permission as of
+  // 2026-09-29 (`manageMailTemplates`) rather than full `admin`. Someone who writes the
+  // merchant-facing wording should not thereby be able to grant permissions or unarchive a
+  // locked run; `admin` implies it anyway via resolvePermissions, so existing admins are
+  // unaffected. SENDING is gated on runCalcs: the people who run a payout are the people who
+  // send its statements. Reading either is open, like every other read, so anyone can check
+  // what was sent without being able to send.
+  if (path === '/mail-templates') return method === 'GET' ? null : 'manageMailTemplates';
+  if (/^\/mail-templates\/[^/]+$/.test(path)) return method === 'GET' ? null : 'manageMailTemplates';
+  // Uploading a file that will be sent under the company's name is the same act as editing the
+  // wording, so it carries the same permission; reading it back is not, since the send has to
+  // fetch it.
+  if (/^\/mail-templates\/[^/]+\/attachment$/.test(path)) return method === 'GET' ? null : 'manageMailTemplates';
   if (/^\/bulk-runs\/[^/]+\/mail-log$/.test(path)) return method === 'GET' ? null : 'runCalcs';
+
+  // An entity is merchant reference data — same permission as the contracts it groups. Reads
+  // stay open like every other read.
+  // The stored Businessmen list. Reading when it was refreshed is open — every run screen says
+  // it — while storing one is the same act as importing the merchants it describes.
+  if (path === '/roster') return method === 'GET' ? null : 'manageMerchants';
+  // Writing the shop index from the uploaded files is the same act as importing the merchants.
+  if (path === '/registry') return method === 'GET' ? null : 'manageMerchants';
+
+  if (path === '/entities' || /^\/entities\/[^/]+$/.test(path)) {
+    return method === 'GET' ? null : 'manageMerchants';
+  }
 
   if (method === 'GET') return path.startsWith('/users') ? 'admin' : null;   // reads are open; /users list is admin
   if (path.startsWith('/users')) return 'admin';

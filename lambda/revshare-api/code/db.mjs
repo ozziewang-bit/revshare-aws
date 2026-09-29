@@ -484,3 +484,113 @@ export async function getUploadDoc(key) {
     throw e;
   }
 }
+
+// ── Entities (2026-09-29) ─────────────────────────────────────────────────
+// The legal entity a payout is settled with. It used to be `counterParty`, a free-text string
+// re-typed on every contract — so one company split into two the moment someone typed a space
+// differently (live: 'บริษัท เอ็มแอนด์ เอ็ม 2007 จำกัด' vs 'บริษัท เอ็มแอนด์เอ็ม 2007 จำกัด').
+// An entity now has an id, and a contract points at it.
+//
+// `counterParty` is NOT removed and NOT rewritten. It stays on every contract exactly as typed;
+// the entity name is read from this record when `entityId` is set and falls back to the string
+// when it is not. Nothing existing is overwritten — a contract without an entityId behaves
+// today's way forever.
+//
+// ONE ENTITY COVERS MANY BRANDS. That is the point: Central Pattana holds Central Ladprao,
+// Eastville and Westgate; BTS holds BTS and Turtle Shop.
+export async function listEntities() {
+  return query({
+    TableName: TABLE,
+    KeyConditionExpression: 'pk = :p',
+    ExpressionAttributeValues: { ':p': 'ENTITY' },
+  });
+}
+
+export async function getEntity(entityId) {
+  const out = await ddb.send(new GetCommand({
+    TableName: TABLE,
+    Key: { pk: 'ENTITY', sk: `ENTITY#${entityId}` },
+  }));
+  return out.Item || null;
+}
+
+export async function putEntity(entity) {
+  const now = new Date().toISOString();
+  const item = {
+    pk: 'ENTITY',
+    sk: `ENTITY#${entity.entityId}`,
+    ...entity,
+    nameLower: (entity.name || '').toLowerCase().trim(),
+    updatedAt: now,
+    createdAt: entity.createdAt || now,
+  };
+  await ddb.send(new PutCommand({ TableName: TABLE, Item: item }));
+  return item;
+}
+
+// Deleting an entity never touches the contracts pointing at it — they fall back to their own
+// `counterParty` string, which was never removed. The route refuses while any contract still
+// references it; this is the raw operation.
+export async function deleteEntity(entityId) {
+  await ddb.send(new DeleteCommand({
+    TableName: TABLE,
+    Key: { pk: 'ENTITY', sk: `ENTITY#${entityId}` },
+  }));
+}
+
+// ── The stored roster (2026-09-29) ─────────────────────────────────────────────────────────
+// The Businessmen list, kept so a run does not have to ask for it again. It is the SAME file the
+// Upload page reads for merchants — one platform export serving both — and it is stored as
+// PARSED ROSTER ROWS, not as counts.
+//
+// That distinction is the whole reason this exists rather than the run reading `units`:
+// a roster row is a STATION, `units` counts CABINETS. BTS has 36 stations holding 103 machines
+// and is paid 4,000 per station = 144,000. Paying per cabinet would be 412,000. The engine counts
+// roster rows (§1h, §1m), so the rows are what must be kept.
+//
+// Stored like a run's inputs — the rows in S3, a slim pointer in DynamoDB — because a full roster
+// is ~2,400 rows and nothing that reads the pointer needs them.
+export async function putRoster(doc) {
+  const key = `rosters/${ulid()}.json`;
+  await s3.send(new PutObjectCommand({
+    Bucket: RUNS_BUCKET, Key: key,
+    Body: JSON.stringify(doc), ContentType: 'application/json',
+  }));
+  const rec = {
+    at: new Date().toISOString(),
+    by: doc.by || null,
+    s3Key: key,
+    rosterCount: (doc.merchants || []).length,
+    excludedCount: (doc.excluded || []).length,
+    brandCount: new Set((doc.merchants || []).map(m => (m.partnerName || '').trim().toLowerCase())
+                          .filter(Boolean)).size,
+    machinesAt: doc.machinesAt || null,
+    machineStoreCount: doc.machineStoreCount ?? null,
+  };
+  await ddb.send(new PutCommand({
+    TableName: TABLE, Item: { pk: 'CONFIG', sk: 'ROSTER#LATEST', ...rec },
+  }));
+  return rec;
+}
+
+// The pointer only — what a screen needs to say "your merchant list was updated on the 29th".
+export async function getRosterMeta() {
+  const out = await ddb.send(new GetCommand({
+    TableName: TABLE, Key: { pk: 'CONFIG', sk: 'ROSTER#LATEST' },
+  }));
+  if (!out.Item) return null;
+  const { pk, sk, ...rec } = out.Item;
+  return rec;
+}
+
+// The rows themselves. Several MB — fetched only when a run is actually computed.
+export async function getRosterRows() {
+  const meta = await getRosterMeta();
+  if (!meta || !meta.s3Key) return null;
+  try {
+    const obj = await s3.send(new GetObjectCommand({ Bucket: RUNS_BUCKET, Key: meta.s3Key }));
+    return JSON.parse(await obj.Body.transformToString());
+  } catch {
+    return null;
+  }
+}

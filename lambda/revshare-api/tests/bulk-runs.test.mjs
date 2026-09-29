@@ -402,8 +402,32 @@ const bulkRunsSrc = readFileSync(new URL('../code/routes/bulk-runs.mjs', import.
 test('bulk-runs never imports a contract writer', () => {
   const importLine = bulkRunsSrc.slice(0, bulkRunsSrc.indexOf('\n'));
   assert.ok(importLine.includes("from '../db.mjs'"), 'expected the db import on line 1');
-  assert.ok(!/\bputContract\b/.test(bulkRunsSrc),
+  assert.ok(!/\bputContract\(/.test(bulkRunsSrc),
     'a run must not write CONTRACT rows — the merchant list is edited on the Merchant view only');
+  assert.ok(!/\bputContract\b/.test(importLine), 'and it must not even be imported');
+});
+
+// A RUN WRITES NOTHING (user, 2026-09-29): "I don't need you to map with run rosters, some of my
+// merchants will come and go, and for whatever is run, save it as it is."
+//
+// The store registry was the last thing a run still wrote. It meant a shop was unknown to the
+// app until a payout had been computed, and a merchant that came and went left rows behind that
+// nothing corrected. The UPLOAD writes the store index now, from the two files. Made structural
+// the same way: the batch writer is not imported, so bringing the write back is a visible act.
+test('a run writes no store-registry rows either', () => {
+  const importLine = bulkRunsSrc.slice(0, bulkRunsSrc.indexOf('\n'));
+  assert.ok(!/\bputMerchantsBatch\b/.test(importLine),
+    'the registry writer must not be imported by the run module');
+  assert.ok(!/\bputMerchantsBatch\(/.test(bulkRunsSrc),
+    'and it must not be called');
+  assert.ok(!/\bputMerchant\(/.test(bulkRunsSrc), 'nor the single-row writer');
+});
+
+// `persist` survives because infra/rerun-bulk-run.mjs passes it — and it now decides nothing,
+// which is a stronger guarantee than it ever was: a dry run and a real run persist the same.
+test('persist no longer gates any write', () => {
+  assert.ok(/persist = true/.test(bulkRunsSrc), 'the option is still accepted');
+  assert.ok(!/&& persist\b/.test(bulkRunsSrc), 'but nothing is conditional on it any more');
 });
 
 // The counts are still COMPUTED, so step 2 can report that the roster disagrees with what a

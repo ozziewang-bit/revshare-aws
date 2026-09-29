@@ -4,6 +4,8 @@ import { getUser } from './users-db.mjs';
 import { meRoute } from './routes/me.mjs';
 import { listUsersRoute, putUserRoute, deleteUserRoute } from './routes/users.mjs';
 import { listFeatureRequestsRoute, createFeatureRequestRoute, updateFeatureRequestRoute, deleteFeatureRequestRoute } from './routes/features.mjs';
+import { listEntitiesRoute, putEntityRoute, deleteEntityRoute } from './routes/entities.mjs';
+import { putRosterRoute, getRosterRoute, putRegistryRoute } from './routes/contracts.mjs';
 import { listMailTemplatesRoute, putMailTemplateRoute, deleteMailTemplateRoute,
          listMailLogRoute, createMailLogRoute,
          putTemplateAttachmentRoute, getTemplateAttachmentRoute } from './routes/mail.mjs';
@@ -122,6 +124,12 @@ export const handler = async (event) => {
     // Import
     else if (method === 'POST'   && path === '/import/rev-share')                               result = await importRevShareRoute(event);
     // Bulk runs
+    else if (method === 'POST'   && path === '/registry')                                        result = await putRegistryRoute(event);
+    else if (method === 'GET'    && path === '/roster')                                          result = await getRosterRoute();
+    else if (method === 'PUT'    && path === '/roster')                                          result = await putRosterRoute(event);
+    else if (method === 'GET'    && path === '/entities')                                        result = await listEntitiesRoute();
+    else if (method === 'PUT'    && path === '/entities')                                        result = await putEntityRoute(event);
+    else if (method === 'DELETE' && /^\/entities\/[^/]+$/.test(path))                            result = await deleteEntityRoute({ ...event, pathParameters: { entityId: path.split('/')[2] } });
     else if (method === 'GET'    && path === '/feature-requests')                                result = await listFeatureRequestsRoute();
     else if (method === 'POST'   && path === '/feature-requests')                                result = await createFeatureRequestRoute(event);
     else if (method === 'PUT'    && /^\/feature-requests\/[^/]+$/.test(path))                    result = await updateFeatureRequestRoute(event, path.split('/')[2]);

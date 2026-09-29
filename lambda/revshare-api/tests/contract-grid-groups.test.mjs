@@ -69,3 +69,46 @@ test('the toggle and the layout share one definition of open', () => {
   assert.match(grab('toggleContractGroup'), /setItem\(CT_GROUPS_KEY/);
   assert.match(grab('contractLayout'), /groupOpen\(key\)/);
 });
+
+// ── Two categories, not six groups (2026-09-29) ─────────────────────────────────────────────
+// The user's model: MERCHANT INFORMATION comes from the file and is never edited; MERCHANT TERMS
+// — contract, finance AND share terms — is one data set maintained by hand. They are agreed,
+// signed and settled together, so the grid shows them under one header with one toggle.
+const appSrc = readFileSync(new URL('../../../frontend/app.js', import.meta.url), 'utf8');
+
+test('contract, finance and share terms are one category', () => {
+  const block = appSrc.slice(appSrc.indexOf('const CONTRACT_GROUPS = ['),
+                             appSrc.indexOf('function contractCategoryOf'));
+  for (const k of ['contract', 'finance', 'terms']) {
+    assert.match(block, new RegExp(`key: '${k}',[^\\n]*category: 'terms'`),
+      `${k} belongs to the Merchant terms category`);
+  }
+  assert.match(block, /CONTRACT_CATEGORIES = \{ terms: 'Merchant terms' \}/);
+});
+
+test('the file-owned groups are NOT folded into it', () => {
+  const block = appSrc.slice(appSrc.indexOf('const CONTRACT_GROUPS = ['),
+                             appSrc.indexOf('function contractCategoryOf'));
+  for (const k of ['contact', 'machines']) {
+    assert.doesNotMatch(block, new RegExp(`key: '${k}',[^\\n]*category:`),
+      `${k} is merchant INFORMATION and stays its own group`);
+  }
+});
+
+test('the grid groups by category, so one toggle opens the whole terms set', () => {
+  const i = appSrc.indexOf('function contractLayout()');
+  const fn = appSrc.slice(i, appSrc.indexOf('\n}', i));
+  assert.match(fn, /contractCategoryOf\(groupKey\)/);
+  assert.match(fn, /open: !toggleable \|\| groupOpen\(key\)/);
+});
+
+// The editor still shows the three as separate, labelled sections — one data set does not mean
+// one undifferentiated form.
+test('the editor keeps Contract and Finance as named sections', () => {
+  const i = appSrc.indexOf('function openContractEditor');
+  const fn = appSrc.slice(i, appSrc.indexOf('\n}\n', i));
+  assert.match(fn, /col\.group === 'contract' \|\| col\.group === 'finance'/);
+  assert.match(fn, /ct-ed-h">Contract</);
+  assert.match(fn, /ct-ed-h">Finance</);
+  assert.match(fn, /ct-ed-h">Share terms</);
+});

@@ -28,8 +28,12 @@ const load = (...names) => new Function(
 const { renderTemplate } = load('renderTemplate');
 const recipientsWith = (contracts) => new Function('CONTRACTS',
   splitSrc() + '\n' + grab('mailRecipients') + '\nreturn mailRecipients;')(contracts);
-const { buildMimeMessage, encodeHeaderWord, base64Url, base64Std } =
-  load('encodeHeaderWord', 'base64Std', 'base64Url', 'buildMimeMessage');
+// buildMimeMessage routes the Cc through splitAddresses (2026-09-29), so it is loaded WITH the
+// address rules rather than alone — a Cc must pass the same gate as a To.
+const { buildMimeMessage, encodeHeaderWord, base64Url, base64Std } = new Function(
+  splitSrc() + '\n'
+  + ['encodeHeaderWord', 'base64Std', 'base64Url', 'buildMimeMessage'].map(grab).join('\n')
+  + '\nreturn { buildMimeMessage, encodeHeaderWord, base64Url, base64Std };')();
 
 test('placeholders are filled from the run', () => {
   assert.equal(
@@ -366,13 +370,35 @@ test('the send screen asks for the template FIRST and nothing else', () => {
   assert.match(src, /renderMessageSend|renderStatementSend/, 'the kind routes to its own screen');
 });
 
-test('a plain message screen has no period and no attachment', () => {
+// REVISED 2026-09-29. This used to assert a plain message has NO period, which was right while
+// the only plain message was a note. The payment-schedule template's subject carries {{period}},
+// and this path has no run to read one from, so the screen now ASKS for a period — a plain
+// <input type="month">, not a run picker. What has not changed: it still builds no statement file
+// and attaches nothing of a run's.
+test('a plain message asks for a period but never builds a statement', () => {
   const src = grab('renderMessageSend');
-  assert.ok(!src.includes('msend-run'), 'no period');
+  assert.ok(!src.includes('msend-run'), 'the period is typed, not chosen from a run');
+  assert.match(src, /type="month" id="mmsg-period"/, 'a period is asked for');
   // Behaviour, not wording — the screen legitimately says the words "no attachment".
-  assert.ok(!/attachment:/.test(src), 'no attachment is passed to the message builder');
+  assert.ok(!/attachment:/.test(src), 'no single run attachment is passed to the message builder');
   assert.ok(!/XLSX\.write/.test(src), 'and no statement file is built');
-  assert.match(src, /2 · Send to/, 'its second step is recipients, not a period');
+  assert.match(src, /4 · Send to/, 'recipients come after the period and the entity');
+});
+
+// The period exists to fill {{period}}, so it must actually reach renderTemplate — otherwise the
+// picker is decoration and the merchant still receives the raw braces.
+test('the period and entity are substituted into the subject and body', () => {
+  const src = grab('renderMessageSend');
+  assert.match(src, /period: host\.querySelector\('#mmsg-period'\)\.value/);
+  assert.match(src, /renderTemplate\(template\.subject, vars\)/);
+  assert.match(src, /renderTemplate\(template\.body \|\| '', vars\)/);
+});
+
+// Regenerating over a hand-typed subject would silently discard someone's correction.
+test('a hand-edited subject is not overwritten when the period changes', () => {
+  const src = grab('renderMessageSend');
+  assert.match(src, /if \(subjEl\.value === \(lastGen\.subject \?\? ''\)\) subjEl\.value = nextSubject/);
+  assert.match(src, /if \(bodyEl\.value === \(lastGen\.body \?\? ''\)\) bodyEl\.value = nextBody/);
 });
 
 test('a plain message sends each recipient their own copy', () => {
@@ -712,4 +738,167 @@ test('the upload refuses a file too large to send, with its size', () => {
   assert.match(src, /5 \* 1024 \* 1024/);
   assert.match(src, /The limit is 5 MB/);
   assert.match(src, /fileSizeLabel\(file\.size\)/, 'and says how big the file actually is');
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════════
+// 2026-09-29: a per-send attachment, an entity picker, and the finance Cc.
+// Mail cannot be unsent, so each of the three is pinned at the point where it decides what a
+// merchant actually receives.
+// ════════════════════════════════════════════════════════════════════════════════════════════
+
+const { mailCc } = load('mailCc');
+
+// A template with no `cc` copies NOBODY. Falling back to the region default here would have
+// copied finance on every plain message, the test one included.
+test('mailCc reads the template and never falls back', () => {
+  assert.equal(mailCc({ cc: 'finance.th@inforich.com' }), 'finance.th@inforich.com');
+  assert.equal(mailCc({ cc: '  finance.th@inforich.com  ' }), 'finance.th@inforich.com');
+  assert.equal(mailCc({}), '');
+  assert.equal(mailCc({ cc: '' }), '');
+  assert.equal(mailCc(null), '');
+});
+
+// Singapore keeps the structure with the values blank (user, 2026-09-29) — a Thai finance address
+// must never be the default for SG mail.
+test('FINANCE_CC carries Thailand only; Singapore is blank', () => {
+  const src = app.slice(app.indexOf('const FINANCE_CC'));
+  const line = src.slice(0, src.indexOf('\n'));
+  const FINANCE_CC = new Function(`${line} return FINANCE_CC;`)();
+  assert.equal(FINANCE_CC.th, 'finance.th@inforich.com');
+  assert.equal(FINANCE_CC.sg, '');
+});
+
+const mimeWith = () => buildMimeMessage;
+
+test('a Cc becomes exactly one Cc header, and no header when there is none', () => {
+  const build = mimeWith();
+  const withCc = build({ from: 'a@x.com', to: ['b@x.com'], cc: 'f@x.com',
+                         subject: 'S', body: 'B' });
+  assert.match(withCc, /\r\nCc: f@x\.com\r\n/);
+  assert.equal((withCc.match(/^Cc:/gm) || []).length, 1);
+
+  // An empty Cc: header is malformed and Gmail rejects the whole message rather than ignoring it.
+  for (const cc of ['', '   ', undefined, null, []]) {
+    assert.doesNotMatch(build({ from: 'a@x.com', to: ['b@x.com'], cc, subject: 'S', body: 'B' }),
+      /^Cc:/m, `cc=${JSON.stringify(cc)} must emit no header`);
+  }
+});
+
+test('Cc keeps the To header intact and sits between From and Subject', () => {
+  const build = mimeWith();
+  const head = build({ from: 'a@x.com', to: ['b@x.com', 'c@x.com'], cc: 'f@x.com, g@x.com',
+                       subject: 'S', body: 'B' }).split('\r\n');
+  assert.deepEqual(head.slice(0, 4),
+    ['From: a@x.com', 'To: b@x.com, c@x.com', 'Cc: f@x.com, g@x.com', 'Subject: S']);
+});
+
+// An address with a space is not an address (§1q) — the Cc must go through the same gate as the
+// To, or a malformed finance address takes the whole send down at the last step.
+test('a malformed Cc entry is dropped, not passed to Gmail', () => {
+  const build = mimeWith();
+  const out = build({ from: 'a@x.com', to: ['b@x.com'], cc: 'bad addr@x.com, good@x.com',
+                      subject: 'S', body: 'B' });
+  assert.match(out, /\r\nCc: good@x\.com\r\n/);
+  assert.doesNotMatch(out, /bad addr/);
+});
+
+test('several files each keep their own name and type', () => {
+  const build = mimeWith();
+  const out = build({
+    from: 'a@x.com', to: ['b@x.com'], subject: 'S', body: 'B',
+    attachments: [
+      { bytes: new Uint8Array([1, 2]), filename: 'schedule.pdf', type: 'application/pdf' },
+      { bytes: new Uint8Array([3, 4]), filename: 'notes.txt', type: 'text/plain' },
+    ],
+  });
+  assert.match(out, /Content-Type: application\/pdf/);
+  assert.match(out, /schedule\.pdf/);
+  assert.match(out, /Content-Type: text\/plain/);
+  assert.match(out, /notes\.txt/);
+});
+
+// ── The entity picker ──────────────────────────────────────────────────────────────────────
+const entityFns = (contracts) => new Function('CONTRACTS',
+  splitSrc() + '\n' + grab('entityOptions') + '\n' + grab('addressesForEntity')
+  + '\nreturn { entityOptions, addressesForEntity };')(contracts);
+
+const ENTITY_ROWS = [
+  { contractId: '1', merchantName: 'Central Ladprao', counterParty: 'Central Pattana PCL',
+    financeContactEmail: 'ap@central.co.th' },
+  { contractId: '2', merchantName: 'Central Eastville', counterParty: 'Central Pattana PCL',
+    financeContactEmail: 'AP@central.co.th' },              // same address, different case
+  { contractId: '3', merchantName: 'Central Westgate', counterParty: '  Central Pattana PCL  ',
+    financeContactEmail: '' },                               // under the entity, no address
+  { contractId: '4', merchantName: 'BTS Asok', counterParty: 'BTS Group Holdings',
+    financeContactEmail: 'finance@bts.co.th' },
+  { contractId: '5', merchantName: 'Old Central', counterParty: 'Central Pattana PCL',
+    financeContactEmail: 'gone@central.co.th', archived: true },
+];
+
+test('entityOptions lists live entities once each, sorted', () => {
+  const { entityOptions } = entityFns(ENTITY_ROWS);
+  assert.deepEqual(entityOptions(ENTITY_ROWS), ['BTS Group Holdings', 'Central Pattana PCL']);
+});
+
+test('entityOptions skips a contract with no entity', () => {
+  const { entityOptions } = entityFns([]);
+  assert.deepEqual(entityOptions([{ contractId: '1', merchantName: 'X' },
+                                  { contractId: '2', counterParty: '   ' }]), []);
+});
+
+test('addressesForEntity dedupes case-insensitively and names who has none', () => {
+  const { addressesForEntity } = entityFns(ENTITY_ROWS);
+  const r = addressesForEntity(ENTITY_ROWS, 'Central Pattana PCL');
+  assert.deepEqual(r.addresses, ['ap@central.co.th']);
+  assert.deepEqual(r.withAddress, ['Central Ladprao', 'Central Eastville']);
+  assert.deepEqual(r.withoutAddress, ['Central Westgate']);
+});
+
+// An ended contract must not reacquire mail, matching payoutDecision and the alias index (§1d).
+test('an archived contract is never picked up by the entity picker', () => {
+  const { addressesForEntity } = entityFns(ENTITY_ROWS);
+  const r = addressesForEntity(ENTITY_ROWS, 'Central Pattana PCL');
+  assert.equal(r.addresses.includes('gone@central.co.th'), false);
+  assert.equal([...r.withAddress, ...r.withoutAddress].includes('Old Central'), false);
+});
+
+test('the entity match ignores surrounding space and case, and a blank asks for nobody', () => {
+  const { addressesForEntity } = entityFns(ENTITY_ROWS);
+  assert.deepEqual(addressesForEntity(ENTITY_ROWS, '  central pattana pcl ').addresses,
+    ['ap@central.co.th']);
+  for (const blank of ['', '   ', null, undefined]) {
+    assert.deepEqual(addressesForEntity(ENTITY_ROWS, blank),
+      { addresses: [], withAddress: [], withoutAddress: [] });
+  }
+});
+
+test('an entity nobody is under returns empty rather than throwing', () => {
+  const { addressesForEntity } = entityFns(ENTITY_ROWS);
+  assert.deepEqual(addressesForEntity(ENTITY_ROWS, 'Nobody Ltd'),
+    { addresses: [], withAddress: [], withoutAddress: [] });
+});
+
+// ── The per-send attachment cap ─────────────────────────────────────────────────────────────
+test('the per-send cap is stated in bytes and leaves Gmail room after base64', () => {
+  const line = app.slice(app.indexOf('const MAX_SEND_ATTACHMENTS'));
+  const MAX = new Function(`${line.slice(0, line.indexOf('\n'))} return MAX_SEND_ATTACHMENTS;`)();
+  assert.equal(MAX, 15 * 1024 * 1024);
+  // base64 inflates by 4/3; Gmail's ceiling is ~25 MB of attachments.
+  assert.ok(MAX * 4 / 3 < 25 * 1024 * 1024, 'the cap must survive base64 inflation');
+});
+
+// The template's own file and this send's files must BOTH go — "also attach" means as well as.
+test('a per-send file is pushed onto the template file, not over it', () => {
+  const src = grab('renderMessageSend');
+  assert.match(src, /files\.push\(/, 'per-send files must append');
+  assert.doesNotMatch(src, /files\s*=\s*\[\s*\.\.\.chosen/, 'must not replace the template file');
+  // The cap is checked before the Gmail token is requested.
+  assert.ok(src.indexOf('chosenTotal > MAX_SEND_ATTACHMENTS') < src.indexOf('gmailToken()'),
+    'the size check must run before the permission popup');
+});
+
+// The message send loops recipients one at a time; the cc must be on every copy.
+test('the plain-message send passes the cc to every recipient', () => {
+  const src = grab('renderMessageSend');
+  assert.match(src, /from,\s*to:\s*\[to\],\s*cc,/, 'each copy carries the cc');
 });
