@@ -12,7 +12,7 @@ sends each merchant its statement from the partner group address — §1q.)
 2026-09-29: an **Upload** nav page — the weekly files, the mismatches, and a button per row (§1r);
 **contract entities are records** with their own id (§1s); **a run writes nothing** and reads a
 stored roster (§1t); editing left the Merchant view grid for one Edit dialog (§1u).
-Service-worker `CACHE_VERSION` is at `revshare-v227` (bump on every shell change).
+Service-worker `CACHE_VERSION` is at `revshare-v229` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
 end-to-end before touching anything. The codebase is the ultimate source of
@@ -1126,6 +1126,21 @@ and for those unmapped between two file, you also highlight"*):
   unattributable when it was placed; an **archived** merchant reported as "no merchant of that
   name" (which would have created a duplicate); and one shop rendering twice because the two
   files spell it with different capitals.
+- **A shop your file lists can still fail to join, and the page must say WHICH.** Three causes,
+  three different fixes, three buckets — all found by reading the user's real files after two
+  wrong guesses from me (review state, then spelling):
+  1. **A blank `Merchant label`.** That column IS the brand (§1l), and the join skipped any row
+     without one — so a shop plainly in the file, Approved, with a machine, read as *"your
+     merchant file does not list this shop"*. **Live: 5 of 2,388 Approved rows have a blank
+     label, and all 5 are in the machine list** — two are Lawson stores with live machines and
+     no brand attached. This is what hit `Kliff Beach Bistro & Bar`.
+  2. **Not Approved.** `parseMerchantList` keeps Approved rows only — correct for a payout — and
+     the join never saw the rest. The dropped rows were already being returned; they were just
+     ignored. (Not the Kliff cause: that file is 2,388 rows, all Approved.)
+  3. **A near-miss spelling.** The two exports name the store in DIFFERENT COLUMNS —
+     `merchant name.` in the merchant list, `Business name` in the machine list — so an exact
+     join is fragile. `closestFileStore` names what the file actually has rather than claiming
+     it has nothing.
 - **A near-duplicate merchant is flagged before you create one.** `similarExistingMerchants`
   catches branch suffixes and close spellings — live case: the file offered `EBISU Shoten Silom`
   as new while `EBISU SHOTEN` was already in the list. The dialog says so where the second

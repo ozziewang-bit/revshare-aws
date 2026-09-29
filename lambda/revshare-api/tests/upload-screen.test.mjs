@@ -393,7 +393,7 @@ test('a held file that cannot be restored is reported, not swallowed', () => {
 const runTableWith = (contracts) => {
   const src = ['escape', 'machineCountText', 'machineMissWhy', 'uploadAddedWhy',
                'uploadChangedWhy', 'uploadMissingWhy', 'similarity', 'similarExistingMerchants',
-               'uploadTableHtml'].map(grab).join('\n')
+               'closestFileStore', 'uploadTableHtml'].map(grab).join('\n')
     + '\n' + app.slice(app.indexOf('function reconcileKey'),
                         app.indexOf('\n}', app.indexOf('function reconcileKey')) + 2)
     + '\n' + app.slice(app.indexOf('const ruleIsAbsent ='),
@@ -404,7 +404,7 @@ const runTableWith = (contracts) => {
 const runTable = () => {
   const src = ['escape', 'machineCountText', 'machineMissWhy', 'uploadAddedWhy',
                'uploadChangedWhy', 'uploadMissingWhy', 'similarity', 'similarExistingMerchants',
-               'uploadTableHtml'].map(grab).join('\n')
+               'closestFileStore', 'uploadTableHtml'].map(grab).join('\n')
     + '\n' + app.slice(app.indexOf('function reconcileKey'),
                         app.indexOf('\n}', app.indexOf('function reconcileKey')) + 2)
     + '\n' + app.slice(app.indexOf('const ruleIsAbsent ='),
@@ -566,16 +566,19 @@ test('one file alone is not a join, and reports no gaps', () => {
 });
 
 test('the gaps only appear on the page when both files are there', () => {
-  const fn = grab('uploadTableHtml');
-  assert.match(fn, /!join\?\.bothFiles \? \[\] : \(join\.onlyInMachineFile/);
-  assert.match(fn, /!join\?\.bothFiles \? \[\] : \(join\.onlyInMerchantFile/);
+  const uploadTableHtml = runTable();
+  const join = { bothFiles: false, onlyInMachineFile: [{ store: 'X', machines: 1 }],
+                 onlyInMerchantFile: [{ store: 'Y', brand: 'B' }], notApproved: [] };
+  const html = uploadTableHtml(null, null, { byStore: new Map() }, join);
+  assert.ok(!html.includes('>X<') && !html.includes('>Y<'),
+    'with one file there is nothing to join, so nothing is claimed');
 });
 
 test('the file-to-file gaps are the FIRST thing the table shows', () => {
   const groups = app.slice(app.indexOf('const UPLOAD_GROUPS'), app.indexOf('let UPLOAD_STATE'));
   const order = [...groups.matchAll(/key: '(\w+)'/g)].map(m => m[1]);
-  assert.deepEqual(order.slice(0, 2), ['noBrand', 'noMach'],
-    'step 1 comes before everything that depends on it');
+  assert.deepEqual(order.slice(0, 4), ['noLabel', 'notAppr', 'noBrand', 'noMach'],
+    'step 1 — the two files against each other — comes before everything that depends on it');
 });
 
 // ── Update with file data (2026-09-29) ─────────────────────────────────────────────────────
@@ -914,4 +917,126 @@ test('nothing is auto-applied — it is a question, not an answer', () => {
   const fn = grab('similarExistingMerchants');
   assert.match(fn, /slice\(0, 3\)/, 'at most a few candidates');
   assert.ok(!/api\(/.test(fn), 'and it writes nothing');
+});
+
+// ── In the file, but not Approved (2026-09-29) ─────────────────────────────────────────────
+// Live case: "Kliff Beach Bistro & Bar" was in the merchant file and the page said the file did
+// not list it. `parseMerchantList` keeps APPROVED rows only — correct for a payout — and the
+// join only ever saw those, so a shop held back by its review state was indistinguishable from
+// one nobody had ever heard of. They need different fixes: approve it on the platform, versus
+// add it to your file.
+test('a shop held back by its review state is not called absent from the file', () => {
+  const j = joinFiles()(
+    { merchants: [], excluded: [{ name: 'Kliff Beach', label: 'Kliff', reviewState: 'Disapproved' }] },
+    { byStore: new Map([['Kliff Beach', { S8: 1 }]]) });
+  assert.deepEqual(j.onlyInMachineFile, [], 'not reported as missing from the file');
+  assert.equal(j.notApproved.length, 1);
+  assert.equal(j.notApproved[0].brand, 'Kliff');
+  assert.equal(j.notApproved[0].reviewState, 'Disapproved');
+});
+
+test('an Approved row still wins over a held-back one of the same name', () => {
+  const j = joinFiles()(
+    { merchants: [{ name: 'Shop', partnerName: 'Brand' }],
+      excluded: [{ name: 'Shop', label: 'Brand', reviewState: 'Pending' }] },
+    { byStore: new Map([['Shop', { S5: 1 }]]) });
+  assert.deepEqual(j.notApproved, []);
+  assert.equal(j.stores.get('shop').machines, 1);
+});
+
+test('a file of ONLY held-back rows still counts as a join', () => {
+  const j = joinFiles()(
+    { merchants: [], excluded: [{ name: 'A', label: 'B', reviewState: 'Pending' }] },
+    { byStore: new Map([['A', { S5: 1 }]]) });
+  assert.equal(j.bothFiles, true, 'otherwise the page would say nothing at all');
+});
+
+test('the row says the file lists it, and what to do', () => {
+  const uploadTableHtml = runTable();
+  const html = uploadTableHtml(null, null,
+    { byStore: new Map([['Kliff Beach', { S8: 1 }]]) },
+    { bothFiles: true, onlyInMachineFile: [], onlyInMerchantFile: [],
+      notApproved: [{ store: 'Kliff Beach', machines: 1, brand: 'Kliff', reviewState: 'Disapproved' }] });
+  assert.match(html, /DOES list this shop/);
+  assert.match(html, /review state is <strong>Disapproved<\/strong>/);
+  assert.match(html, /Approve it on the platform/);
+  assert.ok(!html.includes('does not\nlist this shop'));
+});
+
+test('it is not also reported by the placement buckets', () => {
+  const uploadTableHtml = runTable();
+  const machines = { byStore: new Map([['Kliff Beach', { S8: 1 }]]) };
+  const join = { bothFiles: true, onlyInMachineFile: [], onlyInMerchantFile: [],
+                 notApproved: [{ store: 'Kliff Beach', machines: 1, brand: 'Kliff', reviewState: 'Pending' }] };
+  const misses = { unknown: [{ store: 'Kliff Beach', machines: 1 }], unlinked: [], conflicts: [] };
+  const html = uploadTableHtml(null, misses, machines, join);
+  assert.equal((html.match(/Kliff Beach/g) || []).length, 1, 'exactly one row');
+});
+
+// ── The two files name the store in DIFFERENT COLUMNS (2026-09-29) ─────────────────────────
+// merchant list → 'merchant name.'   ·   machine list → 'Business name'
+// Two exports, two strings for one shop. Joining them on an exact match and then telling someone
+// "your merchant file does not list this shop" is wrong when the file lists it under a slightly
+// different spelling. I asserted a review-state cause for this without evidence and was wrong;
+// these are the two causes that actually exist in the code.
+test('a blank Merchant label no longer reads as absent from the file', () => {
+  const j = joinFiles()(
+    { merchants: [{ name: 'Kliff Beach', partnerName: '' }], excluded: [] },
+    { byStore: new Map([['Kliff Beach', { S8: 1 }]]) });
+  assert.deepEqual(j.onlyInMachineFile, [], 'the file DOES list it');
+  assert.equal(j.noLabelShops.length, 1);
+  assert.equal(j.noLabelShops[0].store, 'Kliff Beach');
+});
+
+test('the row says the label is blank, and where to fix it', () => {
+  const uploadTableHtml = runTable();
+  const html = uploadTableHtml(null, null, { byStore: new Map([['Kliff Beach', { S8: 1 }]]) },
+    { bothFiles: true, onlyInMachineFile: [], onlyInMerchantFile: [], notApproved: [],
+      noLabelShops: [{ store: 'Kliff Beach', machines: 1 }], fileStoreNames: ['Kliff Beach'] });
+  assert.match(html, /<strong>Merchant label<\/strong> is blank/);
+  assert.match(html, /Fill it in on the platform/);
+  assert.ok(!html.includes('does not list this shop'));
+});
+
+test('a near-miss spelling names what the file actually has', () => {
+  const uploadTableHtml = runTable();
+  const join = { bothFiles: true, onlyInMerchantFile: [], notApproved: [], noLabelShops: [],
+                 onlyInMachineFile: [{ store: 'Kliff Beach Bistro & Bar', machines: 1 }],
+                 fileStoreNames: ['Kliff Beach Bistro and Bar'] };
+  const html = uploadTableHtml(null, { unknown: [{ store: 'Kliff Beach Bistro & Bar', machines: 1 }],
+                                       unlinked: [], conflicts: [] },
+    { byStore: new Map([['Kliff Beach Bistro & Bar', { S8: 1 }]]) }, join);
+  assert.match(html, /Kliff Beach Bistro and Bar<\/strong>, which is close/);
+  assert.match(html, /name the store in different/);
+});
+
+test('a genuinely absent shop still says so plainly', () => {
+  const uploadTableHtml = runTable();
+  const join = { bothFiles: true, onlyInMerchantFile: [], notApproved: [], noLabelShops: [],
+                 onlyInMachineFile: [{ store: 'Totally Unrelated Venue', machines: 1 }],
+                 fileStoreNames: ['Kliff Beach Bistro and Bar'] };
+  const html = uploadTableHtml(null, { unknown: [{ store: 'Totally Unrelated Venue', machines: 1 }],
+                                       unlinked: [], conflicts: [] },
+    { byStore: new Map([['Totally Unrelated Venue', { S8: 1 }]]) }, join);
+  assert.match(html, /does not list this shop/);
+});
+
+test('closestFileStore does not reach for a bad match', () => {
+  const fn = new Function(grab('similarity') + '\n'
+    + app.slice(app.indexOf('function reconcileKey'),
+                app.indexOf('\n}', app.indexOf('function reconcileKey')) + 2)
+    + '\n' + grab('closestFileStore') + '\nreturn closestFileStore;')();
+  assert.equal(fn('Kliff Beach Bistro & Bar', { fileStoreNames: ['Kliff Beach Bistro and Bar'] }),
+    'Kliff Beach Bistro and Bar');
+  assert.equal(fn('Kliff Beach', { fileStoreNames: ['Somchai Noodle House'] }), null);
+  assert.equal(fn('Anything', { fileStoreNames: [] }), null);
+});
+
+test('a shop with no label is reported once, not also as unplaceable', () => {
+  const uploadTableHtml = runTable();
+  const join = { bothFiles: true, onlyInMachineFile: [], onlyInMerchantFile: [], notApproved: [],
+                 noLabelShops: [{ store: 'Kliff Beach', machines: 1 }], fileStoreNames: ['Kliff Beach'] };
+  const misses = { unknown: [{ store: 'Kliff Beach', machines: 1 }], unlinked: [], conflicts: [] };
+  const html = uploadTableHtml(null, misses, { byStore: new Map([['Kliff Beach', { S8: 1 }]]) }, join);
+  assert.equal((html.match(/Kliff Beach/g) || []).length, 1);
 });

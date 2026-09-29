@@ -2826,6 +2826,8 @@ async function clearUploadDraft() {
 // applies it. Per-row adjustments are NOT built yet — that is the next conversation.
 const UPLOAD_GROUPS = [
   // Step 1 — the two files against each other.
+  { key: 'noLabel',  title: 'In your merchant file, but with no Merchant label', tone: 'warn',  unit: 'stores' },
+  { key: 'notAppr',  title: 'In your merchant file, but not Approved',           tone: 'warn',  unit: 'stores' },
   { key: 'noBrand',  title: 'In your machine list, not in your merchant file', tone: 'loss',  unit: 'stores' },
   { key: 'noMach',   title: 'In your merchant file, no machines recorded',     tone: 'quiet', unit: 'stores' },
   // Step 2 — the joined set against the app.
@@ -3042,6 +3044,7 @@ function uploadSummaryHtml(parsed, machines, misses, roster) {
     const j = joinUploadFiles(roster, machines);
     bits.push(`<div class="up-sum-row"><strong>Your two files together:</strong>
       ${j.stores.size.toLocaleString('en-US')} shop(s) across ${j.brands.size.toLocaleString('en-US')} brand(s)
+      ${j.notApproved?.length ? `<span class="rc-warn">· ${j.notApproved.length} shop(s) in the file but not Approved</span>` : ''}
       ${j.onlyInMachineFile.length ? `<span class="rc-warn">· ${j.onlyInMachineFile.length} shop(s) with machines but no brand</span>` : ''}
       ${j.onlyInMerchantFile.length ? `<span class="muted">· ${j.onlyInMerchantFile.length} shop(s) with no machines</span>` : ''}</div>`);
   }
@@ -3056,14 +3059,18 @@ function uploadSummaryHtml(parsed, machines, misses, roster) {
 }
 
 function uploadTableHtml(diff, misses, machines, join, filter) {
-  if (!diff && !misses) return '';
+  // `join` alone can carry findings — the two files disagreeing needs neither a merchant diff
+  // nor a placement result.
+  if (!diff && !misses && !join) return '';
   // EVERY SHOP APPEARS IN EXACTLY ONE BUCKET. The first cut let a shop fall into two — "not in
   // your merchant file" and "nothing can place" overlapped without saying so, and neither
   // contained the other, so the two counts could not be reconciled by reading them. Precedence:
   // the file-to-file gap is stated first, and the placement buckets then cover only what is left.
   const key = v => String(v ?? '').toLowerCase().trim();
   const unplaced = new Set([...(misses?.unknown || []), ...(misses?.unlinked || [])].map(x => key(x.store)));
-  const noBrandKeys = new Set(!join?.bothFiles ? [] : (join.onlyInMachineFile || []).map(x => key(x.store)));
+  const noBrandKeys = new Set(!join?.bothFiles ? []
+    : [...(join.onlyInMachineFile || []), ...(join.notApproved || []), ...(join.noLabelShops || [])]
+        .map(x => key(x.store)));
   // Brands this file would ADD. A shop whose brand is on that list needs no separate complaint:
   // adding the merchant places the shop, and the action is one section up. Nagging about both
   // made the same fact appear twice with no hint they were the same fact.
@@ -3082,17 +3089,37 @@ function uploadTableHtml(diff, misses, machines, join, filter) {
 
   const buckets = {
     // Only meaningful when BOTH files are present — with one file there is nothing to join.
+    noLabel:   !join?.bothFiles ? [] : onceByStore(join.noLabelShops).map(x => ({
+                 app: '', file: escape(x.store),
+                 why: `${machineCountText(x, machines)} Your merchant file lists this shop, but its `
+                    + `<strong>Merchant label</strong> is blank — that column is the brand, so there `
+                    + `is nothing to attribute the machines to. Fill it in on the platform.` })),
+    notAppr:   !join?.bothFiles ? [] : onceByStore(join.notApproved).map(x => ({
+                 app: '', file: escape(x.store),
+                 why: `${machineCountText(x, machines)} Your merchant file DOES list this shop`
+                    + (x.brand ? ` under <strong>${escape(x.brand)}</strong>` : '')
+                    + `, but its review state is <strong>${escape(x.reviewState)}</strong> — only `
+                    + `Approved rows are read, so it is not placed and its rentals are not paid. `
+                    + `Approve it on the platform, or leave it if that is deliberate.` })),
     noBrand:   !join?.bothFiles ? [] : onceByStore(join.onlyInMachineFile).map(x => {
                  // Saying "these machines belong to nobody" about a shop the registry DID place
                  // was simply false. The gap is still worth reporting; the consequence is not.
                  const stillPlaced = !unplaced.has(key(x.store));
+                 // The two files name the store in different columns, so a near-miss is
+                 // ordinary. Saying "your file does not list this shop" when it lists it under a
+                 // slightly different spelling is the wrong thing to tell someone.
+                 const near = closestFileStore(x.store, join);
                  return { app: '', file: escape(x.store),
-                   why: `${machineCountText(x, machines)} Your merchant file does not list this shop. `
+                   why: `${machineCountText(x, machines)} `
+                      + (near
+                          ? `Your merchant file has <strong>${escape(near)}</strong>, which is close `
+                            + `but not the same name — the two files name the store in different `
+                            + `columns, so the spellings differ. Match them up on the platform.`
+                          : `Your merchant file does not list this shop.`)
                       + (stillPlaced
-                          ? `The app's store index still knows it, so its machines are counted — `
-                            + `but this week's file does not account for it.`
-                          : `Nothing else knows it either, so these machines are counted toward `
-                            + `nobody this week.`) };
+                          ? ` The app's store index still knows it, so its machines are counted.`
+                          : ` Nothing else knows it either, so these machines are counted toward`
+                            + ` nobody this week.`) };
                }),
     noMach:    !join?.bothFiles ? [] : (join.onlyInMerchantFile || [])
                  .filter(x => !addingBrands.has(key(x.brand)))
@@ -3606,12 +3633,31 @@ function joinUploadFiles(roster, machines) {
   const key = v => String(v ?? '').toLowerCase().trim();
   const byStore = machines && machines.byStore instanceof Map ? machines.byStore : new Map();
 
-  // The merchant file's own view: store -> brand.
+  // The merchant file's own view: store -> brand. APPROVED ROWS ONLY — `parseMerchantList`
+  // filters on the review state, which is correct for a payout but means the join must also
+  // know about the rows it dropped, or a shop your file plainly lists is reported as absent
+  // from it. Live case: "Kliff Beach Bistro & Bar" was in the file, not Approved, and the page
+  // said the file did not list it.
   const brandOf = new Map();
+  // A row with a name but NO `Merchant label` used to be skipped entirely, so a shop your file
+  // plainly lists read as absent from it. It is kept, with an empty brand, and reported as its
+  // own thing — the fix is to give it a label, not to add a merchant.
+  const noLabel = new Map();
   for (const r of (roster && roster.merchants) || []) {
     const k = key(r.name);
+    if (!k) continue;
     const brand = String(r.partnerName ?? '').trim();
-    if (k && brand && !brandOf.has(k)) brandOf.set(k, { store: String(r.name).trim(), brand });
+    if (brand) { if (!brandOf.has(k)) brandOf.set(k, { store: String(r.name).trim(), brand }); }
+    else if (!noLabel.has(k)) noLabel.set(k, { store: String(r.name).trim() });
+  }
+  // In the file, but held back by its review state.
+  const heldBack = new Map();
+  for (const r of (roster && roster.excluded) || []) {
+    const k = key(r.name);
+    if (k && !brandOf.has(k) && !heldBack.has(k)) {
+      heldBack.set(k, { store: String(r.name).trim(), brand: String(r.label ?? '').trim(),
+                        reviewState: String(r.reviewState ?? '').trim() || 'Not approved' });
+    }
   }
 
   // The machine file's own view: store -> counts.
@@ -3631,8 +3677,21 @@ function joinUploadFiles(roster, machines) {
     else { stores.set(k, { store: m.store, brand: m.brand, machines: 0, counts: {} });
            onlyInMerchantFile.push({ store: m.store, brand: m.brand }); }
   }
+  const notApproved = [], noLabelShops = [];
   for (const [k, mc] of machinesOf) {
     if (brandOf.has(k)) continue;
+    if (noLabel.has(k)) {
+      noLabelShops.push({ store: mc.store, machines: mc.machines, counts: mc.counts });
+      continue;
+    }
+    const held = heldBack.get(k);
+    if (held) {
+      // The file DOES list it. A different fix from "nobody has heard of this shop": approve it
+      // on the platform, or accept that it is deliberately not being paid.
+      notApproved.push({ store: mc.store, machines: mc.machines, counts: mc.counts,
+                         brand: held.brand, reviewState: held.reviewState });
+      continue;
+    }
     onlyInMachineFile.push({ store: mc.store, machines: mc.machines, counts: mc.counts });
   }
 
@@ -3645,8 +3704,34 @@ function joinUploadFiles(roster, machines) {
     for (const [model, c] of Object.entries(v.counts)) acc.counts[model] = (acc.counts[model] || 0) + c;
     brands.set(bk, acc);
   }
-  return { stores, brands, onlyInMerchantFile, onlyInMachineFile,
-           bothFiles: brandOf.size > 0 && machinesOf.size > 0 };
+  // Every store name the merchant file carries, whatever state it is in — so the page can tell
+  // you the CLOSE name it found rather than claiming the file does not list a shop at all. The
+  // two files name the store in different columns ('merchant name.' vs 'Business name'), so a
+  // near-miss is ordinary, not exceptional.
+  const fileStoreNames = [...new Set([
+    ...[...brandOf.values()].map(v => v.store),
+    ...[...heldBack.values()].map(v => v.store),
+    ...[...noLabel.values()].map(v => v.store),
+  ])];
+  return { stores, brands, onlyInMerchantFile, onlyInMachineFile, notApproved,
+           noLabelShops, fileStoreNames,
+           bothFiles: (brandOf.size + heldBack.size + noLabel.size) > 0 && machinesOf.size > 0 };
+}
+
+
+// The nearest store name the merchant FILE carries, when the machine list's spelling does not
+// match it exactly. The two exports name the store in different columns — `merchant name.` and
+// `Business name` — so differing spellings are ordinary and worth showing rather than reporting
+// the shop as absent from a file that lists it.
+function closestFileStore(store, join) {
+  const names = (join && join.fileStoreNames) || [];
+  if (!names.length) return null;
+  let best = null, bestScore = 0;
+  for (const n of names) {
+    const sc = similarity(store, n);
+    if (sc > bestScore) { bestScore = sc; best = n; }
+  }
+  return bestScore >= 0.72 ? best : null;
 }
 
 // What is actually at this store, so the row can be found in the machine list you just uploaded.
