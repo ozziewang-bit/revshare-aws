@@ -16,7 +16,7 @@ stored roster (§1t); editing left the Merchant view grid for one Edit dialog (�
 a term can no longer be discarded in silence, and the set you maintain by hand opens by
 default (§1y).
 A payment-schedule notice goes to every merchant with a share that month, in one send (§1z).
-Service-worker `CACHE_VERSION` is at `revshare-v236` (bump on every shell change).
+Service-worker `CACHE_VERSION` is at `revshare-v237` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
 end-to-end before touching anything. The codebase is the ultimate source of
@@ -1188,6 +1188,19 @@ without the space. **ONE ENTITY COVERS MANY BRANDS**, which is the point.
   seeded from a terms sheet with `counterParty` deliberately blank (§1f), so the dry run plans 0.
 - One control does both jobs: `entityPickerHtml` is a type-to-filter box listing every entity
   with its brand count, and a name nobody has used is created on save (`resolveEntityInput`).
+
+**EVERY reader goes through `entityNameOf` (2026-09-30) — this was half-migrated for a day.**
+The records were wired into the grid and the editors only; five other places went on reading the
+raw `counterParty`, so renaming an entity left the OLD name on the rev-sending table, on the run
+detail, **in the folder names inside the per-merchant zip**, on the Archived screen and in the
+exported merchant sheet — and made `addressesForEntity` match nothing, so picking a renamed
+entity in Mailing filled in **no addresses at all**. Found by the user on `Kaganoya`, not by a
+test. `entityNameOf(c, entities)` is the single rule and takes the list explicitly so the helpers
+that already receive `contracts` stay pure; `entityName(c)` is the global-reading wrapper. A
+linked contract reads its RECORD, an unlinked one falls back to its string, and a deleted record
+falls back rather than blanking. The ONLY place that still shows the raw string is the editor,
+which says what it is. A test caps how many times `counterParty` may be read anywhere, so the
+next half-migration fails loudly.
 
 ## 1t. A run writes NOTHING, and no longer asks for the merchant list (2026-09-29)
 

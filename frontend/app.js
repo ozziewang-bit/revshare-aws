@@ -876,8 +876,19 @@ const entityById = id => ENTITIES.find(e => e.entityId === id) || null;
 // A contract that has never been linked still reads its own `counterParty` string, untouched.
 // That is what makes this additive: nothing had to be rewritten for the entity to exist.
 function entityName(c) {
-  const e = c && c.entityId ? entityById(c.entityId) : null;
-  return e ? (e.name || '') : String((c && c.counterParty) || '').trim();
+  return entityNameOf(c, ENTITIES);
+}
+
+// The same rule, with the entity list passed in — so the helpers that already take `contracts`
+// stay pure and testable. A linked contract reads its RECORD; an unlinked one falls back to the
+// string it has always carried.
+function entityNameOf(c, entities) {
+  const id = c && c.entityId;
+  if (id) {
+    const e = (entities || []).find(x => x.entityId === id);
+    if (e) return String(e.name || '').trim();
+  }
+  return String((c && c.counterParty) || '').trim();
 }
 const loadEntities = () => api('/entities').then(r => (ENTITIES = r || [])).catch(() => (ENTITIES = []));
 let MISSING_UPLOAD = new Set();
@@ -2164,8 +2175,8 @@ function gridTemplateColumns(contracts) {
       c => model ? ((c.units || {})[model] ?? null) : null,
       'A machine model. Put the model code in this header row (S5, S8, LL20, S10-A \u2026) and the count below it. '
       + 'Eight slots are provided; blank ones are ignored, so a column with no model code in its header imports nothing.')),
-    col('Contract', 'Contract entity', c => c.counterParty ?? null,
-      'The legal entity named on the contract. Free text; may differ from the brand name.'),
+    col('Contract', 'Contract entity', c => entityName(c) || null,
+      'The legal entity named on the contract. Maintained in the app, not read from this file.'),
     col('Contract', 'Start', c => c.startDate ?? null, 'Contract start date. YYYY-MM-DD.'),
     col('Contract', 'End', c => c.endDate ?? null, 'Contract end date. YYYY-MM-DD. The app flags rows due or overdue.'),
     col('Contract', 'Notice', c => c.terminationNoticeDays ?? null, 'Termination notice period, in days. A plain number.'),
@@ -4533,7 +4544,7 @@ function paintArchived() {
     <tr>
       <td>${cell(c.merchantName)}</td>
       <td>${cell(c.merchantType)}</td>
-      <td>${cell(c.counterParty)}</td>
+      <td>${cell(entityName(c))}</td>
       <td>${cell(c.startDate)}</td>
       <td>${cell(c.endDate)}</td>
       <td>${cell((c.archivedAt || '').slice(0, 10))}</td>
@@ -5830,7 +5841,7 @@ async function renderStatementSend(host, template) {
 async function renderMessageSend(host, template) {
   await ensureContractCache().catch(() => {});
   const cc = mailCc(template);
-  const entities = entityOptions(CONTRACTS);
+  const entities = entityOptions(CONTRACTS, ENTITIES);
   // The subject a payment schedule wants carries {{period}}, and this path has no run to read one
   // from — so it is asked for. Defaults to LAST month: a schedule or a statement is written about
   // a period that has closed, never the one still running.
@@ -5908,7 +5919,7 @@ async function renderMessageSend(host, template) {
       note.textContent = 'Pick an entity to fill in its finance addresses below, or just type the addresses yourself.';
       return;
     }
-    const { addresses, withAddress, withoutAddress } = addressesForEntity(CONTRACTS, name);
+    const { addresses, withAddress, withoutAddress } = addressesForEntity(CONTRACTS, name, ENTITIES);
     const toEl = host.querySelector('#mmsg-to');
     const already = new Set(splitAddresses(toEl.value).map(a => a.toLowerCase()));
     const added = addresses.filter(a => !already.has(a.toLowerCase()));
@@ -6588,11 +6599,11 @@ function mailRecipients(contractId) {
 // The contract entities worth offering in the send picker: the distinct `counterParty` values
 // over LIVE contracts. Archived ones are excluded for the same reason payoutDecision skips them —
 // an ended contract is not someone to send this month's schedule to.
-function entityOptions(contracts) {
+function entityOptions(contracts, entities) {
   const seen = new Map();
   for (const c of (contracts || [])) {
     if (!c || c.archived) continue;
-    const name = typeof c.counterParty === 'string' ? c.counterParty.trim() : '';
+    const name = entityNameOf(c, entities);
     if (name && !seen.has(name.toLowerCase())) seen.set(name.toLowerCase(), name);
   }
   return [...seen.values()].sort((a, b) => a.localeCompare(b));
@@ -6601,15 +6612,14 @@ function entityOptions(contracts) {
 // Everyone to write to for one entity, and — just as important — the merchants under it that
 // carry NO finance address. Returning the gap rather than silently dropping those merchants is
 // what lets the screen say "3 of 5 have an address" instead of quietly addressing three.
-function addressesForEntity(contracts, entity) {
+function addressesForEntity(contracts, entity, entities) {
   const want = String(entity || '').trim().toLowerCase();
   const addresses = [], withAddress = [], withoutAddress = [];
   if (!want) return { addresses, withAddress, withoutAddress };
   const seen = new Set();
   for (const c of (contracts || [])) {
     if (!c || c.archived) continue;
-    const name = typeof c.counterParty === 'string' ? c.counterParty.trim().toLowerCase() : '';
-    if (name !== want) continue;
+    if (entityNameOf(c, entities).toLowerCase() !== want) continue;
     const mine = splitAddresses(c.financeContactEmail);
     if (!mine.length) { withoutAddress.push(c.merchantName || '(unnamed)'); continue; }
     withAddress.push(c.merchantName || '(unnamed)');
@@ -6912,8 +6922,11 @@ function guaranteeInfo(result, ruleSnapshot) {
 function contractEntityFor(contractId) {
   if (!contractId) return null;
   const c = CONTRACTS.find(x => x.contractId === contractId);
-  const v = c && typeof c.counterParty === 'string' ? c.counterParty.trim() : '';
-  return v || null;
+  // Through entityName, NOT the raw string: once a contract is linked to an ENTITY record the
+  // record is the name, and `counterParty` is only the fallback for a row nobody has linked.
+  // Reading the string directly meant renaming an entity left the OLD name on the send table,
+  // on the run detail, and — worst — on the folder names inside the per-merchant zip.
+  return (c ? entityName(c) : '') || null;
 }
 
 async function renderBulkRunDetail(runId) {

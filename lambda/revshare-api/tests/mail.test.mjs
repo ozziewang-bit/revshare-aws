@@ -826,8 +826,9 @@ test('several files each keep their own name and type', () => {
 
 // ── The entity picker ──────────────────────────────────────────────────────────────────────
 const entityFns = (contracts) => new Function('CONTRACTS',
-  splitSrc() + '\n' + grab('entityOptions') + '\n' + grab('addressesForEntity')
-  + '\nreturn { entityOptions, addressesForEntity };')(contracts);
+  splitSrc() + '\n' + grab('entityNameOf') + '\n' + grab('entityOptions')
+  + '\n' + grab('addressesForEntity')
+  + '\nreturn { entityOptions, addressesForEntity, entityNameOf };')(contracts);
 
 const ENTITY_ROWS = [
   { contractId: '1', merchantName: 'Central Ladprao', counterParty: 'Central Pattana PCL',
@@ -1064,4 +1065,57 @@ test('the table shows merchant and address only', () => {
   assert.ok(!/fmt2\(r\.payout\)/.test(fn), 'no amount per row');
   assert.match(grab('schedulePlan'), /Number\(r\.payout\) > 0/,
     'but the share still decides who is included');
+});
+
+// ── A renamed entity must be renamed EVERYWHERE (2026-09-30) ──────────────────────────────
+// Entity records were introduced and then only wired into the grid and the editors. Five other
+// places went on reading the raw `counterParty` string, so renaming an entity left the OLD name
+// on the rev-sending table, on the run detail, in the FOLDER NAMES inside the per-merchant zip,
+// on the Archived screen and in the exported merchant sheet — and, worst, made the Mailing entity
+// picker match nothing, so choosing that entity filled in no addresses at all.
+const RENAMED = [{ entityId: 'e1', name: 'Kaganoya Japan Co., Ltd.' }];
+const LINKED = [
+  { contractId: 'k1', merchantName: 'Kaganoya', entityId: 'e1',
+    counterParty: 'Kaganoya (old name)', financeContactEmail: 'ap@kaganoya.th.com' },
+  { contractId: 'u1', merchantName: 'Unlinked Co', counterParty: 'Plain String Ltd',
+    financeContactEmail: 'ap@plain.com' },
+];
+
+test('a linked contract reads its RECORD, not the string it used to carry', () => {
+  const { entityNameOf } = entityFns(LINKED);
+  assert.equal(entityNameOf(LINKED[0], RENAMED), 'Kaganoya Japan Co., Ltd.');
+  assert.equal(entityNameOf(LINKED[1], RENAMED), 'Plain String Ltd', 'unlinked still falls back');
+  assert.equal(entityNameOf(LINKED[0], []), 'Kaganoya (old name)',
+    'and a record that has gone falls back rather than showing nothing');
+});
+
+test('the entity picker lists the NEW name and finds its addresses', () => {
+  const { entityOptions, addressesForEntity } = entityFns(LINKED);
+  assert.deepEqual(entityOptions(LINKED, RENAMED), ['Kaganoya Japan Co., Ltd.', 'Plain String Ltd']);
+  // The bug: picking the renamed entity used to match on the stale string and return nobody.
+  const r = addressesForEntity(LINKED, 'Kaganoya Japan Co., Ltd.', RENAMED);
+  assert.deepEqual(r.addresses, ['ap@kaganoya.th.com']);
+  assert.deepEqual(r.withAddress, ['Kaganoya']);
+  // And the old name no longer matches, which is the point of renaming it.
+  assert.deepEqual(addressesForEntity(LINKED, 'Kaganoya (old name)', RENAMED).addresses, []);
+});
+
+test('every screen goes through the one helper', () => {
+  const src = readFileSync(new URL('../../../frontend/app.js', import.meta.url), 'utf8');
+  // contractEntityFor feeds the send table, the run detail and the zip folder names.
+  // Stripped of comments — the comment explains that counterParty is the fallback, and grepping
+  // the whole body tested the prose. Same mistake as the repoint test earlier today.
+  const code = grab('contractEntityFor').replace(/\/\/[^\n]*/g, '');
+  assert.match(code, /entityName\(c\)/);
+  assert.ok(!/counterParty/.test(code), 'the raw string is not read here any more');
+  // The Archived screen and the merchant-sheet download.
+  assert.match(src, /<td>\$\{cell\(entityName\(c\)\)\}<\/td>/);
+  assert.match(src, /col\('Contract', 'Contract entity', c => entityName\(c\) \|\| null/);
+});
+
+test('only the editor still shows the raw string, and says what it is', () => {
+  const src = readFileSync(new URL('../../../frontend/app.js', import.meta.url), 'utf8');
+  const reads = [...src.matchAll(/c\.counterParty/g)].length;
+  assert.ok(reads <= 4, `counterParty is read ${reads} times; it should be nearly nowhere`);
+  assert.match(grab('openContractEditor'), /This row still reads its own text/);
 });

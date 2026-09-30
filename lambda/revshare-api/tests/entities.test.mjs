@@ -123,9 +123,12 @@ test('picking an entity never clears counterParty', () => {
 });
 
 test('an unlinked contract still reads its own counterParty', () => {
-  const fn = grabFn('entityName');
+  // `entityName` delegates to `entityNameOf`, which takes the entity list explicitly so the
+  // helpers that already receive `contracts` stay pure. The rule itself is unchanged.
+  const fn = grabFn('entityNameOf');
   assert.match(fn, /c\.counterParty/);
-  assert.match(fn, /entityById\(c\.entityId\)/);
+  assert.match(fn, /entities \|\| \[\]\)\.find\(x => x\.entityId === id\)/);
+  assert.match(grabFn('entityName'), /entityNameOf\(c, ENTITIES\)/);
 });
 
 // Filtering reads like the merchant search beside it: type any part of the name. Matching on

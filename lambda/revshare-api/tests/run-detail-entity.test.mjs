@@ -19,8 +19,9 @@ const grab = (n) => {
     if (app[k] === '{') d++; else if (app[k] === '}') { d--; if (!d) return app.slice(i, k + 1); }
   }
 };
-const make = (contracts) => new Function('CONTRACTS',
-  grab('contractEntityFor') + '\nreturn contractEntityFor;')(contracts);
+const make = (contracts, entities = []) => new Function('CONTRACTS', 'ENTITIES',
+  grab('entityNameOf') + '\nconst entityName = c => entityNameOf(c, ENTITIES);\n'
+  + grab('contractEntityFor') + '\nreturn contractEntityFor;')(contracts, entities);
 
 test('a payout row resolves the entity from its contract', () => {
   const f = make([{ contractId: 'c1', merchantName: 'AOT', counterParty: 'AOT Public Co., Ltd.' }]);
