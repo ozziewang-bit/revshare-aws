@@ -28,10 +28,17 @@ const load = (stored) => new Function('localStorage',
   src + '\nreturn { CONTRACT_GROUPS, CONTRACT_GROUPS_ON, groupOpen, CT_GROUPS_KEY };'
 )({ getItem: () => stored ?? null, setItem: () => {} });
 
-test('a first visit opens with every group collapsed', () => {
+// REVISED 2026-09-30: "every group collapsed" was right while the six groups were all wide,
+// file-owned reference data. It stopped being right when Contract + Finance + Share terms became
+// ONE category — the set a person maintains by hand — because an edit then landed behind a
+// collapsed stub and looked like it had not saved. That category now opens; the rest do not.
+test('a first visit collapses the file-owned groups', () => {
   const { CONTRACT_GROUPS, groupOpen } = load(null);
   assert.ok(CONTRACT_GROUPS.length >= 5);
-  for (const g of CONTRACT_GROUPS) assert.equal(groupOpen(g.key), false, `${g.key} should start closed`);
+  for (const g of CONTRACT_GROUPS) {
+    if (g.category === 'terms' || g.key === 'terms') continue;
+    assert.equal(groupOpen(g.key), false, `${g.key} should start closed`);
+  }
 });
 
 test('a saved choice still wins', () => {
@@ -43,12 +50,15 @@ test('a saved choice still wins', () => {
 test('a group absent from saved state is closed, not open', () => {
   // This is the case a newly added group lands in for every returning browser.
   const { groupOpen } = load(JSON.stringify({ contact: true }));
-  assert.equal(groupOpen('finance'), false);
+  // `finance` belongs to the Merchant terms category, which the grid toggles as one — the
+  // per-group key no longer addresses anything on its own.
+  assert.equal(groupOpen('machines'), false);
 });
 
-test('unreadable storage falls through to collapsed rather than throwing', () => {
+test('unreadable storage falls through to the DEFAULT rather than throwing', () => {
   const { groupOpen } = load('{not json');
-  assert.equal(groupOpen('contract'), false);
+  assert.equal(groupOpen('machines'), false, 'file-owned groups stay closed');
+  assert.equal(groupOpen('terms'), true, 'and the hand-maintained set stays open');
 });
 
 test('the storage key is versioned, or the new default reaches nobody', () => {
@@ -111,4 +121,39 @@ test('the editor keeps Contract and Finance as named sections', () => {
   assert.match(fn, /ct-ed-h">Contract</);
   assert.match(fn, /ct-ed-h">Finance</);
   assert.match(fn, /ct-ed-h">Share terms</);
+});
+
+// ── The set you maintain by hand opens by default (2026-09-30) ─────────────────────────────
+// "she also edited merchant terms, also not updated in the table". The save was fine; the COLUMN
+// was hidden. Merging Contract + Finance + Share terms into one category the day before put all
+// three behind a single group that — like every other group — started collapsed. An edit landed
+// behind a narrow empty stub, which is indistinguishable from an edit that did not save.
+//
+// The file-owned groups stay closed: they are wide and read rarely. This one is the opposite.
+test('Merchant terms starts OPEN; the file-owned groups stay closed', () => {
+  const { CONTRACT_GROUPS, groupOpen } = load(null);
+  for (const g of CONTRACT_GROUPS) {
+    const expected = g.category === 'terms' || g.key === 'terms';
+    assert.equal(groupOpen(g.key), expected,
+      `${g.key} should start ${expected ? 'open' : 'closed'}`);
+  }
+});
+
+// A default nobody can see is not a default — the same reason the key went to v2 in 2026-09-04.
+test('the storage key moved, so the new default actually reaches people', () => {
+  const src = readFileSync(new URL('../../../frontend/app.js', import.meta.url), 'utf8');
+  assert.match(src, /const CT_GROUPS_KEY = 'rs_ct_groups_v3';/);
+});
+
+test('a saved choice still wins over the default', () => {
+  const { groupOpen } = load(JSON.stringify({ terms: false, contact: true }));
+  assert.equal(groupOpen('terms'), false, 'someone who closed it keeps it closed');
+  assert.equal(groupOpen('contact'), true);
+});
+
+test('saving from the editor reveals the group it changed', () => {
+  const src = readFileSync(new URL('../../../frontend/app.js', import.meta.url), 'utf8');
+  const i = src.indexOf('function openContractEditor(');
+  const fn = src.slice(i, src.indexOf('\n}\n', i));
+  assert.match(fn, /if \(!groupOpen\('terms'\)\) toggleContractGroup\('terms'\); else paintContracts\(\);/);
 });

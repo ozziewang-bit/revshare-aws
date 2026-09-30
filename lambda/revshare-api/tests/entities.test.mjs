@@ -169,3 +169,32 @@ test('both dialogs use the one control', () => {
   assert.match(grabFn('openContractEditor'), /entityPickerHtml\('ce-entity'/);
   assert.match(grabFn('openAddFromFile'), /entityPickerHtml\('af-entity'/);
 });
+
+// ── The terms viewer must not be a dead end (2026-09-30) ───────────────────────────────────
+// "why pavarisa can't edit PMCU terms" — she could: manageMerchants granted, the route allows
+// it, PMCU is live with the simplest possible rule. What stopped her was the screen. Every grid
+// cell was made inert the day before EXCEPT the Rev terms cell, which opens a READ-ONLY viewer.
+// Clicking the thing that most looks like "the terms" gave a window you cannot type in, whose
+// only advice pointed at a column label ("Edit terms") that had been renamed to "Edit".
+test('the read-only terms viewer offers a way to edit', () => {
+  const fn = grabFn('openTermsView');
+  assert.match(fn, /id="ct-tv-edit"/);
+  assert.match(fn, /close\(\); openContractEditor\(contractId\);/);
+  assert.match(fn, /can\('manageMerchants'\) \?/, 'and only to someone who may');
+});
+
+test('it no longer points at a column label that does not exist', () => {
+  const fn = grabFn('openTermsView');
+  assert.ok(!/Edit terms<\/strong> at the end of the row/.test(fn));
+  assert.match(fn, /contract, finance and share terms are changed together/);
+});
+
+test('a read-only user is told WHY, not sent somewhere', () => {
+  const fn = grabFn('openTermsView');
+  assert.match(fn, /needs the “Manage merchants” permission/);
+});
+
+// The grid itself still edits nothing — the rule from 2026-09-29 stands.
+test('the terms cell still opens the viewer, never the editor', () => {
+  assert.match(app, /if \(terms\) \{ openTermsView\(terms\.closest\('tr'\)\.dataset\.id\); return; \}/);
+});

@@ -1285,3 +1285,15 @@ p.rc-warn {
   border-radius: 10px; padding: 10px 14px; margin-bottom: 12px; font-size: 13px;
 }
 .up-deleted { color: var(--loss, #c92a2a); font-size: 12.5px; font-weight: 600; }
+
+/* The minimum-guarantee section when the chosen payout method ignores it. Scoped to the rule
+   form so it cannot restyle any other warning on the page. */
+.rule-form .mg-inert {
+  margin: 6px 0 0;
+  padding: 9px 11px;
+  border-radius: var(--radius-sm, 6px);
+  background: var(--warn-soft, #fff4e6);
+  color: var(--warn, #e67700);
+  font-size: 12.5px;
+  line-height: 1.6;
+}

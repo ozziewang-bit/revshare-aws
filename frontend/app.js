@@ -1356,13 +1356,21 @@ function contractCategoryOf(groupKey) {
 // every returning browser — keeping the key would have shipped a new default that nobody using
 // the screen could see. The cost is one deliberate reset of a low-stakes preference; choices
 // made from here on persist as before.
-const CT_GROUPS_KEY = 'rs_ct_groups_v2';
+// v3 (2026-09-30): the three terms groups became one category, so saved per-group choices no
+// longer address anything, and the default for that category changed to OPEN. Keeping the old
+// key would have shipped a default only a brand-new browser could see.
+const CT_GROUPS_KEY = 'rs_ct_groups_v3';
 let CONTRACT_GROUPS_ON = (() => {
   try {
     const saved = JSON.parse(localStorage.getItem(CT_GROUPS_KEY) || 'null');
     if (saved && typeof saved === 'object') return saved;
   } catch { /* corrupt or unavailable storage — fall through to all-collapsed */ }
-  return Object.fromEntries(CONTRACT_GROUPS.map(g => [g.key, false]));
+  // MERCHANT TERMS OPENS BY DEFAULT (2026-09-30). Everything else stays closed: those groups are
+  // file-owned, wide, and read rarely. `terms` is the opposite — it is the one set maintained by
+  // hand, and it now covers contract, finance AND share terms since the three were merged into
+  // one category. Leaving it collapsed meant an edit saved correctly and the table showed a
+  // narrow empty stub, which reads as "my change did not save".
+  return Object.fromEntries(CONTRACT_GROUPS.map(g => [g.key, g.category === 'terms' || g.key === 'terms']));
 })();
 // One definition of "is this group open", used by the layout AND the toggle. They disagreed in
 // the obvious way when the default flipped: a group that is open unless explicitly false, and a
@@ -1791,7 +1799,9 @@ function openContractEditor(contractId) {
         method: 'PUT', body: JSON.stringify(body) });
       Object.assign(c, saved || body);
       close();
-      paintContracts();
+      // Show what was just changed. Everything this dialog edits lives in the Merchant terms
+      // group, and a save landing behind a collapsed stub is indistinguishable from no save.
+      if (!groupOpen('terms')) toggleContractGroup('terms'); else paintContracts();
     } catch (e) {
       btn.disabled = false; err.hidden = false; err.textContent = 'Could not save: ' + e.message;
     }
@@ -1967,12 +1977,21 @@ function openTermsView(contractId) {
         <h3 style="margin:0 0 2px;">${escape(c.merchantName)}</h3>
         <p class="muted" style="margin:0;font-size:12.5px;">Revenue-share terms</p>
       </div>
-      <button type="button" id="ct-tv-close" class="btn">Close</button>
+      <div style="display:flex;gap:8px;">
+        ${can('manageMerchants') ? '<button type="button" id="ct-tv-edit" class="btn-primary">Edit…</button>' : ''}
+        <button type="button" id="ct-tv-close" class="btn">Close</button>
+      </div>
     </div>
     <div id="ct-tv-rule" style="margin-top:16px;"></div>
-    <p class="muted" style="margin:14px 0 0;font-size:12px;">Read-only. Use <strong>Edit terms</strong> at the end of the row to change these.</p>`;
+    <p class="muted" style="margin:14px 0 0;font-size:12px;">${can('manageMerchants')
+      ? 'Read-only here. <strong>Edit…</strong> opens the merchant, where contract, finance and share terms are changed together.'
+      : 'Read-only — changing revenue-share terms needs the “Manage merchants” permission.'}</p>`;
   renderStructuredRuleEditor(card.querySelector('#ct-tv-rule'), c.rule, MACHINE_MODELS_CACHE, { readOnly: true });
   card.querySelector('#ct-tv-close').addEventListener('click', close);
+  // The viewer used to be a dead end that pointed at a column label ("Edit terms") which no
+  // longer exists — the grid's own cells are inert, so clicking the terms cell left someone
+  // with no way forward and the impression they were not allowed to edit.
+  card.querySelector('#ct-tv-edit')?.addEventListener('click', () => { close(); openContractEditor(contractId); });
 }
 
 // Add/update the revenue-share terms on a merchant row: aggregation mode, whether it is
@@ -2024,6 +2043,16 @@ async function openTermsEditor(contractId, onSaved) {
     try {
       let rule;
       try { rule = editor.getRule(); } catch (e) { alert('Invalid rule: ' + e.message); return; }
+      // Never save something that quietly throws a term away. PMCU is how this was found: an MG
+      // was typed against a `hybrid` method, the save succeeded, and the value was gone.
+      const dropped = editor.droppedTerms?.() || [];
+      if (dropped.length && !confirm(
+          `This would save WITHOUT ${dropped.join(' and ')}.\n\n`
+          + `The payout method you have chosen adds the terms together, and a minimum guarantee `
+          + `is a floor — it is only used by "Whichever is higher" and "Hybrid-higher".\n\n`
+          + `Cancel to go back and change the method, or OK to save without it.`)) {
+        return;
+      }
       const saved = await api('/contracts/' + encodeURIComponent(contractId), { method: 'PUT',
         body: JSON.stringify({ rule, noPayout: nopay.checked, aggregationMode: agg.value }) });
       Object.assign(c, saved);
@@ -5022,6 +5051,9 @@ async function parseOrderReport(file) {
     // the summary block and says the order detail was not recorded.
     .map(r => ({ merchantName: String(r['Rental Merchant'] || '').trim(),
                  netAmount: Number(r['Net Amount'] || 0),
+                 // Column A of the order report. Kept from 2026-09-30 for the statement's order
+                 // block; runs before that date have no order numbers and the column is blank.
+                 orderNo: String(pick(r, 'Order No.') ?? '').trim(),
                  machineNo: String(pick(r, 'Rental Machine No.') ?? '').trim(),
                  rentalTime: String(r['Rental Time'] ?? '').trim(),
                  returnTime: String(r['Return Time'] ?? '').trim(),
@@ -5218,6 +5250,18 @@ function apportion(total, weights) {
 // those the sheet carries the pivot and says so rather than inventing rows.
 const SHEET_SAFE = /[\\/?*\[\]:]/g;
 
+// THE STATEMENT, in the shape finance already reconciles against (Template_Revenue Share.xlsx,
+// read 2026-09-30). One merchant per file, two blocks.
+//
+// Block 1 — a pivot per rental place, with the share split for tax:
+//   Rental Place · รุ่นเครื่อง · จำนวนการยืม · ยอดรายได้ทั้งหมด · ส่วนแบ่งรายได้ (%) ·
+//   มูลค่าส่วนแบ่ง (ฐานภาษี) · ภาษี · ยอดรวม
+// Block 2 — the merchant's name on its own row, then every rental:
+//   Order No. · Rental Time · Rental Merchant · Rental KA Name · Return Time ·
+//   Rental Duration · Net Amount · Order Status
+//
+// Verified against all three rows of the template: ยอดรวม is the payout, the base is that
+// divided by 1.07 and the tax is the difference — i.e. THE PAYOUT IS TREATED AS VAT-INCLUSIVE.
 function buildPartnerSheet(XLSXns, result, orders, kaByStore) {
   const merchants = result.merchants || [];
   const eng = result.engineResult || {};
@@ -5234,47 +5278,82 @@ function buildPartnerSheet(XLSXns, result, orders, kaByStore) {
     shares = apportion(result.payout || 0, merchants.map(m => Math.max(0, Number(m.revenue) || 0)));
   }
 
-  // The amount columns carry the currency. The source format omits it because it only ever
-  // described one country; with two regions sharing this download, a statement of bare numbers
-  // is ambiguous. Taken from the merchant's own stored currency, not the region, so a run can
-  // never label a merchant with a currency it is not paid in.
-  const ccy = result.currency || '';
-  const money = (label) => ccy ? `${label} (${ccy})` : label;
-  const aoa = [['Rental Place', 'Count of order number', money('Sum of Paid'), 'Max of Sharing Rate', money('Sum of Sharing Amount')]];
-  let nOrders = 0, sumPaid = 0, sumShare = 0, maxRate = 0;
+  const aoa = [['Rental Place', 'รุ่นเครื่อง', 'จำนวนการยืม', 'ยอดรายได้ทั้งหมด',
+                'ส่วนแบ่งรายได้ (%)', 'มูลค่าส่วนแบ่ง (ฐานภาษี)', 'ภาษี', 'ยอดรวม']];
+  let nOrders = 0, sumPaid = 0, sumShare = 0;
   merchants.forEach((m, i) => {
-    const rate = m.revenue > 0 ? shares[i] / m.revenue : 0;
-    nOrders += m.rentals; sumPaid += m.revenue; sumShare += shares[i];
-    maxRate = Math.max(maxRate, rate);
-    aoa.push([m.merchantName, m.rentals, round2(m.revenue), round4(rate), round2(shares[i])]);
+    const total = shares[i];
+    const { base, tax } = splitTax(total);
+    nOrders += m.rentals; sumPaid += m.revenue; sumShare += total;
+    aoa.push([m.merchantName, modelLabel(m.model), m.rentals, round2(m.revenue),
+              m.revenue > 0 ? round4(total / m.revenue) : 0, base, tax, round2(total)]);
   });
   if (perStore && eng.topLevel && eng.topLevel.payout) {
-    sumShare += eng.topLevel.payout;
-    aoa.push(['(merchant-level lump sum)', null, null, null, round2(eng.topLevel.payout)]);
+    const lump = eng.topLevel.payout;
+    const { base, tax } = splitTax(lump);
+    sumShare += lump;
+    aoa.push(['(merchant-level lump sum)', '', null, null, null, base, tax, round2(lump)]);
   }
-  aoa.push(['Grand Total', nOrders, round2(sumPaid), round4(maxRate), round2(sumShare)]);
+  // The total's tax is computed FROM the total, not by adding the rounded parts — which is what
+  // the template itself does.
+  const gt = splitTax(sumShare);
+  aoa.push(['Grand Total', '', nOrders, round2(sumPaid),
+            sumPaid > 0 ? round4(sumShare / sumPaid) : 0, gt.base, gt.tax, round2(sumShare)]);
 
-  aoa.push([], []);
+  aoa.push([]);
+  aoa.push([result.merchantName]);
   if (orders) {
-    aoa.push(['Rental Time', 'Rental Merchant', 'Rental KA Name', 'Return Time', 'Return Merchant',
-              'Return KA Name', 'Rental Duration', money('Net Amount'), 'Order Status']);
+    // `Return Merchant` is kept (user, 2026-09-30) even though the template drops it — it sits
+    // beside Return Time, where it belongs, and it is already on every stored order.
+    aoa.push(['Order No.', 'Rental Time', 'Rental Merchant', 'Rental KA Name', 'Return Time',
+              'Return Merchant', 'Rental Duration', 'Net Amount', 'Order Status']);
     for (const o of orders) {
-      aoa.push([o.rentalTime || '', o.merchantName || '', result.merchantName,
+      aoa.push([o.orderNo || '', o.rentalTime || '', o.merchantName || '', result.merchantName,
                 o.returnTime || '', o.returnMerchant || '',
-                // The brand that owns the RETURN store, which is often a different merchant —
-                // and blank when it is a store this run never saw.
-                kaByStore.get(String(o.returnMerchant || '').toLowerCase().trim()) || R().notFound,
                 o.duration ?? '', Number(o.netAmount) || 0, o.orderStatus || '']);
     }
   } else {
-    aoa.push(['Order detail was not recorded for this run.']);
+    // A run from before the order detail was kept. Say so rather than print an empty block that
+    // reads as "this merchant had no rentals".
+    aoa.push(['This run predates the stored order detail, so the rentals cannot be listed.']);
   }
-
-  const ws = XLSXns.utils.aoa_to_sheet(aoa);
-  ws['!cols'] = [{ wch: 46 }, { wch: 20 }, { wch: 14 }, { wch: 18 }, { wch: 20 },
-                 { wch: 46 }, { wch: 16 }, { wch: 14 }, { wch: 14 }];
-  return ws;
+  return XLSXns.utils.aoa_to_sheet(aoa);
 }
+
+// THE ONE PLACE TAX IS DECIDED (2026-09-30). The user: "let's do with VAT, but I might change to
+// without later" — so it is a single switch, not a rule spread across the sheet builder.
+//
+// `mode: 'inclusive'` means the payout the engine computed already contains the tax, which is
+// what the template does: base = total / 1.07, tax = total − base. To settle terms EX-tax
+// instead, set mode to 'exclusive' and the total becomes payout × (1 + rate).
+//
+// Per REGION, because the rate is a country's, not a merchant's. If it ever needs to vary by
+// merchant — a merchant not VAT-registered — this becomes a field on the contract and the
+// lookup moves here; nothing else in the sheet changes.
+const TAX = {
+  th: { rate: 0.07, mode: 'inclusive' },
+  sg: { rate: 0,    mode: 'inclusive' },
+};
+
+function splitTax(total) {
+  const t = Number(total) || 0;
+  const { rate, mode } = TAX[REGION] || { rate: 0, mode: 'inclusive' };
+  if (!rate) return { base: round2(t), tax: 0 };
+  if (mode === 'exclusive') {
+    const tax = round2(t * rate);
+    return { base: round2(t), tax, gross: round2(t + tax) };
+  }
+  const base = round2(t / (1 + rate));
+  return { base, tax: round2(t - base) };
+}
+
+// The template writes the device code with a hyphen before the digits — `S-8`, `LL-40` — while
+// the app stores `S8`, `LL40`. Display only; nothing is matched on this.
+function modelLabel(code) {
+  const c = String(code || '').trim();
+  return c ? c.replace(/^([A-Za-z]+)(\d)/, '$1-$2') : '';
+}
+
 
 const round2 = v => Math.round(Number(v) * 100) / 100;
 const round4 = v => Math.round(Number(v) * 10000) / 10000;
@@ -6952,6 +7031,10 @@ function renderStructuredRuleEditor(container, initialRule, machineModels, { rea
   }
 
   function draw() {
+    // A minimum guarantee is only consulted by the two comparing methods — compileRule leaves it
+    // out of `default` and `hybrid` entirely (2026-09-30: PMCU is `hybrid`, someone typed an MG,
+    // the save returned success and the value was silently discarded).
+    const mgUsed = method === 'higher' || method === 'hybrid-higher';
     container.innerHTML = `
       ${(() => {
         return `
@@ -7007,6 +7090,11 @@ function renderStructuredRuleEditor(container, initialRule, machineModels, { rea
         </table>
 
         <div class="section-label" style="margin-top:18px;">Minimum guarantee <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--ink-faint);">— optional floor (per machine type), paid whichever is higher</span></div>
+        ${mgUsed ? '' : `<p class="mg-inert">A minimum guarantee is a <strong>floor</strong>, so it only
+          means anything when it is compared against something. The payout method above is
+          <strong>${escape((PAYOUT_METHOD_META.find(m => m.val === method) || {}).title || method)}</strong>, which adds the terms up —
+          so anything entered here is <strong>not used and will not be saved</strong>. Choose
+          <em>Whichever is higher</em> or <em>Hybrid-higher</em> to use one.</p>`}
         <table class="row-form">
           <thead><tr>
             <th style="width:50%">Device type</th>
@@ -7015,15 +7103,15 @@ function renderStructuredRuleEditor(container, initialRule, machineModels, { rea
           </tr></thead>
           <tbody>
             ${(form.mgRows || []).map((r, i) => `<tr>
-              <td><select class="mg-model" data-i="${i}" ${d(rawMode)}>
+              <td><select class="mg-model" data-i="${i}" ${d(rawMode || !mgUsed)}>
                 <option value="">— select —</option>
                 <option value="ALL" ${r.model === 'ALL' ? 'selected' : ''}>All device types</option>
                 ${(machineModels || []).map(m => `<option value="${escape(m.code)}" ${r.model===m.code?'selected':''}>${escape(m.displayName)}</option>`).join('')}
               </select></td>
-              <td><input class="mg-amt" data-i="${i}" type="number" min="0" value="${r.amount||0}" ${d(rawMode)}></td>
+              <td><input class="mg-amt" data-i="${i}" type="number" min="0" value="${r.amount||0}" ${d(rawMode || !mgUsed)}></td>
               ${readOnly ? '' : `<td style="text-align:center"><button class="mg-del btn-ghost" data-i="${i}" style="color:var(--loss);padding:4px 8px;font-size:13px;" ${rawMode?'disabled':''}>✕</button></td>`}
             </tr>`).join('')}
-            ${(!readOnly && !rawMode) ? '<tr><td colspan="3" style="padding-top:4px"><button id="mg-add" class="add-row-btn">+ Add device type</button></td></tr>' : ''}
+            ${(!readOnly && !rawMode && mgUsed) ? '<tr><td colspan="3" style="padding-top:4px"><button id="mg-add" class="add-row-btn">+ Add device type</button></td></tr>' : ''}
           </tbody>
         </table>
 
@@ -7099,6 +7187,18 @@ function renderStructuredRuleEditor(container, initialRule, machineModels, { rea
       }
       captureInputs();
       return compileRule(form);
+    },
+    // What this save would silently drop. The greying above should make it unreachable, but a
+    // rule loaded with an MG and then switched to `hybrid` still holds the values — and losing
+    // a guarantee without being told is how a merchant quietly stops being paid its floor.
+    droppedTerms() {
+      if (rawMode) return [];
+      captureInputs();
+      const mgUsed = form.method === 'higher' || form.method === 'hybrid-higher';
+      const mg = (form.mgRows || []).filter(r => r.model && Number(r.amount) > 0);
+      return (!mgUsed && mg.length)
+        ? [`the minimum guarantee (${mg.map(r => `${r.model} ${r.amount}`).join(', ')})`]
+        : [];
     }
   };
 }

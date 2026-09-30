@@ -12,7 +12,10 @@ sends each merchant its statement from the partner group address — §1q.)
 2026-09-29: an **Upload** nav page — the weekly files, the mismatches, and a button per row (§1r);
 **contract entities are records** with their own id (§1s); **a run writes nothing** and reads a
 stored roster (§1t); editing left the Merchant view grid for one Edit dialog (§1u).
-Service-worker `CACHE_VERSION` is at `revshare-v229` (bump on every shell change).
+2026-09-30: the statement follows finance's own template, with the share split for tax (§1x);
+a term can no longer be discarded in silence, and the set you maintain by hand opens by
+default (§1y).
+Service-worker `CACHE_VERSION` is at `revshare-v233` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
 end-to-end before touching anything. The codebase is the ultimate source of
@@ -1260,6 +1263,66 @@ and all 574 rows holding units were verified uncorrupted.
 Also fixed: `POST /contracts/import` recorded a REVIEW's plan under the keys `created`/`updated`,
 so the 21 Sep review-only upload is stored as "25 created, 258 updated" having written nothing.
 The response was always honest; the stored row, which outlives it, was not.
+
+
+## 1x. The statement follows finance's template (2026-09-30)
+
+`Template_Revenue Share.xlsx`, read rather than guessed at. One merchant per file, two blocks.
+
+**Block 1 — a pivot per rental place**, Thai headers, with the share split for tax:
+`Rental Place · รุ่นเครื่อง · จำนวนการยืม · ยอดรายได้ทั้งหมด · ส่วนแบ่งรายได้ (%) ·
+มูลค่าส่วนแบ่ง (ฐานภาษี) · ภาษี · ยอดรวม`, then a Grand Total row.
+
+**Block 2 — the merchant's name on its own row**, then every rental:
+`Order No. · Rental Time · Rental Merchant · Rental KA Name · Return Time · Return Merchant ·
+Rental Duration · Net Amount · Order Status`. `Return Merchant` is kept at the user's request
+though the template drops it; `Return KA Name` is gone, and `User Type` was swapped for
+`Order No.` on the same call.
+
+- **THE PAYOUT IS TREATED AS VAT-INCLUSIVE.** Verified against all three of the template's own
+  rows: `ยอดรวม` is the payout, `ฐานภาษี` is that ÷ 1.07 and `ภาษี` is the difference
+  (1420 × 0.2 = 284 → 265.42 + 18.58). The grand total is taxed FROM the total, not by adding
+  the rounded rows — as the template does.
+- **Tax is decided in ONE place**, `TAX` + `splitTax`: `th: { rate: 0.07, mode: 'inclusive' }`,
+  `sg: { rate: 0 }`. The user asked for VAT now and may want it without later — `mode:
+  'exclusive'` makes the payout the base and adds the tax on top, and a test proves that switch.
+  No rate appears anywhere in the sheet builder; a test enforces that too. If it ever has to vary
+  per merchant (one not VAT-registered), it becomes a contract field and only this lookup moves.
+- `Order No.` is kept by `parseOrderReport` from 2026-09-30 — **runs before that have none**, and
+  the column is blank for them. The device model was already on every stored store row, so
+  block 1 works on past runs.
+- `modelLabel` hyphenates for display only (`S8` → `S-8`, `LL40` → `LL-40`); nothing matches on it.
+- `tests/statement-template.test.mjs` uses the template's own numbers as the fixture: if the
+  arithmetic drifts, a merchant's file has changed and the suite says so.
+
+## 1y. Nothing is discarded in silence (2026-09-30)
+
+Two reports, same symptom — "I edited it and the table did not update" — two different causes.
+
+**A minimum guarantee entered against the wrong method was thrown away.** `compileRule` excludes
+MG from `default` and `hybrid` **by design**: an MG is a FLOOR, so it only means anything when
+compared against something, which is what `higher` and `hybrid-higher` do. Adding it to a sum
+would pay the guarantee on top of the share. The maths was right; the screen accepted a value it
+discarded — PMCU's save returned 200 and the stored rule was unchanged. Now the MG section says
+so in amber, its inputs go dead in those modes, and a save that would drop a term refuses and
+names it. Swept both regions: 7 live TH rules carry an MG, 0 SG, and **none** was stored under a
+method that ignores it — PMCU would have been the first.
+
+**And everything the Edit dialog changes was hidden.** Merging Contract + Finance + Share terms
+into one `Merchant terms` category (§1u) put the whole set behind a single group that, like every
+other, started collapsed — so a correct save landed behind a narrow empty stub. **That category
+now opens by default**; the file-owned groups stay closed, since those are wide and read rarely.
+Saving from the editor opens it if it is shut. Storage key → `rs_ct_groups_v3`, because a default
+only a brand-new browser can see is not a default.
+
+**Also fixed:** the read-only terms viewer was a dead end that pointed at a column label
+("Edit terms") renamed the day before. It now carries an `Edit…` button for anyone with
+`manageMerchants`, and tells everyone else why they cannot.
+
+⚠ The test extractors in this suite brace-match from the first `{`, which is the PARAMETER on a
+function like `renderStructuredRuleEditor(..., { readOnly = false })` — two tests passed
+vacuously against 95 characters of signature before this was caught. `statement-template.test.mjs`
+skips the parameter list properly; the others still have the flaw.
 
 ## 2. Live URLs and resources
 
