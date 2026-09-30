@@ -3338,6 +3338,121 @@ function similarExistingMerchants(name) {
   return out.sort((a, b) => b.score - a.score).slice(0, 3);
 }
 
+
+
+// The files one send carries: the template's own, fetched ONCE for the whole batch, plus this
+// send's. Shared by the typed path and the send-to-all path so the two cannot differ about what
+// is attached or how big it may be. Returns null when something went wrong — the caller stops.
+async function collectAttachments(template, chosen, btn, err) {
+  const files = [];
+  if (template.attachmentKey) {
+    try {
+      btn.textContent = 'Fetching the attachment…';
+      const f = await api(`/mail-templates/${encodeURIComponent(template.id)}/attachment`);
+      const bin = atob(f.data);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      files.push({ bytes, filename: f.name, type: f.type });
+    } catch (e) {
+      // Better to send nothing than a letter whose attachment silently went missing.
+      err.hidden = false;
+      err.textContent = `Could not fetch ${template.attachmentName}: ${e.message}. Nothing was sent.`;
+      return null;
+    }
+  }
+  if (chosen.length) {
+    try {
+      btn.textContent = 'Reading the files…';
+      for (const f of chosen) {
+        files.push({ bytes: new Uint8Array(await f.arrayBuffer()), filename: f.name,
+                     type: f.type || 'application/octet-stream' });
+      }
+    } catch (e) {
+      err.hidden = false;
+      err.textContent = `Could not read the attached files: ${e.message}. Nothing was sent.`;
+      return null;
+    }
+  }
+  return files;
+}
+
+// Every merchant a period PAID, with its finance address and its share — and one send (2026-09-30).
+//
+// §1q said "no bulk send — one merchant at a time, deliberately". That is reversed here, at the
+// user's request, for the payment schedule: it is the same letter to everyone, personalised only
+// by the figures, and doing it 120 times by hand is how a month gets skipped. What that decision
+// bought is kept in other form: the confirmation states the count AND the total about to be
+// quoted, a failure stops the batch rather than ploughing on, and EVERY send is recorded.
+//
+// Pure: takes a run and the contracts, returns the three groups. No DOM, no fetch.
+function schedulePlan(run, sentLog) {
+  const sent = new Map((sentLog || []).map(m => [m.contractId, m]));
+  const ready = [], already = [], noFinance = [], noShare = [];
+  for (const r of (run?.results || []).slice().sort((a, b) => (b.payout || 0) - (a.payout || 0))) {
+    // ONLY merchants with a share this month (user, 2026-09-30). A run's results can carry a
+    // merchant that earned nothing — telling it a payment is on the way would be wrong.
+    if (!(Number(r.payout) > 0)) { noShare.push(r); continue; }
+    const to = mailRecipients(r.contractId);
+    if (sent.has(r.contractId)) already.push({ ...r, to, sentAt: sent.get(r.contractId).sentAt });
+    else if (to.length) ready.push({ ...r, to });
+    else noFinance.push({ ...r, to: [], fallback: fallbackContact(r.contractId) });
+  }
+  return { ready, already, noFinance, noShare,
+           total: ready.reduce((a, r) => a + (Number(r.payout) || 0), 0) };
+}
+
+async function drawSchedulePaidList(host, template, period) {
+  const box = host.querySelector('#mmsg-paid');
+  box.innerHTML = '<p class="muted">Loading the period…</p>';
+  const runs = await api('/bulk-runs').catch(() => []);
+  // `periodMonth`, NOT `periodTag` — the tag is '2026_09' with an underscore (it names files),
+  // while <input type="month"> gives '2026-09'. They never matched, so a period that HAD a run
+  // was reported as having none.
+  const run0 = (runs || []).find(r => periodMonth(r.periodStart) === period);
+  if (!run0) {
+    box.innerHTML = `<p class="rc-warn">No run has been computed for <strong>${escape(period)}</strong>,
+      so there are no share amounts to send. Compute the run first, or choose another period.</p>`;
+    return null;
+  }
+  const [run, log] = await Promise.all([
+    api('/bulk-runs/' + encodeURIComponent(run0.runId)),
+    api(`/bulk-runs/${encodeURIComponent(run0.runId)}/mail-log`).catch(() => []),
+  ]);
+  // Only this template's own sends count as "already done" — a statement sent from the run page
+  // is a different letter and must not hide a schedule that has not gone.
+  const mine = (log || []).filter(m => m.templateId === template.id);
+  const plan = schedulePlan(run, mine);
+  const ccy = (run.results || [])[0]?.currency || CCY;
+
+  const rows = (list, extra) => list.map(r => `<tr>
+      <td>${escape(r.merchantName)}</td>
+      <td>${r.to.length ? escape(r.to.join(', ')) : '<span class="rc-warn">no finance email</span>'}</td>
+      <td class="muted">${extra(r)}</td>
+    </tr>`).join('');
+
+  box.innerHTML = `
+    <div class="up-sum" style="margin:0 0 12px;">
+      <div class="up-sum-row"><strong>${plan.ready.length}</strong> merchant(s) to notify —
+        those with a share in ${escape(period)}
+        ${plan.already.length ? `<span class="muted">· ${plan.already.length} already sent</span>` : ''}
+        ${plan.noFinance.length ? `<span class="rc-warn">· ${plan.noFinance.length} with no finance email</span>` : ''}
+        ${plan.noShare.length ? `<span class="muted">· ${plan.noShare.length} with no share this month, not written to</span>` : ''}</div>
+      <div class="up-sum-row muted">This is a NOTICE — the figures are in the file attached to the
+        template, not in the wording. Each merchant is written to on its own, so nobody sees the
+        others.</div>
+    </div>
+    <div class="msend-scroll">
+      <table class="ts"><thead><tr><th>Merchant</th><th>Finance email</th><th></th></tr></thead>
+        <tbody>
+          ${rows(plan.ready, () => '')}
+          ${rows(plan.already, r => `sent ${escape(new Date(r.sentAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }))}`)}
+          ${rows(plan.noFinance, r => r.fallback.length
+              ? `only a contact address on file: ${escape(r.fallback.join(', '))}` : 'no address at all')}
+        </tbody></table>
+    </div>`;
+  return { run, plan, ccy };
+}
+
 // Bring ONE merchant from the file into the list, terms and all (2026-09-29).
 //
 // The two categories stay separate here, visibly: everything the FILE says is shown as fact and
@@ -5727,6 +5842,13 @@ async function renderMessageSend(host, template) {
     <div class="mail-form" style="max-width:760px;">
       <div class="mail-row">
         <label><span>2 · Period</span><input type="month" id="mmsg-period" value="${escape(lastMonth)}"></label>
+        <label><span>Send to</span><select id="mmsg-mode">
+          <option value="typed">The addresses I type</option>
+          <option value="paid">Every merchant paid in this period</option>
+        </select></label>
+      </div>
+      <div id="mmsg-typed">
+      <div class="mail-row">
         <label><span>3 · Contract entity</span>
           <input id="mmsg-entity" list="mmsg-entities" placeholder="type to filter, or leave blank">
           <datalist id="mmsg-entities">${entities.map(e =>
@@ -5734,9 +5856,10 @@ async function renderMessageSend(host, template) {
       </div>
       <p class="mail-hint" id="mmsg-entity-note" style="margin:-4px 0 12px;">Pick an entity to fill
         in its finance addresses below, or just type the addresses yourself.</p>
-      <label><span>4 · Send to</span>
+      <label><span>4 · Addresses</span>
         <input id="mmsg-to" placeholder="one or more addresses, separated by commas"></label>
       <p class="mail-meta" id="mmsg-count" style="margin:-9px 0 14px;"></p>
+      </div>
       <label><span>5 · Subject</span><input id="mmsg-subject" value=""></label>
       <label><span>Message</span><textarea id="mmsg-body"></textarea></label>
       <label><span>Attach files</span><input type="file" id="mmsg-files" multiple></label>
@@ -5749,7 +5872,10 @@ async function renderMessageSend(host, template) {
             : 'no attachment from the template'}
         · each recipient gets their own copy, so nobody sees the others.</p>
       <p class="nm-err" id="mmsg-err" hidden></p>
-      <div class="mail-actions"><button id="mmsg-send" class="btn-primary" disabled>Send</button></div>
+    </div>
+    <div id="mmsg-paid" hidden style="max-width:760px;"></div>
+    <div class="mail-actions" style="max-width:760px;">
+      <button id="mmsg-send" class="btn-primary" disabled>Send</button>
     </div>`;
 
   // Subject and body are regenerated from the template as the period/entity change, but ONLY
@@ -5815,9 +5941,27 @@ async function renderMessageSend(host, template) {
       : (raw ? '<span class="rc-warn">none of that is a valid address</span>' : 'nobody yet');
     host.querySelector('#mmsg-send').disabled = !list.length;
   };
+  let paid = null;                 // { run, plan, ccy } once a period with a run is chosen
+  const modeEl = host.querySelector('#mmsg-mode');
+  const isPaidMode = () => modeEl.value === 'paid';
+
+  async function onMode() {
+    const on = isPaidMode();
+    host.querySelector('#mmsg-typed').hidden = on;
+    host.querySelector('#mmsg-paid').hidden = !on;
+    const btn = host.querySelector('#mmsg-send');
+    if (!on) { paid = null; refresh(); btn.textContent = 'Send'; return; }
+    btn.disabled = true; btn.textContent = 'Loading…';
+    paid = await drawSchedulePaidList(host, template, host.querySelector('#mmsg-period').value);
+    const n = paid?.plan.ready.length || 0;
+    btn.disabled = !n;
+    btn.textContent = n ? `Send to all ${n}` : 'Nothing to send';
+  }
+
   host.querySelector('#mmsg-to').addEventListener('input', refresh);
   host.querySelector('#mmsg-entity').addEventListener('change', onEntity);
-  host.querySelector('#mmsg-period').addEventListener('change', fillText);
+  modeEl.addEventListener('change', onMode);
+  host.querySelector('#mmsg-period').addEventListener('change', () => { fillText(); if (isPaidMode()) onMode(); });
   // States the total as files are chosen, and refuses over the cap HERE rather than after the
   // Gmail token has been asked for — being told the file is too big is not a reason to have
   // granted send permission first.
@@ -5841,6 +5985,7 @@ async function renderMessageSend(host, template) {
 
   host.querySelector('#mmsg-send').addEventListener('click', async () => {
     const btn = host.querySelector('#mmsg-send'), err = host.querySelector('#mmsg-err');
+    const was = btn.textContent;
     const list = typed();
     const from = mailFromAlias(template);
     if (!from) { err.hidden = false; err.textContent = 'This template has no sender address.'; return; }
@@ -5857,6 +6002,53 @@ async function renderMessageSend(host, template) {
     }
     // Asked for while the click is still live — see gmailToken.
     const tokenReady = gmailToken();
+
+    // ── Send to every merchant a period paid ──────────────────────────────────────────────
+    if (isPaidMode()) {
+      if (!paid?.plan.ready.length) return;
+      const { run, plan, ccy } = paid;
+      if (!confirm(
+          `Send this notice to ${plan.ready.length} merchant(s)?\n\n`
+          + `Period:   ${periodMonth(run.periodStart)}\n`
+          + `Who:      every merchant with a share that month — ${fmt2(plan.total)} ${ccy} between them\n`
+          + `To:       each merchant's own finance address${cc ? `, copying ${cc}` : ''}\n`
+          + `Attached: ${template.attachmentName || 'NOTHING — the template has no file'}${chosen.length ? ` + ${chosen.length} file(s)` : ''}\n\n`
+          + `Each merchant is written to on its own. This cannot be unsent.`)) return;
+      try { await tokenReady; } catch (e) { err.hidden = false; err.textContent = e.message; return; }
+      btn.disabled = true; err.hidden = true;
+      const files = await collectAttachments(template, chosen, btn, err);
+      if (!files) { btn.disabled = false; btn.textContent = was; return; }
+
+      let n = 0;
+      for (const r of plan.ready) {
+        btn.textContent = `Sending ${n + 1} of ${plan.ready.length}…`;
+        const vars = mailVarsFor(r, run);
+        const subject = renderTemplate(template.subject, vars);
+        const body = renderTemplate(template.body || '', vars);
+        try {
+          const sent = await sendGmail(buildMimeMessage({
+            from, to: r.to, cc, subject, body, attachments: files }));
+          // Recorded BEFORE moving on, so a batch that stops half way leaves an accurate trail.
+          await api(`/bulk-runs/${encodeURIComponent(run.runId)}/mail-log`, { method: 'POST',
+            body: JSON.stringify({ contractId: r.contractId, merchantName: r.merchantName,
+              to: r.to.join(', '), cc: cc || null, subject,
+              attachment: template.attachmentName || null, gmailId: sent.id, fromAlias: from,
+              templateId: template.id, period: periodTag(run.periodStart),
+              payout: Number(r.payout) || 0 }) }).catch(() => {});
+          n++;
+        } catch (e) {
+          err.hidden = false;
+          err.textContent = `Sent ${n} of ${plan.ready.length}. Stopped at ${r.merchantName}: ${e.message}`;
+          btn.disabled = false; btn.textContent = was;
+          await onMode();
+          return;
+        }
+      }
+      btn.textContent = `Sent ${n}`;
+      await onMode();
+      return;
+    }
+
     if (!confirm(`Send this message to ${list.length} recipient(s)`
         + `${cc ? `, copying ${cc}` : ''}`
         + `${chosen.length ? `, attaching ${chosen.length} file(s)` : ''}? It cannot be unsent.`)) return;
@@ -5868,44 +6060,8 @@ async function renderMessageSend(host, template) {
     }
     btn.disabled = true; err.hidden = true;
 
-    // Fetched ONCE for the whole batch, not per recipient: the same bytes go to everyone, and
-    // re-downloading a 5 MB file thirty times would be slow and pointless.
-    let files = [];
-    if (template.attachmentKey) {
-      try {
-        btn.textContent = 'Fetching the attachment…';
-        const f = await api(`/mail-templates/${encodeURIComponent(template.id)}/attachment`);
-        const bin = atob(f.data);
-        const bytes = new Uint8Array(bin.length);
-        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-        files = [{ bytes, filename: f.name, type: f.type }];
-      } catch (e) {
-        // Better to send nothing than to send a letter whose attachment silently went missing.
-        err.hidden = false;
-        err.textContent = `Could not fetch ${template.attachmentName}: ${e.message}. Nothing was sent.`;
-        btn.disabled = false; btn.textContent = 'Send';
-        return;
-      }
-    }
-
-    // This send's own files, read ONCE and appended to whatever the template carries — "also
-    // attach" means as well as, not instead of. Read here rather than per recipient for the same
-    // reason the template's file is.
-    if (chosen.length) {
-      try {
-        btn.textContent = 'Reading the files…';
-        for (const f of chosen) {
-          files.push({ bytes: new Uint8Array(await f.arrayBuffer()),
-                       filename: f.name,
-                       type: f.type || 'application/octet-stream' });
-        }
-      } catch (e) {
-        err.hidden = false;
-        err.textContent = `Could not read the attached files: ${e.message}. Nothing was sent.`;
-        btn.disabled = false; btn.textContent = 'Send';
-        return;
-      }
-    }
+    const files = await collectAttachments(template, chosen, btn, err);
+    if (!files) { btn.disabled = false; btn.textContent = was; return; }
 
     let sentCount = 0;
     for (const to of list) {

@@ -1297,3 +1297,14 @@ p.rc-warn {
   font-size: 12.5px;
   line-height: 1.6;
 }
+
+/* The send-to-all merchant list. It needs its own scroller: `.ct-scroll` sets only a border and
+   no overflow, so a max-height on it clips nothing — the table spilled out of its box and
+   painted over the Subject, Message and Attach fields underneath it. */
+.msend-scroll {
+  max-height: 320px; overflow: auto;
+  border: 1px solid var(--border); border-radius: 10px;
+}
+.msend-scroll table { width: 100%; }
+/* The grid's sticky header is scoped to .ct-table; this table pins to its own scroller. */
+.msend-scroll thead th { position: sticky; top: 0; z-index: 1; background: var(--surface-muted); }

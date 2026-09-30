@@ -379,10 +379,12 @@ test('a plain message asks for a period but never builds a statement', () => {
   const src = grab('renderMessageSend');
   assert.ok(!src.includes('msend-run'), 'the period is typed, not chosen from a run');
   assert.match(src, /type="month" id="mmsg-period"/, 'a period is asked for');
-  // Behaviour, not wording — the screen legitimately says the words "no attachment".
-  assert.ok(!/attachment:/.test(src), 'no single run attachment is passed to the message builder');
+  // `attachment:` now appears in the mail-log body — the filename that went out. What must stay
+  // absent is a RUN-BUILT statement file: a schedule attaches the template's file, never figures
+  // rendered per merchant.
+  assert.ok(!/attachment: bytes/.test(src), 'no run-built file is attached');
   assert.ok(!/XLSX\.write/.test(src), 'and no statement file is built');
-  assert.match(src, /4 · Send to/, 'recipients come after the period and the entity');
+  assert.match(src, /4 · Addresses/, 'the typed addresses come after the period and the entity');
 });
 
 // The period exists to fill {{period}}, so it must actually reach renderTemplate — otherwise the
@@ -626,9 +628,11 @@ test('the statement send asks for the token before anything it has to wait for',
 
 test('the plain-message send does the same', () => {
   const src = grab('renderMessageSend');
-  const ask = src.indexOf('gmailToken()');
-  const firstAwait = src.indexOf('await ', src.indexOf("'#mmsg-send'"));
-  assert.ok(ask > 0 && ask < firstAwait);
+  // Anchored on the CLICK HANDLER — '#mmsg-send' also appears in the mode switch above it.
+  const handler = src.indexOf("'#mmsg-send').addEventListener");
+  const ask = src.indexOf('gmailToken()', handler);
+  const firstAwait = src.indexOf('await ', handler);
+  assert.ok(ask > 0 && ask < firstAwait, 'the token is asked for while the click is still live');
 });
 
 test('a blocked popup says what to do about it', () => {
@@ -713,17 +717,20 @@ test('an attachment survives the round trip byte for byte', () => {
 });
 
 test('the send fetches a template file once, not once per recipient', () => {
-  // Thirty recipients would otherwise mean thirty downloads of the same 5 MB.
+  // Thirty recipients would otherwise mean thirty downloads of the same 5 MB. The fetch lives in
+  // the shared collector now, which both send paths call ONCE before their loop.
+  assert.match(grab('collectAttachments'), /\/attachment/);
   const src = grab('renderMessageSend');
-  const fetchAt = src.indexOf('/attachment');
-  const loopAt = src.indexOf('for (const to of list)');
-  assert.ok(fetchAt > 0 && fetchAt < loopAt, 'fetched before the loop starts');
+  for (const loop of ['for (const to of list)', 'for (const r of plan.ready)']) {
+    const at = src.indexOf(loop);
+    assert.ok(at > 0, loop + ' exists');
+    assert.ok(src.lastIndexOf('collectAttachments(', at) > 0, 'collected before ' + loop);
+  }
 });
 
 test('a failed attachment fetch sends nothing at all', () => {
   // Better than a letter whose attachment silently went missing.
-  const src = grab('renderMessageSend');
-  assert.match(src, /Nothing was sent/);
+  assert.match(grab('collectAttachments'), /Nothing was sent/);
 });
 
 test('only a plain message offers an attachment field', () => {
@@ -889,11 +896,13 @@ test('the per-send cap is stated in bytes and leaves Gmail room after base64', (
 
 // The template's own file and this send's files must BOTH go — "also attach" means as well as.
 test('a per-send file is pushed onto the template file, not over it', () => {
-  const src = grab('renderMessageSend');
+  const src = grab('collectAttachments');
   assert.match(src, /files\.push\(/, 'per-send files must append');
   assert.doesNotMatch(src, /files\s*=\s*\[\s*\.\.\.chosen/, 'must not replace the template file');
-  // The cap is checked before the Gmail token is requested.
-  assert.ok(src.indexOf('chosenTotal > MAX_SEND_ATTACHMENTS') < src.indexOf('gmailToken()'),
+  // The cap is checked in the SEND handler, before the Gmail token is requested — being told a
+  // file is too big is not a reason to have granted send permission first.
+  const send = grab('renderMessageSend');
+  assert.ok(send.indexOf('chosenTotal > MAX_SEND_ATTACHMENTS') < send.indexOf('gmailToken()'),
     'the size check must run before the permission popup');
 });
 
@@ -901,4 +910,158 @@ test('a per-send file is pushed onto the template file, not over it', () => {
 test('the plain-message send passes the cc to every recipient', () => {
   const src = grab('renderMessageSend');
   assert.match(src, /from,\s*to:\s*\[to\],\s*cc,/, 'each copy carries the cc');
+});
+
+// ── Send to every merchant a period paid (2026-09-30) ──────────────────────────────────────
+// §1q said "no bulk send — one merchant at a time, deliberately". Reversed at the user's request
+// for the payment schedule: it is the same letter to everyone, personalised only by the figures,
+// and doing it 120 times by hand is how a month gets skipped. What that decision bought is kept
+// in other form — the count and the TOTAL are stated before sending, a failure stops the batch,
+// and every send is recorded.
+const planFor = (contracts, log) => new Function('CONTRACTS',
+  splitSrc() + '\n' + grab('mailRecipients') + '\n' + grab('fallbackContact') + '\n'
+  + grab('schedulePlan') + '\nreturn schedulePlan;')(contracts);
+
+const SCHED_CONTRACTS = [
+  { contractId: 'a', merchantName: 'AOT', financeContactEmail: 'ap@aot.co.th' },
+  { contractId: 'b', merchantName: 'BTS', financeContactEmail: 'fin@bts.co.th' },
+  { contractId: 'c', merchantName: 'No Email Co', contactEmail: 'ops@noemail.co' },
+];
+const SCHED_RUN = { runId: 'r1', periodStart: '2026-09-01', results: [
+  { contractId: 'a', merchantName: 'AOT', payout: 1000 },
+  { contractId: 'b', merchantName: 'BTS', payout: 5000 },
+  { contractId: 'c', merchantName: 'No Email Co', payout: 300 },
+] };
+
+test('the plan splits ready, already sent, and no finance email', () => {
+  const plan = planFor(SCHED_CONTRACTS)(SCHED_RUN, []);
+  assert.deepEqual(plan.ready.map(r => r.merchantName), ['BTS', 'AOT'], 'largest first');
+  assert.deepEqual(plan.noFinance.map(r => r.merchantName), ['No Email Co']);
+  assert.equal(plan.total, 6000);
+});
+
+// "we only send to address that their brand has a share amount happening that month" — a run's
+// results can carry a merchant that earned nothing, and telling it a payment is coming is wrong.
+test('a merchant with no share that month is not written to', () => {
+  const run = { ...SCHED_RUN, results: [...SCHED_RUN.results,
+    { contractId: 'a', merchantName: 'Zero Co', payout: 0 },
+    { contractId: 'b', merchantName: 'Negative Co', payout: -5 }] };
+  const plan = planFor(SCHED_CONTRACTS)(run, []);
+  const names = [...plan.ready, ...plan.already, ...plan.noFinance].map(r => r.merchantName);
+  assert.ok(!names.includes('Zero Co') && !names.includes('Negative Co'));
+  assert.deepEqual(plan.noShare.map(r => r.merchantName), ['Zero Co', 'Negative Co']);
+});
+
+// The month input gives '2026-09'; periodTag gives '2026_09' and names FILES. Matching on the
+// tag meant a period that HAD a run was reported as having none — which is what happened for
+// September, a run that existed the whole time.
+test('the period is matched on the month, not the file tag', () => {
+  const fn = grab('drawSchedulePaidList');
+  assert.match(fn, /periodMonth\(r\.periodStart\) === period/);
+  assert.ok(!/periodTag\(r\.periodStart\) === period/.test(fn));
+});
+
+// It is a NOTICE. The figures live in the template's attachment, not in the wording.
+test('the screen says the figures are in the attachment, not the message', () => {
+  const fn = grab('drawSchedulePaidList');
+  assert.match(fn, /This is a NOTICE/);
+  assert.match(fn, /not in the wording/);
+  const send = grab('renderMessageSend');
+  assert.match(send, /Send this notice to \$\{plan\.ready\.length\} merchant\(s\)/);
+  assert.match(send, /NOTHING — the template has no file/,
+    'and it is loud when there is no file to send');
+});
+
+test('a merchant with no finance email is never addressed from its contact address', () => {
+  const plan = planFor(SCHED_CONTRACTS)(SCHED_RUN, []);
+  assert.deepEqual(plan.noFinance[0].to, [], 'no address is invented');
+  assert.deepEqual(plan.noFinance[0].fallback, ['ops@noemail.co'], 'but the gap is shown');
+  assert.equal(plan.total, 6000, 'and it is NOT counted in the total');
+});
+
+test('an already-sent merchant is not queued again', () => {
+  const plan = planFor(SCHED_CONTRACTS)(SCHED_RUN, [{ contractId: 'b', sentAt: '2026-09-30T01:00:00Z' }]);
+  assert.deepEqual(plan.ready.map(r => r.merchantName), ['AOT']);
+  assert.deepEqual(plan.already.map(r => r.merchantName), ['BTS']);
+  assert.equal(plan.total, 1000, 'the total covers only what is about to go');
+});
+
+// A run's log holds statements AND schedules. Counting both would skip a merchant silently.
+test('only this template\'s own sends count as already done', () => {
+  const fn = grab('drawSchedulePaidList');
+  assert.match(fn, /m\.templateId === template\.id/);
+  const route = readFileSync(new URL('../code/routes/mail.mjs', import.meta.url), 'utf8');
+  assert.match(route, /templateId: body\.templateId \|\| null/);
+});
+
+test('each merchant gets its own figures, addressed only to itself', () => {
+  const fn = grab('renderMessageSend');
+  assert.match(fn, /const vars = mailVarsFor\(r, run\);/);
+  assert.match(fn, /from, to: r\.to, cc, subject, body, attachments: files/);
+});
+
+// REWORDED 2026-09-30: the mail does not quote the share — the figures are in the template's
+// attachment. The confirmation still names the money, because that is what tells the sender how
+// big a thing they are about to do.
+test('the confirmation states who is being written to, and how much is at stake', () => {
+  const fn = grab('renderMessageSend');
+  assert.match(fn, /Send this notice to \$\{plan\.ready\.length\} merchant\(s\)/);
+  assert.match(fn, /every merchant with a share that month/);
+  assert.match(fn, /\$\{fmt2\(plan\.total\)\} \$\{ccy\} between them/);
+  assert.match(fn, /cannot be unsent/);
+});
+
+test('a failure stops the batch and says how far it got', () => {
+  const fn = grab('renderMessageSend');
+  assert.match(fn, /Sent \$\{n\} of \$\{plan\.ready\.length\}\. Stopped at/);
+});
+
+test('every send is recorded before the next one starts', () => {
+  const fn = grab('renderMessageSend');
+  const i = fn.indexOf('mail-log'), j = fn.indexOf('n++;', i);
+  assert.ok(i > 0 && j > i, 'the log write precedes the counter');
+  assert.match(fn, /templateId: template\.id/);
+  assert.match(fn, /payout: Number\(r\.payout\) \|\| 0/);
+});
+
+// One definition of what is attached, or the two paths drift.
+test('both send paths collect attachments the same way', () => {
+  const fn = grab('renderMessageSend');
+  assert.equal((fn.match(/collectAttachments\(template, chosen, btn, err\)/g) || []).length, 2);
+  const c = grab('collectAttachments');
+  assert.match(c, /template\.attachmentKey/, "the template's own file");
+  assert.match(c, /f\.arrayBuffer\(\)/, "and this send's");
+  assert.match(c, /return null;/, 'and it refuses rather than sending a letter without one');
+});
+
+// ── The send-to-all list is a block, not something wedged between form fields ──────────────
+// It was rendered INSIDE .mail-form, between the addresses and the Subject field, in a
+// `.ct-scroll` — which sets a border and NO overflow, so the max-height clipped nothing and the
+// table painted straight over Subject, Message and Attach files.
+test('the list sits after the form, in its own scroller', () => {
+  const fn = grab('renderMessageSend');
+  const formEnd = fn.indexOf('id="mmsg-err"');
+  assert.ok(fn.indexOf('id="mmsg-paid"') > formEnd, 'it comes after the form fields, not among them');
+  assert.ok(!/id="mmsg-paid"[^`]*5 · Subject/s.test(fn), 'and nothing form-like follows it');
+  assert.match(grab('drawSchedulePaidList'), /class="msend-scroll"/);
+  assert.ok(!/ct-scroll/.test(grab('drawSchedulePaidList')),
+    'never the grid scroller, which has no overflow');
+});
+
+test('the scroller actually scrolls', () => {
+  const css = readFileSync(new URL('../../../frontend/style.css', import.meta.url), 'utf8');
+  const block = css.slice(css.indexOf('.msend-scroll {'), css.indexOf('}', css.indexOf('.msend-scroll {')));
+  assert.match(block, /overflow: auto/);
+  assert.match(block, /max-height/);
+});
+
+// "you don't have to show share amount in the table" — the mail does not quote it, so the table
+// must not imply it does. The share is still what DECIDES who is written to.
+test('the table shows merchant and address only', () => {
+  const fn = grab('drawSchedulePaidList');
+  assert.match(fn, /<th>Merchant<\/th><th>Finance email<\/th><th><\/th>/);
+  assert.ok(!/Share this month/.test(fn));
+  assert.ok(!/fmt2\(r\.payout\)/.test(fn), 'no amount per row');
+  assert.match(grab('schedulePlan'), /Number\(r\.payout\) > 0/,
+    'but the share still decides who is included');
 });

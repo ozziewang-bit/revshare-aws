@@ -15,7 +15,8 @@ stored roster (§1t); editing left the Merchant view grid for one Edit dialog (�
 2026-09-30: the statement follows finance's own template, with the share split for tax (§1x);
 a term can no longer be discarded in silence, and the set you maintain by hand opens by
 default (§1y).
-Service-worker `CACHE_VERSION` is at `revshare-v233` (bump on every shell change).
+A payment-schedule notice goes to every merchant with a share that month, in one send (§1z).
+Service-worker `CACHE_VERSION` is at `revshare-v236` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
 end-to-end before touching anything. The codebase is the ultimate source of
@@ -1323,6 +1324,46 @@ only a brand-new browser can see is not a default.
 function like `renderStructuredRuleEditor(..., { readOnly = false })` — two tests passed
 vacuously against 95 characters of signature before this was caught. `statement-template.test.mjs`
 skips the parameter list properly; the others still have the flaw.
+
+
+## 1z. Send the payment-schedule notice to everyone paid (2026-09-30)
+
+Mailing → Send, with a plain-message template: **Send to** offers *the addresses I type* or
+*every merchant paid in this period*. The second lists each merchant and its finance address,
+with one **Send to all N**.
+
+**§1q's "no bulk send — one merchant at a time, deliberately" is REVERSED here**, at the user's
+request. It is the same letter to everyone, personalised only by the figures, and doing it a
+hundred times by hand is how a month gets skipped. What that decision bought is kept in another
+form:
+
+- the confirmation names the count, the period, and **how much share is at stake between them**
+- a failure **stops the batch** and says how far it got
+- **every send is recorded before the next starts**, so a half-finished batch leaves an accurate
+  trail. Plain messages wrote NO Sent log at all until now
+- `templateId` is on the log, so a statement sent from the run page cannot mark the schedule as
+  already sent and silently skip a merchant
+
+**It is a NOTICE, not a statement.** The figures live in the file attached to the template; the
+wording quotes nothing unless the template asks. So the list shows **merchant and address only** —
+showing an amount implied the mail contained one.
+
+**Only merchants with a share that month are written to** (`payout > 0`). A run's results can
+carry a merchant that earned nothing, and telling it a payment is coming would be wrong. Those go
+to a `noShare` count on screen, so they read as deliberately excluded rather than lost. A merchant
+with no finance email is never addressed from its contact address — it is listed with whatever IS
+on file so the gap can be closed.
+
+Three bugs found by the user while building it, all mine:
+
+- **The period never matched a run.** I compared `periodTag` — `2026_09`, with an underscore,
+  which names FILES — against `<input type="month">`, which gives `2026-09`. Every period with a
+  run reported as having none. It is `periodMonth`.
+- **The list painted over the form.** I reused `.ct-scroll`, which sets a border and **no
+  overflow**, so its max-height clipped nothing and the table covered Subject, Message and Attach.
+  It has its own `.msend-scroll` now and sits AFTER the form rather than between its fields.
+- `collectAttachments` is shared by both send paths, so they cannot differ about what is attached
+  or how large it may be.
 
 ## 2. Live URLs and resources
 

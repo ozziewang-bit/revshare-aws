@@ -65,6 +65,10 @@ export async function createMailLogRoute(event) {
     // Recorded so the Sent log shows who else received it — a CC is a real recipient, and
     // "we copied finance" is a claim worth being able to check months later.
     cc: body.cc || null,
+    // WHICH template sent it (2026-09-30). A run's log holds statements and payment schedules
+    // alike; without this, sending a statement would mark the schedule as already sent and a
+    // merchant would silently be skipped.
+    templateId: body.templateId || null,
     subject: body.subject || null,
     attachment: body.attachment || null,
     // Recorded so the log can be reconciled against the run itself: "we sent it" is not the
