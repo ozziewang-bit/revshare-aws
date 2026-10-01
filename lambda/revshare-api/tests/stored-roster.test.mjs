@@ -178,3 +178,60 @@ t2('the SG copy of putRoster honours the passed read time too', () => {
   catch { return; }
   assert2.match(sg, /at: doc\.at \|\| new Date\(\)\.toISOString\(\)/);
 });
+
+// ── C5: merchants the file has dropped are recovered from an earlier upload (2026-10-01) ─────
+// "we still need to calculate to pay... do calculation by archived files for brands or merchants
+// that are gone in between my file updates." Measured between the 29 Sep and 1 Oct files: 14
+// merchants and 3 brands gone, 60 rentals / 2,080 THB at them in September.
+import { test as t3 } from 'node:test';
+import assert3 from 'node:assert/strict';
+
+const bulkSrc = read2(new URL('../code/routes/bulk-runs.mjs', import.meta.url), 'utf8');
+const fnSrc = bulkSrc.slice(bulkSrc.indexOf('async function recoverDepartedMerchants'),
+                            bulkSrc.indexOf('\n}', bulkSrc.indexOf('async function recoverDepartedMerchants')));
+
+t3('a departed merchant is recovered ONLY when the period names it', () => {
+  // A roster row is a STATION, and per-machine terms count rows — so adding a merchant that
+  // earned nothing would raise a guarantee every month for somewhere that no longer exists.
+  assert3.match(fnSrc, /if \(k && !have\.has\(k\)\) wanted\.add\(k\)/,
+    'the wanted set comes from the ORDERS, not from the old file');
+  assert3.match(fnSrc, /if \(!wanted\.size\) return \{ merchants, recovered: \[\] \}/,
+    'no unresolved order names, no history read at all');
+  assert3.match(fnSrc, /if \(!wanted\.has\(mk\)\) continue;/);
+});
+
+t3('the newest file that has it wins, and each is taken once', () => {
+  assert3.match(fnSrc, /wanted\.delete\(mk\)/);
+  assert3.match(fnSrc, /if \(!wanted\.size\) break;/, 'it stops as soon as everything is found');
+});
+
+t3('a recovered row says which file it came from', () => {
+  assert3.match(fnSrc, /fromArchivedFile: k/);
+  assert3.match(bulkSrc, /bulkRun\.recoveredFromArchive = recovered\.map/,
+    'and the run names them, so a figure from an older file is explained');
+});
+
+t3('the history is indexed in DynamoDB, not listed from S3', () => {
+  // The Lambda role has GetObject and PutObject on the runs bucket and NOT s3:ListBucket, so a
+  // ListObjectsV2 would fail with AccessDenied in production only.
+  const db = read2(new URL('../code/db.mjs', import.meta.url), 'utf8');
+  const fn = db.slice(db.indexOf('export async function listRosterHistory'),
+                      db.indexOf('\n}', db.indexOf('export async function listRosterHistory')));
+  assert3.ok(!/ListObjectsV2/.test(fn));
+  assert3.match(fn, /begins_with\(sk, :s\)/);
+  assert3.match(fn, /ROSTER#HIST#/);
+  assert3.match(fn, /r\.s3Key !== \(meta && meta\.s3Key\)/, 'the current file is not its own history');
+  assert3.match(db, /sk: `ROSTER#HIST#\$\{key/, 'and every upload records one');
+});
+
+t3('the SG copy carries the history index too', () => {
+  let sg;
+  try { sg = read2('/Users/ozziewang/revshare_sg/lambda/revshare-api/code/db.mjs', 'utf8'); }
+  catch { return; }
+  assert3.match(sg, /export async function listRosterHistory/);
+  assert3.match(sg, /sk: `ROSTER#HIST#\$\{key/);
+  // Comments here EXPLAIN why ListObjectsV2 is avoided, so they contain the word. Strip first —
+  // the fourth time this trap has been hit in this codebase.
+  const code = sg.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+  assert3.ok(!/ListObjectsV2/.test(code));
+});

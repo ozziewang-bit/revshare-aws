@@ -213,7 +213,9 @@ test('the send list separates what can be sent from what cannot', () => {
   for (const group of ['Ready to send', 'Already sent', 'No finance email']) {
     assert.ok(src.includes(group), `the send list must show "${group}"`);
   }
-  assert.match(src, /effectiveRecipients\(r\.contractId\)\.length/,
+  // C5b (2026-10-01): the list is one row per contract ENTITY, so the recipient decision is made
+  // once per group — `g.to` is the union of its brands' finance addresses, deduped.
+  assert.match(src, /g\.to\.length/,
     'membership of those groups must follow the batch recipient decision');
 });
 
@@ -463,7 +465,8 @@ test('every row that has a mail offers a preview of it', () => {
 // letter would have found the letter wrong. Both paths now go through one builder.
 test('mail and download build the statement from the same function', () => {
   const send = grab('mailSendDialog');
-  assert.match(send, /statementWorkbook\(result, index\)/, 'the mail builds the shared workbook');
+  assert.match(send, /statementWorkbook\(r, index\)/, 'the mail builds the shared workbook');
+  assert.match(send, /results\.map\(r => \(\{/, 'one file per brand under the entity');
   assert.match(send, /await runOrderIndex\(run\)/, 'from the run\u2019s own order index');
   assert.ok(!/buildPartnerSheet\(XLSX, result, null/.test(send),
     'and never passes null orders, which is what dropped the rental rows');
@@ -538,12 +541,38 @@ test('no recipient and no run both block', () => {
   assert.match(f(SEVEN, null, ['wiparatron@cpall.co.th'], 'c1').join(' '), /not attached to a run/);
 });
 
-test('the send restates merchant, period, payout and recipient before it goes', () => {
+test('the send restates entity, brands, period, payout and recipient before it goes', () => {
+  // C5b: the letter is per contract ENTITY, so the confirmation names the entity AND every brand
+  // whose statement is attached — "Central Department Store" alone would not say what is going.
   const src = grab('mailSendDialog');
-  for (const line of ['Merchant:', 'Period:', 'Payout:', 'To:', 'Attached:']) {
+  for (const line of ['Entity:', 'Brands:', 'Period:', 'Payout:', 'To:', 'Attached:']) {
     assert.ok(src.includes(line), `the confirmation must restate ${line}`);
   }
   assert.match(src, /cannot be unsent/);
+});
+
+test('one letter per entity, but one log row per brand', () => {
+  // "Already sent" is answered per brand: a group whose membership changes next month must not
+  // hide a brand that was never written to.
+  const src = grab('mailSendDialog');
+  assert.match(src, /for \(const r of results\) await api\(`\/bulk-runs/);
+  assert.match(src, /contractId: r\.contractId, merchantName: r\.merchantName/);
+  assert.match(src, /entity: group\.entity \|\| null/);
+});
+
+test('a brand with no entity is a group of one, never merged on a blank', () => {
+  const src = grab('groupResultsForMail');
+  assert.match(src, /entity \? 'e:' \+ entity\.toLowerCase\(\) : 'c:' \+ r\.contractId/,
+    'merging on a blank key would put unrelated companies in one envelope');
+  assert.match(src, /if \(g\.unsent\.length\) g\.sentAt = null/,
+    'half-sent is not sent');
+});
+
+test('every statement is attached with its own filename and spreadsheet type', () => {
+  const src = grab('mailSendDialog');
+  assert.match(src, /filename: f\.filename, bytes: f\.bytes/);
+  assert.match(src, /spreadsheetml\.sheet/,
+    'buildMimeMessage reads `filename` and `type`; `name` would send an unopenable attachment');
 });
 
 test('the log records enough to check that the RIGHT one was sent', () => {

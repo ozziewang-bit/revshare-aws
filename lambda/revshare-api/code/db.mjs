@@ -582,6 +582,14 @@ export async function putRoster(doc) {
   await ddb.send(new PutCommand({
     TableName: TABLE, Item: { pk: 'CONFIG', sk: 'ROSTER#LATEST', ...rec },
   }));
+  // One row per upload, so a run can reach a file that has since been replaced (C5). Slim: the
+  // key and when, never the rows — those stay in S3 where they already are.
+  await ddb.send(new PutCommand({
+    TableName: TABLE,
+    Item: { pk: 'CONFIG', sk: `ROSTER#HIST#${key.replace('rosters/', '').replace('.json', '')}`,
+            s3Key: key, at: rec.at, machinesAt: rec.machinesAt,
+            rosterCount: rec.rosterCount, by: rec.by },
+  }));
   return rec;
 }
 
@@ -609,6 +617,39 @@ export async function getRosterRows() {
     if (e?.name === 'NoSuchKey' || e?.name === 'NotFound' || e?.$metadata?.httpStatusCode === 404) {
       return null;
     }
+    throw e;
+  }
+}
+
+// ── Earlier rosters, for merchants that have since left the file (C5, 2026-10-01) ────────────
+// "do calculation by archived files for brands or merchants that are gone in between my file
+// updates."
+//
+// Indexed in DynamoDB rather than listed from S3: the Lambda role has GetObject and PutObject on
+// the runs bucket and NOT `s3:ListBucket`, so a ListObjectsV2 here would fail with AccessDenied —
+// in production only, and only for this one path. One small row per upload costs nothing and
+// needs no IAM change.
+export async function listRosterHistory(limit = 6) {
+  const meta = await getRosterMeta();
+  const rows = await query({
+    TableName: TABLE,
+    KeyConditionExpression: 'pk = :p AND begins_with(sk, :s)',
+    ExpressionAttributeValues: { ':p': 'CONFIG', ':s': 'ROSTER#HIST#' },
+  });
+  return rows
+    .filter(r => r.s3Key && r.s3Key !== (meta && meta.s3Key))
+    .sort((a, b) => String(b.sk).localeCompare(String(a.sk)))   // ULID sort keys order by time
+    .slice(0, limit)
+    .map(r => r.s3Key);
+}
+
+export async function getRosterDoc(key) {
+  if (!key) return null;
+  try {
+    const obj = await s3.send(new GetObjectCommand({ Bucket: RUNS_BUCKET, Key: key }));
+    return JSON.parse(await obj.Body.transformToString());
+  } catch (e) {
+    if (e?.name === 'NoSuchKey' || e?.$metadata?.httpStatusCode === 404) return null;
     throw e;
   }
 }

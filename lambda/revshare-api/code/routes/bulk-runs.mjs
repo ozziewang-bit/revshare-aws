@@ -227,6 +227,45 @@ export function indexMachines(machines) {
 // import back, which is a visible act rather than a line that drifts in. `persist` stays in the
 // signature because infra/rerun-bulk-run.mjs passes it, and it now changes nothing — a run
 // persists nothing either way, which is what makes a dry run honest by construction.
+
+// ── Merchants the current file has dropped, recovered from an earlier one (C5, 2026-10-01) ───
+// "there will be brands or merchants that is not registered anymore, it's ok, because they come
+// and go, and we still need to calculate to pay... do calculation by archived files for brands or
+// merchants that are gone in between my file updates."
+//
+// A merchant that left the file between the period and the run would otherwise be unresolvable:
+// its rentals land in `unmatched` and its brand is paid nothing for them. Earlier uploads are
+// kept, so the answer is already on record.
+//
+// ONLY WHEN THE PERIOD'S ORDERS NAME IT. A roster row is a STATION, and `flat_per_machine` and
+// per-machine MG count rows — so adding a departed merchant that earned nothing would raise a
+// guarantee every month for a merchant that no longer exists. Same rule the order aliases follow
+// (§1d): no matching orders, no row.
+async function recoverDepartedMerchants(merchants, orders) {
+  const key = s => String(s || '').toLowerCase().trim();
+  const have = new Set(merchants.map(m => key(m.name)));
+  const wanted = new Set();
+  for (const o of orders || []) {
+    const k = key(o.merchantName);
+    if (k && !have.has(k)) wanted.add(k);
+  }
+  if (!wanted.size) return { merchants, recovered: [] };
+
+  const recovered = [];
+  for (const k of await dbModule.listRosterHistory()) {
+    if (!wanted.size) break;
+    const doc = await dbModule.getRosterDoc(k);
+    for (const m of (doc && doc.merchants) || []) {
+      const mk = key(m.name);
+      if (!wanted.has(mk)) continue;
+      wanted.delete(mk);
+      // Marked, so the run can say the row came from an older file rather than today's.
+      recovered.push({ ...m, fromArchivedFile: k });
+    }
+  }
+  return { merchants: recovered.length ? [...merchants, ...recovered] : merchants, recovered };
+}
+
 export async function applyMerchantRoster(merchants, { persist = true } = {}) {
   const [contracts, existingMerchants] = await Promise.all([listContracts(), listMerchants()]);
   let index = indexContractsByName(contracts);
@@ -337,6 +376,8 @@ export async function prepareBulkRunRoute(event) {
     rosterSource = 'stored';
   }
   if (!merchants.length) return resp(400, { error: 'no_merchants' });
+  // Step 2 has no orders yet, so nothing is recovered here — the wizard reports the roster it
+  // will use, and the recovery happens when the orders arrive.
   const { roster, merchantsNeedingTerms, unassigned, newMerchants, unitsDiffer } = await applyMerchantRoster(merchants);
   const merchantBrandCount = new Set(roster.map(r => r.contractId)).size;
   // The wizard says where the roster came from and when it was last refreshed, so "this run used
@@ -529,8 +570,15 @@ export async function createBulkRunRoute(event) {
   }
   if (!merchants.length) return resp(400, { error: 'no_merchants' });
 
-  const bulkRun = await computeBulkRun({ orders, merchants, machines, excluded, periodStart, periodEnd });
+  // A merchant the file has dropped since the period still earned in it (C5).
+  const { merchants: withDeparted, recovered } = await recoverDepartedMerchants(merchants, orders);
+
+  const bulkRun = await computeBulkRun({ orders, merchants: withDeparted, machines, excluded,
+                                         periodStart, periodEnd });
   bulkRun.rosterSource = rosterSource;
+  // Named on the run, so a figure that came from an older file is explained rather than assumed.
+  bulkRun.recoveredFromArchive = recovered.map(m => ({ name: m.name, brand: m.partnerName,
+                                                       from: m.fromArchivedFile }));
   // Store the inputs alongside the run so it can be recomputed later without a re-upload.
   await putBulkRun(bulkRun, { merchants, orders, machines, excluded, periodStart, periodEnd });
   return resp(201, bulkRun);

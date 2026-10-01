@@ -60,7 +60,7 @@ const build = (region) => new Function('REGION', 'XLSXns', `
   ${grab('modelLabel')}
   ${grab('termText')}
   ${grab('buildPartnerSheet')}
-  return (result, orders, rule) => buildPartnerSheet(XLSXns, result, orders, new Map(), null, rule);
+  return (result, orders, rule, gone) => buildPartnerSheet(XLSXns, result, orders, new Map(), null, rule, gone);
 `)(region, XLSXns);
 // The fixture's rule, chosen to reproduce the template's own 0.2 column. PMCU's LIVE rule is
 // `max( GP 20% , MG L40 800 + MG S8 250 )` — the template predates that, and the arithmetic
@@ -571,4 +571,31 @@ test('the Grand Total always equals the payout, revenue or not', () => {
     const gt = rows.find(r => r[0] === 'Grand Total');
     assert.equal(gt[7], round(payout), `payout ${payout} over ${n} shop(s)`);
   }
+});
+
+// ── C5: a merchant that has gone is marked in the file, not dropped (2026-10-01) ─────────────
+// "there will be brands or merchants that is not registered anymore, it's ok, because they come
+// and go, and we still need to calculate to pay... highlight 'gone' merchants when I click for a
+// developed view and in download file."
+//
+// The line stays and the money stays — a run states what happened in the period. The mark is what
+// stops a partner reading it as a mistake.
+test('a merchant the latest file no longer carries is marked in the statement', () => {
+  const rows = build('th')(PMCU, null, GP20, new Set(['อาคารวิทยกิตติ์']));
+  assert.match(String(rows[1][0]), /อาคารวิทยกิตติ์ \(no longer in our list\)/);
+  assert.equal(rows[1][7], 284, 'and it is still paid');
+  assert.ok(!/no longer/.test(String(rows[2][0])), 'the merchant still carried is untouched');
+});
+
+test('with nothing gone, the names are exactly as before', () => {
+  const rows = build('th')(PMCU, null, GP20);
+  assert.equal(rows[1][0], 'อาคารวิทยกิตติ์');
+  assert.equal(rows[2][0], 'ลิโด้ ชั้น 1 บริเวณข้างห้องน้ำ');
+});
+
+test('the Grand Total is unchanged by marking', () => {
+  const plain = build('th')(PMCU, null, GP20);
+  const marked = build('th')(PMCU, null, GP20, new Set(['อาคารวิทยกิตติ์']));
+  const gt = (r) => r.find(x => String(x[0]).startsWith('Grand Total'));
+  assert.deepEqual(gt(marked).slice(1), gt(plain).slice(1));
 });

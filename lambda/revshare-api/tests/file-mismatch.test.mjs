@@ -26,6 +26,7 @@ const constOf2 = (n, end) => app.slice(app.indexOf(`const ${n} =`),
                                        app.indexOf(end, app.indexOf(`const ${n} =`)) + end.length);
 const fileMismatches = new Function(
   constOf2('INCOMPLETE_FIELDS', '};') + grab('ruleHasAnyValue')
+  + grab('percentCoversAll') + grab('percentModelsOf')
   + 'const entityName = c => c.counterParty || "";'
   + grab('termModelsOf') + grab('fileMismatches') + 'return fileMismatches;')();
 // Assertions must never match words inside a comment — the comments here describe the bugs they
@@ -214,7 +215,7 @@ const render = (contracts, brands, check = CHECK) =>
   const wireMismatchActions = () => {};
   ${constOf('UP_TABS', '];')}
   ${constOf('INCOMPLETE_FIELDS', '};')} ${constOf('INCOMPLETE_LABEL', '};')}
-  ${grab('ruleHasAnyValue')}
+  ${grab('ruleHasAnyValue')} ${grab('percentCoversAll')} ${grab('percentModelsOf')}
   const entityName = c => c.counterParty || '';
   ${grab('termModelsOf')} ${grab('fileMismatches')} ${grab('registryHtml')} ${grab('drawMismatchTab')}
   const m = fileMismatches(CONTRACTS, BRANDS);
@@ -279,7 +280,7 @@ test('the terms tab names the dead code and what it costs', () => {
 
 test('every action button carries a kind the handler knows', () => {
   const { out } = render(CONTRACTS, BRANDS);
-  const known = new Set(['terms', 'add', 'archive', 'delete', 'edit', 'repoint']);
+  const known = new Set(['terms', 'add', 'archive', 'delete', 'edit', 'repoint', 'ackmodel']);
   const handler = app.slice(app.indexOf("box.querySelectorAll('.up-fix')"));
   for (const html of Object.values(out)) {
     for (const mm of html.matchAll(/data-kind="(\w+)"/g)) {
@@ -515,4 +516,146 @@ test('the rule is deep-copied, so the two brands stay independent', () => {
 test('the editor variable can be replaced when terms are adopted', () => {
   // `const editor` would make adopting throw on assignment — the save reads `editor` afterwards.
   assert.match(editorSrc, /let editor = renderStructuredRuleEditor/);
+});
+
+// ── A fix must leave the table (2026-10-01) ──────────────────────────────────────────────────
+// "if we update on the upload page, it doesn't work, still remains in the table." Two faults:
+//
+//  1. `await openAddFromFile(id, b); await after();` — the dialog OPENS and returns, so the
+//     refresh ran while the form was still on screen. By the time anything was saved the tab had
+//     already been repainted, so the row was still there.
+//  2. `openAddFromFile` returned silently when `UPLOAD_STATE.diff` was null, which is the normal
+//     state on these tabs: they read the file ON RECORD, not one loaded in this browser.
+test('every dialog the tabs open reports back when it SAVES', () => {
+  const i = app.indexOf("b.dataset.kind === 'terms'");
+  const branch = strip(app.slice(i, app.indexOf('\n  }));', i)));
+  assert.match(branch, /openTermsEditor\(id, after\)/);
+  assert.match(branch, /openContractEditor\(id, after\)/);
+  assert.match(branch, /openAddFromFile\(id, b, after\)/);
+  // Archive and delete finish inline — a confirm and one request, no dialog left on screen — so
+  // refreshing beside them is right. The three that OPEN something must not.
+  for (const kind of ['terms', 'edit', 'add']) {
+    const line = branch.split('\n').find(l => l.includes(`=== '${kind}'`)) || '';
+    assert.ok(!/await after\(\)/.test(line), `${kind} must not refresh beside the call`);
+    assert.match(line, /after\)/, `${kind} must hand after to the dialog`);
+  }
+  assert.match(branch, /archiveFromUpload\(id, b\); await after\(\)/, 'these two do finish inline');
+});
+
+test('the contract editor calls back after the PUT, not before', () => {
+  const i = app.indexOf('function openContractEditor(');
+  const fn = strip(app.slice(i, app.indexOf('\n}\n', i)));
+  assert.match(fn, /function openContractEditor\(contractId, onSaved\)/);
+  const put = fn.indexOf("method: 'PUT'");
+  const cb = fn.indexOf('if (onSaved)');
+  assert.ok(put > 0 && cb > put, 'the callback comes after the save');
+});
+
+test('Add to list works with no file loaded, from the file on record', () => {
+  const i = app.indexOf('async function openAddFromFile(');
+  const fn = strip(app.slice(i, app.indexOf('\n}\n', i)));
+  assert.match(fn, /ROSTER_BRANDS\.brands \|\| \{\}/, 'it falls back to the stored file');
+  assert.match(fn, /stored \? stored\.branches : null/, 'merchant count comes with it');
+  assert.ok(!/const row = .*\n.*if \(!row\) return;/.test(fn),
+            'and it no longer returns in silence');
+  assert.match(fn, /is not in the file on record/, 'a genuine miss says so');
+});
+
+test('the add dialog reports back after creating, not on open', () => {
+  const i = app.indexOf('async function openAddFromFile(');
+  const fn = strip(app.slice(i, app.indexOf('\n}\n', i)));
+  const post = fn.indexOf("api('/contracts', { method: 'POST'");
+  const cb = fn.indexOf('if (onSaved)');
+  assert.ok(post > 0 && cb > post);
+});
+
+// ── C2: what blocks a run, and what is only reported (2026-10-01) ────────────────────────────
+// "217 brands lack contract info and 277 lack finance info didn't block a run" — confirmed by the
+// user. SHARE TERMS block, because without them a brand cannot be paid at all. Contract and
+// finance gaps are reported where the decision to run is made, and do not block: making them
+// block would mean no run could happen.
+test('only missing SHARE TERMS blocks step 4', () => {
+  const wiz = strip(app.slice(app.indexOf('<span class="wizard-step-num">3</span>'),
+                              app.indexOf('<span class="wizard-step-num">4</span>')));
+  assert.match(wiz, /pendingTerms\.length === 0/);
+  assert.match(wiz, /need revenue-share terms before you can run/);
+  assert.ok(!/financeContactEmail|startDate|entityId/.test(wiz),
+            'nothing about contract or finance detail may gate the run');
+});
+
+test('the other two parts are reported in the same place, as not blocking', () => {
+  const fn = strip(grab('incompleteTermsNote'));
+  assert.match(fn, /incomplete contract information/);
+  assert.match(fn, /incomplete finance information/);
+  assert.match(fn, /Neither stops this run/);
+  assert.match(fn, /cannot be sent its statement/, 'and says what it does cost');
+  assert.match(fn, /INCOMPLETE_FIELDS\[part\]/, 'one definition of complete, shared with the tabs');
+});
+
+test('the run reminder states both file dates and warns when stale', () => {
+  assert.match(app, /Merchant list updated/);
+  assert.match(app, /Machine list updated/);
+  assert.match(app, /const stale = days >= 14/);
+  assert.match(app, /No merchant list stored yet/);
+});
+
+// ── A machine type earns if ANYTHING pays for it (2026-10-01) ────────────────────────────────
+// "For QSNCC, you notify S8 has no terms... but what if their S8 literally has no terms, only
+// LL40 has?" The question exposed a real error first: QSNCC's rule is
+// `GP 35% (ALL) + Placement LL40 2,000`, so its five S8 machines earn through the 35%. Reading
+// only the per-machine terms made five earning machines look uncovered.
+const pctAll = (p) => ({ type: 'percent', rows: [{ percent: p, model: 'ALL' }], _t: 'gp' });
+const perMachine = (model, amount) =>
+  ({ type: 'flat_per_machine', rows: [{ model, amount }], _t: 'placement' });
+
+test('a revenue share on ALL covers every machine type', () => {
+  const m = fileMismatches(
+    [{ contractId: 'q', merchantName: 'QSNCC', aggregationMode: 'whole',
+       rule: { type: 'sum', children: [pctAll(35), perMachine('LL40', 2000)] } }],
+    { qsncc: { label: 'QSNCC', branches: 10, units: { S8: 5, LL40: 5 } } });
+  assert.deepEqual(m.terms, [], 'the S8s earn through the 35%');
+});
+
+test('a percentage on ONE model covers that model only', () => {
+  const m = fileMismatches(
+    [{ contractId: 'x', merchantName: 'X', aggregationMode: 'whole',
+       rule: { type: 'sum', children: [
+         { type: 'percent', rows: [{ percent: 20, model: 'S8' }], _t: 'gp' },
+         perMachine('LL40', 2000)] } }],
+    { x: { label: 'X', branches: 3, units: { S8: 1, LL40: 1, S5: 1 } } });
+  assert.deepEqual(m.terms[0].uncovered, ['S5'], 'S8 earns on the percentage, LL40 per machine');
+});
+
+// The user's actual question: when NOTHING reaches a type, it genuinely earns nothing — which may
+// be deliberate. It is raised once and can be settled, per MODEL.
+test('a type nothing pays for is raised, and the effect is stated plainly', () => {
+  const m = fileMismatches(
+    [{ contractId: 'y', merchantName: 'Y', aggregationMode: 'whole', rule: perMachine('LL40', 2000) }],
+    { y: { label: 'Y', branches: 2, units: { S8: 5, LL40: 5 } } });
+  assert.deepEqual(m.terms[0].uncovered, ['S8']);
+  const { out } = render(
+    [{ contractId: 'y', merchantName: 'Y', aggregationMode: 'whole', rule: perMachine('LL40', 2000) }],
+    { y: { label: 'Y', branches: 2, units: { S8: 5, LL40: 5 } } });
+  assert.match(out.terms, /nothing pays for S8/);
+  assert.match(out.terms, /data-kind="ackmodel"/, 'and it can be settled as intentional');
+  assert.match(out.terms, /data-models="S8"/);
+});
+
+test('once acknowledged it stops being raised — per model, not per brand', () => {
+  const base = { contractId: 'y', merchantName: 'Y', aggregationMode: 'whole',
+                 rule: perMachine('LL40', 2000) };
+  const brands = { y: { label: 'Y', branches: 2, units: { S8: 5, LL40: 5 } } };
+  assert.deepEqual(fileMismatches([{ ...base, uncoveredModelsAck: ['S8'] }], brands).terms, []);
+  // A type added to the file later is a NEW question, not covered by the old answer.
+  const later = { y: { label: 'Y', branches: 3, units: { S8: 5, LL40: 5, S5: 2 } } };
+  assert.deepEqual(fileMismatches([{ ...base, uncoveredModelsAck: ['S8'] }], later).terms[0].uncovered,
+                   ['S5']);
+});
+
+test('acknowledging changes no terms and no payout', () => {
+  const i = app.indexOf("b.dataset.kind === 'ackmodel'");
+  const fn = strip(app.slice(i, app.indexOf('\n    }', i)));
+  assert.match(fn, /JSON\.stringify\(\{ uncoveredModelsAck: ack \}\)/, 'one field, nothing else');
+  assert.ok(!/rule|aggregationMode|noPayout/.test(fn));
+  assert.match(fn, /changes no terms and no payout/, 'and it says so before writing');
 });

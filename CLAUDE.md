@@ -18,9 +18,10 @@ default (§1y).
 2026-10-01: **the vocabulary is settled** — Brand / Merchant / Registry (§1aa); the Upload
 page is the file-vs-registry workbench with nine tabs (§1ab); three caller/callee bugs and the
 test that catches them (§1ac); **`L40` is retired** and two brands were being paid 0 (§1ad);
-the A-B-C spec is built (§1ae) and either file can be uploaded alone (§1af).
+the A-B-C spec is built (§1ae, §1ag) and either file can be uploaded alone (§1af);
+a machine type earns if anything pays for it (§1ah); a fix now leaves the table (§1ai).
 A payment-schedule notice goes to every merchant with a share that month, in one send (§1z).
-Service-worker `CACHE_VERSION` is at `revshare-v269` (bump on every shell change).
+Service-worker `CACHE_VERSION` is at `revshare-v275` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
 end-to-end before touching anything. The codebase is the ultimate source of
@@ -1532,6 +1533,59 @@ was measured on the 1 Oct file, not estimated.
 **Every tab re-reads on demand** (`refreshMismatchData`, forced contract refetch) because the team
 edits the app while someone is looking at it, and **no merchant appears on two tabs**: the brand is
 fixed first, since registering a brand resolves every merchant under it.
+
+## 1ag. The rest of the spec, and what blocks a run (2026-10-01)
+
+**B2 — adopt terms.** The terms editor lists every other brand with paying terms, archived included
+and marked, labelled with what it pays. It FILLS the form (deep-copied) and saves nothing until
+Save. **B4 — incomplete is three pages** matching the editor's sections. `noPayout` excuses the
+share terms only; an unpaid brand is still invoiced. A rule that pays nothing counts as missing.
+
+**C2 — what blocks and what only reports.** SHARE TERMS block step 4. Contract and finance gaps are
+REPORTED there and do NOT block — the user confirmed: *"217 brands lack contract info and 277 lack
+finance info didn't block a run"*. Blocking on those would mean no run could ever happen.
+
+**C3/C4** — results group by contract entity then brand, each with a subtotal; brands with no
+entity gather in ONE block at the end (51). Clicking a brand opens block 1 of its download, built
+by the same `buildPartnerSheet`, so the screen cannot disagree with the file the merchant receives.
+
+**C5 — gone brands and merchants.** Marked in the run table, the expanded view and the downloaded
+file ("(no longer in our list)"), and still paid. A merchant the file has dropped is RECOVERED from
+an earlier upload — but ONLY when the period's orders name it: a roster row is a station, and
+per-machine terms count rows, so pulling in a merchant that earned nothing would raise a guarantee
+forever. `listRosterHistory` is indexed in DynamoDB (`CONFIG / ROSTER#HIST#<ulid>`), NOT listed
+from S3 — the Lambda role has no `s3:ListBucket`, so a ListObjectsV2 would fail in production only.
+`infra/backfill-roster-history.mjs` indexed the 13 files already in S3.
+
+**C5b — mail by entity.** One letter per contract entity carrying one statement per brand: 143
+letters instead of 150, 7 multi-brand. A brand with no entity is a group of ONE — merging on a
+blank key would put unrelated companies in one envelope. One letter, but ONE LOG ROW PER BRAND, so
+"already sent" is answered per brand and half-sent is not sent.
+
+**C1 remains deferred** by the user: matching is roster-driven, not registry-driven.
+
+## 1ah. A machine type earns if ANYTHING pays for it (2026-10-01)
+
+"Terms vs machines" flagged QSNCC for having no S8 term. Its rule is `GP 35% (ALL) + Placement LL40
+2,000` — **the S8s earn through the 35%**. Reading only the per-machine terms made five earning
+machines look uncovered. A type is uncovered only when NOTHING reaches it: no per-machine row, no
+percentage on that model, and no percentage on ALL. The count went 1 → 0.
+
+When nothing does reach a type, those machines genuinely earn nothing, and that can be deliberate
+("what if their S8 literally has no terms, only LL40 has?"). **Intentional** records
+`uncoveredModelsAck` on the brand — one field, no terms and no payout touched — PER MODEL, so a
+type that appears in the file later is still a new question.
+
+## 1ai. A fix must leave the table (2026-10-01)
+
+Two faults made the Upload tabs look broken. `await openAddFromFile(id, b); await after();` — the
+dialog OPENS and returns, so the refresh ran while the form was still on screen. And
+`openAddFromFile` returned in SILENCE when `UPLOAD_STATE.diff` was null, which is the normal state
+on tabs that read the file ON RECORD rather than one loaded in this browser.
+
+Every dialog the tabs open now takes an `onSaved` callback and fires it after the write; `archive`
+and `delete` keep `await after()` because they finish inline. Tests assert the callback comes after
+the POST/PUT and that no dialog kind refreshes beside the call.
 
 ## 1af. Either file can be uploaded alone (2026-10-01)
 

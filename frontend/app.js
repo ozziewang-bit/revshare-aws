@@ -1674,8 +1674,14 @@ function drawMismatchTab(box, tab, m) {
         <td>${escape(r.fileModels.join(', ') || '—')}</td>
         <td>${r.dead.length
               ? `pays <strong>nothing</strong> for ${escape(r.uncovered.join(', ') || 'these machines')}`
-              : `no per-machine term covers ${escape(r.uncovered.join(', '))}`}</td>
-        <td>${act('Edit terms', 'terms', r.c.contractId)}</td></tr>`).join(''));
+              : `nothing pays for ${escape(r.uncovered.join(', '))} — no per-machine term and no
+                 revenue share reaches it`}</td>
+        <td>${act('Edit terms', 'terms', r.c.contractId)}${
+          r.uncovered.length && !r.dead.length
+            ? ` <button type="button" class="btn-ghost up-fix" data-kind="ackmodel"
+                 data-id="${escape(r.c.contractId)}" data-models="${escape(r.uncovered.join(','))}"
+                 title="Record that ${escape(r.uncovered.join(', '))} is deliberately not paid for this brand. It stops being raised; a machine type added later still will be."
+                 >Intentional</button>` : ''}</td></tr>`).join(''));
   } else if (tab === 'noContract') {
     html += t(['In your file', 'Merchants', 'Machines', ''],
       rows.map(r => `<tr><td>${escape(r.label)}</td><td>${r.branches}</td><td>${escape(u(r.units))}</td>
@@ -1881,15 +1887,60 @@ function wireMismatchActions(box) {
     // After any fix, re-read EVERYTHING rather than only the contracts — a repoint changes the
     // registry, which only the conflicts route can see.
     const after = async () => { await refreshMismatchData().catch(() => {}); paintUploadTabs(); };
+    // Each of these refreshes WHEN IT SAVES. Running `after()` next to the call refreshed while
+    // the dialog was still open, which is why a row stayed in the table after being fixed.
     if (b.dataset.kind === 'terms')        await openTermsEditor(id, after);
-    else if (b.dataset.kind === 'edit')    openContractEditor(id);
-    else if (b.dataset.kind === 'add')     { await openAddFromFile(id, b); await after(); }
+    else if (b.dataset.kind === 'edit')    openContractEditor(id, after);
+    else if (b.dataset.kind === 'add')     await openAddFromFile(id, b, after);
     else if (b.dataset.kind === 'archive') { await archiveFromUpload(id, b); await after(); }
     else if (b.dataset.kind === 'delete')  { await deleteFromUpload(id, b); await after(); }
+    else if (b.dataset.kind === 'ackmodel') {
+      const models = String(b.dataset.models || '').split(',').filter(Boolean);
+      const c = CONTRACTS.find(x => x.contractId === id);
+      if (!c || !models.length) return;
+      if (!confirm(`Record that ${models.join(', ')} is deliberately not paid per machine for `
+        + `${c.merchantName}?\n\nThose machines earn nothing under these terms. This only stops `
+        + `the app asking — it changes no terms and no payout. A machine type added later is `
+        + `still raised.`)) return;
+      const was = b.textContent; b.disabled = true; b.textContent = 'Saving…';
+      try {
+        const ack = [...new Set([...(c.uncoveredModelsAck || []), ...models])];
+        const saved = await api('/contracts/' + encodeURIComponent(id), {
+          method: 'PUT', body: JSON.stringify({ uncoveredModelsAck: ack }) });
+        Object.assign(c, saved || { uncoveredModelsAck: ack });
+        await after();
+      } catch (e) {
+        b.disabled = false; b.textContent = was;
+        alert('Could not record that: ' + e.message);
+      }
+    }
     else if (b.dataset.kind === 'repoint') {
       await repointStoreFromFile(id, b.dataset.brand, b, after);
     }
   }));
+}
+
+// C2 (2026-10-01): "you remind us with the latest update date of files and which brands are with
+// incomplete terms, the latter requires update to proceed run."
+//
+// SHARE TERMS block a run — without them the brand cannot be paid. Contract and finance gaps are
+// REPORTED and do not block, by the user's decision: 217 brands lack contract info and 277 lack
+// finance info, so blocking on those would mean no run could happen at all. They still matter —
+// a brand with no finance email cannot be sent its statement afterwards — so the run says so
+// where the decision to run is being made.
+function incompleteTermsNote() {
+  const live = (CONTRACTS || []).filter(c => !c.archived);
+  const missing = (c, part) => INCOMPLETE_FIELDS[part]
+    .some(f => !String((f === 'entity' ? entityName(c) : c[f]) ?? '').trim());
+  const noContract = live.filter(c => missing(c, 'contract')).length;
+  const noFinance = live.filter(c => missing(c, 'finance')).length;
+  if (!noContract && !noFinance) return '';
+  return `<p class="muted" style="margin:10px 0 0;font-size:12.5px;">
+    ${noContract ? `<strong>${noContract}</strong> brand(s) have incomplete contract information` : ''}
+    ${noContract && noFinance ? ' and ' : ''}
+    ${noFinance ? `<strong>${noFinance}</strong> have incomplete finance information` : ''}.
+    Neither stops this run — a brand without a finance email simply cannot be sent its statement
+    afterwards. They are listed on the <strong>Upload</strong> page.</p>`;
 }
 
 // ── C5: brands and merchants that have GONE (2026-10-01) ─────────────────────────────────────
@@ -2056,6 +2107,32 @@ function termModelsOf(node, out = new Set()) {
   return out;
 }
 
+// Which models a PERCENTAGE term earns on. A revenue share does not care how many machines there
+// are — a `model: 'ALL'` row pays on every rental, whatever machine took it.
+//
+// This is why QSNCC was wrongly flagged (2026-10-01): its rule is `GP 35% (ALL) + Placement LL40
+// 2,000`, and its S8 machines earn through the 35%. Reading only the per-machine terms made five
+// earning machines look uncovered. A model is uncovered only when NOTHING pays for it.
+function percentCoversAll(node) {
+  if (!node || typeof node !== 'object') return false;
+  if (node.type === 'percent') {
+    return (node.rows || []).some(r => Number(r.percent) > 0 && (!r.model || r.model === 'ALL'));
+  }
+  if (node.type === 'tiered_percent') return (node.tiers || []).length > 0;
+  return (node.children || []).some(percentCoversAll);
+}
+
+function percentModelsOf(node, out = new Set()) {
+  if (!node || typeof node !== 'object') return out;
+  if (node.type === 'percent') {
+    for (const r of node.rows || []) {
+      if (Number(r.percent) > 0 && r.model && r.model !== 'ALL') out.add(r.model);
+    }
+  }
+  (node.children || []).forEach(c => percentModelsOf(c, out));
+  return out;
+}
+
 // What each part of the brand's terms must carry to be complete. Labels, not keys, are what the
 // person sees — `entity` is special-cased because a linked brand reads its ENTITY record rather
 // than the contract's own string.
@@ -2128,7 +2205,15 @@ function fileMismatches(contracts, brands) {
       // with no term — is only worth saying when the contract HAS per-machine terms; a pure
       // percentage rule covers every model by design and is not a mismatch.
       const dead = [...tm].filter(m => !fileModels.has(m));
-      const uncovered = tm.size ? [...fileModels].filter(m => !tm.has(m)) : [];
+      // A model earns if ANY term reaches it: a per-machine row of its own, a percentage on that
+      // model, or a percentage on ALL. Only then is it genuinely paid nothing.
+      const pctAll = percentCoversAll(c.rule);
+      const pctModels = percentModelsOf(c.rule);
+      // …and a type someone has said is deliberately unpaid is not raised again. Recorded per
+      // MODEL rather than per brand, so a type added to the file later is still a new question.
+      const acked = new Set(c.uncoveredModelsAck || []);
+      const uncovered = (tm.size && !pctAll)
+        ? [...fileModels].filter(m => !tm.has(m) && !pctModels.has(m) && !acked.has(m)) : [];
       if (dead.length || uncovered.length) {
         out.terms.push({ c, label: b.label, dead, uncovered,
                          fileModels: [...fileModels], termModels: [...tm] });
@@ -2427,7 +2512,11 @@ async function resolveEntityInput(value) {
 //   Contract · Finance · Share terms   — all manual, all here
 // Everything else on the row (brand, merchants, machine counts, contacts) comes from the weekly
 // upload and is not editable anywhere, by design.
-function openContractEditor(contractId) {
+// `onSaved` fires AFTER a successful save, not when the dialog opens. The Upload page's tabs
+// refresh from it: calling the refresh beside `openContractEditor(...)` ran it while the dialog
+// was still on screen, so the row the person was fixing was still there when they closed it and
+// the fix looked like it had not worked (2026-10-01).
+function openContractEditor(contractId, onSaved) {
   const c = CONTRACTS.find(x => x.contractId === contractId);
   if (!c || !can('manageMerchants')) return;
   const { card, close } = ctModal(760);
@@ -2509,6 +2598,7 @@ function openContractEditor(contractId) {
         method: 'PUT', body: JSON.stringify(body) });
       Object.assign(c, saved || body);
       close();
+      if (onSaved) { await onSaved(); return; }
       // Show what was just changed. Everything this dialog edits lives in the Merchant terms
       // group, and a save landing behind a collapsed stub is indistinguishable from no save.
       if (!groupOpen('terms')) toggleContractGroup('terms'); else paintContracts();
@@ -4291,14 +4381,28 @@ async function drawSchedulePaidList(host, template, period) {
 // cannot be typed over, and everything below it — contract, finance, share terms — is the one
 // data set you maintain. Nothing is created until Save, so closing this leaves the list exactly
 // as it was.
-async function openAddFromFile(name, btn) {
-  const { parsed, diff } = UPLOAD_STATE;
-  const row = (diff?.added || []).find(a => a.name === name);
-  if (!row) return;
+async function openAddFromFile(name, btn, onSaved) {
   if (!can('manageMerchants')) { alert('You do not have permission to add merchants.'); return; }
+  const { parsed, diff } = UPLOAD_STATE;
+  let row = (diff?.added || []).find(a => a.name === name);
+
+  // WITHOUT A LOADED FILE, FALL BACK TO THE STORED ONE (2026-10-01). The Mismatch tabs read the
+  // file on record, not one in this browser — so this used to `return` on a missing row and the
+  // button did nothing at all, silently, leaving the brand sitting in the tab. The brand, its
+  // merchant count and its machines are all on record; only the extra columns of a live upload
+  // (type, contact, phone, sales person) are not, and those are typed in the dialog anyway.
+  const stored = (ROSTER_BRANDS.brands || {})[String(name || '').trim().toLowerCase()];
+  if (!row) {
+    if (!stored) {
+      alert(`"${name}" is not in the file on record. Re-check the page, or upload the file again.`);
+      return;
+    }
+    row = { name: stored.label || name, vals: {} };
+  }
   // The merchant count travels beside the row, not inside it.
   const idx = parsed ? parsed.rows.findIndex(r => String(r[parsed.fields.indexOf('Merchant/Brand')] ?? '').trim() === name) : -1;
-  const branchCount = idx >= 0 ? (parsed.branchCounts?.[idx] ?? null) : null;
+  const branchCount = idx >= 0 ? (parsed.branchCounts?.[idx] ?? null)
+                     : (stored ? stored.branches : null);
 
   const { card, close } = ctModal(760);
   const cols = CONTRACT_GRID_COLUMNS.filter(c =>
@@ -4410,7 +4514,9 @@ async function openAddFromFile(name, btn) {
       // every merchant at once, now done for the one you chose.
       const brought = await applyShopsForBrand(name, created.contractId);
       close();
-      await refreshUploadTable(`✓ Added ${name}${broughtText(brought)}`);
+      // The Mismatch tabs have no loaded file to refresh, so they say so themselves.
+      if (onSaved) await onSaved(`✓ Added ${name}${broughtText(brought)}`);
+      else await refreshUploadTable(`✓ Added ${name}${broughtText(brought)}`);
     } catch (e) {
       save.disabled = false; err.hidden = false; err.textContent = e.message;
     }
@@ -5823,10 +5929,11 @@ function renderNewBulkRunForm() {
         <div class="wizard-step-body">
           ${!step2Done ? '<p class="muted">Complete Step 2 first.</p>' : (
             pendingTerms.length === 0
-              ? '<p style="color:#2b8a3e;">✓ All merchants have revenue-share terms — Step 4 is unlocked.</p>'
-              : `<p style="color:#e67700;"><strong>${pendingTerms.length} merchant(s) need revenue-share terms before you can run:</strong></p>
+              ? '<p style="color:#2b8a3e;">✓ Every brand has revenue-share terms — Step 4 is unlocked.</p>'
+              : `<p style="color:#e67700;"><strong>${pendingTerms.length} brand(s) need revenue-share terms before you can run:</strong></p>
                  <div id="wiz-rule-editors"></div>`
           )}
+          ${step2Done ? incompleteTermsNote() : ''}
         </div>
       </div>
 
@@ -6348,7 +6455,7 @@ function termText(rule) {
 //
 // Verified against all three rows of the template: ยอดรวม is the payout, the base is that
 // divided by 1.07 and the tax is the difference — i.e. THE PAYOUT IS TREATED AS VAT-INCLUSIVE.
-function buildPartnerSheet(XLSXns, result, orders, kaByStore, ordersError, ruleSnapshot) {
+function buildPartnerSheet(XLSXns, result, orders, kaByStore, ordersError, ruleSnapshot, gone) {
   const merchants = result.merchants || [];
   const eng = result.engineResult || {};
   const perStore = Array.isArray(eng.byStore);
@@ -6375,7 +6482,12 @@ function buildPartnerSheet(XLSXns, result, orders, kaByStore, ordersError, ruleS
     const total = shares[i];
     const { base, tax } = splitTax(total);
     nOrders += m.rentals; sumPaid += m.revenue; sumShare += total;
-    aoa.push([m.merchantName, modelLabel(m.model), m.rentals, round2(m.revenue),
+    // C5 (2026-10-01): a merchant your latest file no longer carries is MARKED in the file the
+    // partner receives, not quietly dropped. It is still paid — a run states what happened in the
+    // period — and the mark is what stops the line being read as a mistake.
+    const label = gone && gone.has(String(m.merchantName || '').toLowerCase().trim())
+      ? `${m.merchantName} (no longer in our list)` : m.merchantName;
+    aoa.push([label, modelLabel(m.model), m.rentals, round2(m.revenue),
               term, base, tax, round2(total)]);
   });
   if (perStore && eng.topLevel && eng.topLevel.payout) {
@@ -7085,6 +7197,43 @@ async function renderMessageSend(host, template) {
   });
 }
 
+// Groups a run's results into what actually gets POSTED: one letter per contract entity, every
+// brand under it listed, every statement attached. Keyed on the entity NAME because that is what
+// is settled with — two brands linked to the same ENTITY record resolve to the same name.
+//
+// A brand with no entity is its own group: merging those on a blank key would put unrelated
+// companies in one envelope, which is the one mistake this must never make.
+//
+// "Already sent" is true only when EVERY brand in the group has been sent, so a group half-sent
+// by an earlier partial run still appears, with the rest to go.
+const groupKey = (g) => g.results.map(r => r.contractId).join(',');
+
+function groupResultsForMail(results, sent) {
+  const groups = new Map();
+  for (const r of results.slice().sort((a, b) => b.payout - a.payout)) {
+    const entity = contractEntityFor(r.contractId) || '';
+    const key = entity ? 'e:' + entity.toLowerCase() : 'c:' + r.contractId;
+    if (!groups.has(key)) {
+      groups.set(key, { entity, brands: [], results: [], payout: 0, to: [], gone: [],
+                        sentAt: null, unsent: [] });
+    }
+    const g = groups.get(key);
+    g.brands.push(r.merchantName);
+    g.results.push(r);
+    g.payout += Number(r.payout) || 0;
+    if (brandIsGone(r.merchantName)) g.gone.push(r.merchantName);
+    const m = sent.get(r.contractId);
+    if (m) { if (!g.sentAt || m.sentAt > g.sentAt) g.sentAt = m.sentAt; }
+    else g.unsent.push(r);
+    for (const a of effectiveRecipients(r.contractId)) {
+      if (!g.to.some(x => x.toLowerCase() === a.toLowerCase())) g.to.push(a);
+    }
+  }
+  // Half-sent is not sent: the brands still owed a statement keep the group in the list.
+  for (const g of groups.values()) if (g.unsent.length) g.sentAt = null;
+  return [...groups.values()].sort((a, b) => b.payout - a.payout);
+}
+
 async function drawMailSendList(runId, template) {
   const box = document.getElementById('msend-list');
   if (!box) return;
@@ -7106,17 +7255,28 @@ async function drawMailSendList(runId, template) {
           or switch back to each merchant’s own address.</p>`;
   }
 
+  // C5b (2026-10-01): "when mailing rev share, send by entity instead of brand name, but when I
+  // select, note the brands name after each entity." A payout is settled with the entity, and one
+  // entity holding eight brands used to mean eight separate letters to the same finance team.
+  //
+  // One row per entity, carrying every brand under it and every statement with it. A brand with
+  // no entity stands alone — nothing is merged on a blank, which would put unrelated companies in
+  // one envelope.
+  const grouped = groupResultsForMail(run.results || [], sent);
+
   const ready = [], done = [], noFinance = [];
-  for (const r of (run.results || []).slice().sort((a, b) => b.payout - a.payout)) {
-    if (sent.has(r.contractId)) done.push(r);
-    else if (effectiveRecipients(r.contractId).length) ready.push(r);
-    else noFinance.push(r);
+  for (const g of grouped) {
+    if (g.sentAt) done.push(g);
+    else if (g.to.length) ready.push(g);
+    else noFinance.push(g);
   }
 
-  const row = (r, extra, actions = '') => `<tr>
-    <td>${escape(contractEntityFor(r.contractId) || '—')}</td>
-    <td><strong>${escape(r.merchantName)}</strong></td>
-    <td class="rc-c-money">${fmt2(r.payout)}</td>
+  const row = (g, extra, actions = '') => `<tr>
+    <td><strong>${escape(g.entity || g.brands[0])}</strong>${g.entity ? '' :
+        ' <span class="muted" title="No contract entity is set, so this brand is written to on its own">no entity</span>'}</td>
+    <td>${g.brands.map(b => escape(b)).join('<br>')}${g.gone.length
+        ? ` <span class="rc-warn" title="Your latest file no longer carries ${escape(g.gone.join(', '))}">gone</span>` : ''}</td>
+    <td class="rc-c-money">${fmt2(g.payout)}</td>
     <td class="msend-to">${extra}</td>
     <td class="msend-actions">${actions}</td></tr>`;
 
@@ -7137,26 +7297,27 @@ async function drawMailSendList(runId, template) {
       <h3 style="display:flex;align-items:baseline;gap:10px;margin:0 0 6px;font-size:14px;">
         ${escape(title)} <span class="rc-count">${rows.length}</span></h3>
       <table class="ts msend-table"><thead><tr>
-        <th>Contract entity</th><th>Merchant</th><th class="rc-c-money">Payout</th>
+        <th>Contract entity</th><th>Brands</th><th class="rc-c-money">Payout</th>
         <th>${escape(tone)}</th><th></th>
       </tr></thead><tbody>${body}</tbody></table>
     </section>` : '';
 
   box.innerHTML =
-    section('Ready to send', ready, 'To', ready.map(r => row(r,
-      escape(effectiveRecipients(r.contractId).join(', ')),
-      `<button class="btn-ghost mprev-btn" data-cid="${escape(r.contractId)}">Preview</button>
-       <button class="btn-ghost msend-btn" data-cid="${escape(r.contractId)}">Send…</button>`)).join(''))
-    + section('Already sent', done, 'Sent', done.map(r => {
-        const m = sent.get(r.contractId);
-        return row(r,
-          `${escape(m.sentAt ? new Date(m.sentAt).toLocaleString('en-GB',
+    section('Ready to send', ready, 'To', ready.map(g => row(g,
+      escape(g.to.join(', ')),
+      `<button class="btn-ghost mprev-btn" data-cids="${escape(groupKey(g))}">Preview</button>
+       <button class="btn-ghost msend-btn" data-cids="${escape(groupKey(g))}">Send…</button>`)).join(''))
+    + section('Already sent', done, 'Sent', done.map(g => {
+        const m = sent.get(g.results[0].contractId) || {};
+        return row(g,
+          `${escape(g.sentAt ? new Date(g.sentAt).toLocaleString('en-GB',
              { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '')}
-           to ${escape(m.to || '')} <span class="muted">by ${escape(m.sentBy || '')}</span>`,
-          `<button class="btn-ghost mprev-btn" data-cid="${escape(r.contractId)}">Preview</button>
-           <button class="btn-ghost msend-btn" data-cid="${escape(r.contractId)}">Send again…</button>`);
+           to ${escape(m.to || g.to.join(', '))} <span class="muted">by ${escape(m.sentBy || '')}</span>`,
+          `<button class="btn-ghost mprev-btn" data-cids="${escape(groupKey(g))}">Preview</button>
+           <button class="btn-ghost msend-btn" data-cids="${escape(groupKey(g))}">Send again…</button>`);
       }).join(''))
-    + section('No finance email', noFinance, 'What is on file', noFinance.map(r => {
+    + section('No finance email', noFinance, 'What is on file', noFinance.map(g => {
+        const r = g.results[0];
         const other = fallbackContact(r.contractId);
         const broken = [...malformedAddresses((CONTRACTS.find(x => x.contractId === r.contractId) || {}).financeContactEmail),
                         ...malformedAddresses((CONTRACTS.find(x => x.contractId === r.contractId) || {}).contactEmail)];
@@ -7169,17 +7330,24 @@ async function drawMailSendList(runId, template) {
           ? `<span class="muted">contact email: ${escape(other.join(', '))} — copy it into
              <strong>Finance email</strong> on the Overview if that is the right person</span>`
           : '<span class="muted">no address at all — add a finance email on the Overview</span>';
-        return row(r, why);
+        return row(g, why);
       }).join(''))
     + (ready.length || done.length || noFinance.length ? '' : '<p class="muted">This run paid nobody.</p>');
 
+  const groupOf = (b) => {
+    const ids = String(b.dataset.cids || '').split(',').filter(Boolean);
+    return grouped.find(g => g.results.length === ids.length
+                          && g.results.every(r => ids.includes(r.contractId)));
+  };
   box.querySelectorAll('.msend-btn').forEach(b => b.addEventListener('click', () => {
-    const r = (run.results || []).find(x => x.contractId === b.dataset.cid);
-    if (r) mailSendDialog(r, run, sent.get(r.contractId)?.sentAt || null, template);
+    const g = groupOf(b);
+    if (g) mailSendDialog(g, run, g.sentAt, template);
   }));
   box.querySelectorAll('.mprev-btn').forEach(b => b.addEventListener('click', () => {
-    const r = (run.results || []).find(x => x.contractId === b.dataset.cid);
-    if (r) mailPreviewDialog(r, run, template, sent.get(r.contractId)?.sentAt || null);
+    // Preview shows the letter, which is written once per entity — so the first brand's figures
+    // stand in for the wording and the rest are named beside it.
+    const g = groupOf(b);
+    if (g) mailPreviewDialog(g.results[0], run, template, g.sentAt);
   }));
 }
 
@@ -7268,7 +7436,8 @@ function statementWorkbook(result, index) {
   XLSX.utils.book_append_sheet(wb,
     buildPartnerSheet(XLSX, result, index.orders ? (index.ordersByContract.get(result.contractId) || []) : null,
                       index.kaByStore, index.ordersError,
-                      (index.ruleSnapshots || {})[result.contractId]),
+                      (index.ruleSnapshots || {})[result.contractId],
+                      goneMerchants(result)),
     sanitizeFilename(result.merchantName).replace(SHEET_SAFE, '-').slice(0, 31));
   return new Uint8Array(XLSX.write(wb, { bookType: 'xlsx', type: 'array' }));
 }
@@ -7410,16 +7579,27 @@ function mailCc(t) {
   return String((t && t.cc) || '').trim();
 }
 
-function mailSendDialog(result, run, sentAlready, template) {
-  // Recipients come from the screen's one choice: the merchant's own finance address, or the
+// Takes a GROUP — one contract entity and every brand under it (C5b, 2026-10-01). A payout is
+// settled with the entity, so one letter carries every statement it is owed; `Central Department
+// Store` is one mail with eight files, not eight mails to the same finance team.
+//
+// A brand with no entity arrives here as a group of one, so the single-brand case is not a
+// separate path that could drift from this one.
+function mailSendDialog(group, run, sentAlready, template) {
+  const results = group.results;
+  const result = results[0];                 // what the wording is written from
+  // Recipients come from the screen's one choice: the brands' own finance addresses, or the
   // assigned address typed at the top. Reading it here rather than taking it as an argument
   // means the dialog cannot disagree with the banner above it.
-  const ownAddresses = mailRecipients(result.contractId);
+  const ownAddresses = group.to;
   const assign = MAIL_ASSIGNED.length > 0;
-  const recipients = effectiveRecipients(result.contractId);
+  const recipients = assign ? MAIL_ASSIGNED : group.to;
   const statementCc = mailCc(template);
   const { card, close } = ctModal(720);
-  const vars = mailVarsFor(result, run);
+  const vars = { ...mailVarsFor(result, run),
+                 merchant: group.brands.join(', '),
+                 entity: group.entity || result.merchantName,
+                 payout: fmt2(group.payout) };
 
   if (!MAIL_TEMPLATES.length) {
     card.innerHTML = `<h3 style="margin:0 0 8px;">No mail template yet</h3>
@@ -7433,7 +7613,9 @@ function mailSendDialog(result, run, sentAlready, template) {
 
 
   card.innerHTML = `
-    <h3 style="margin:0 0 4px;">Send statement — ${escape(result.merchantName)}</h3>
+    <h3 style="margin:0 0 4px;">Send statement — ${escape(group.entity || result.merchantName)}</h3>
+    <p class="muted" style="margin:0 0 10px;font-size:12.5px;">${escape(group.brands.join(' · '))}${
+      group.brands.length > 1 ? ` — ${group.brands.length} statements, one letter` : ''}</p>
     <p class="muted" style="margin:0 0 12px;font-size:12.5px;">This goes to the merchant. It cannot be unsent.</p>
     ${sentAlready ? `<p class="mail-warn">Already sent ${escape(sentAlready)} — sending again delivers a second copy.</p>` : ''}
     <div class="mail-form">
@@ -7441,7 +7623,7 @@ function mailSendDialog(result, run, sentAlready, template) {
         <legend>To</legend>
         <p style="margin:0;font-size:13px;">${escape(recipients.join(', ')) || '<span class="rc-warn">nobody</span>'}</p>
         <p class="mail-meta" style="margin:6px 0 0;">${assign
-          ? `<span class="rc-warn">Assigned</span> — ${escape(result.merchantName)}’s statement goes here
+          ? `<span class="rc-warn">Assigned</span> — ${escape(group.entity || result.merchantName)}’s statement goes here
              instead of ${escape(ownAddresses.join(', ') || 'its own address, which is not set')}.
              Change it with “Send to” above.`
           : 'This merchant’s own finance address. Change it with “Send to” above.'}</p>
@@ -7481,11 +7663,17 @@ function mailSendDialog(result, run, sentAlready, template) {
       // The same file the download produces, from the same function — including the
       // rental-by-rental block, which this used to omit while the wording promised it.
       const index = await runOrderIndex(run);
-      const bytes = statementWorkbook(result, index);
-      const filename = `${sanitizeFilename(result.merchantName)}.xlsx`;
+      // One file per brand — the same workbook the download produces, from the same function.
+      const files = results.map(r => ({
+        filename: `${sanitizeFilename(r.merchantName)}.xlsx`,
+        bytes: statementWorkbook(r, index),
+      }));
+      const filename = files.map(f => f.filename).join(', ');
 
-      // Checked against what is about to be sent, not what was rendered.
-      const blockers = statementSendBlockers(result, run, recipients, result.contractId, !!assign);
+      // Checked against what is about to be sent, not what was rendered — for EVERY brand, so one
+      // unsendable statement stops the letter rather than going out with the others.
+      const blockers = results.flatMap(r =>
+        statementSendBlockers(r, run, recipients, r.contractId, !!assign));
       // An incomplete file must not be SENDABLE, not merely carry a warning inside it. The
       // September run's 10.4 MB inputs failed to load and statements went out with no rentals at
       // all — the letter promising "every rental in the period" is then simply untrue.
@@ -7495,13 +7683,15 @@ function mailSendDialog(result, run, sentAlready, template) {
       }
       if (blockers.length) return fail('Not sent — ' + blockers.join(' '));
 
-      const rows = index.orders ? (index.ordersByContract.get(result.contractId) || []).length : 0;
+      const rows = index.orders
+        ? results.reduce((a, r) => a + (index.ordersByContract.get(r.contractId) || []).length, 0) : 0;
       const ok = confirm(
-        (assign ? `Send this statement to an ASSIGNED address?\n(not ${result.merchantName}'s own)\n\n`
+        (assign ? `Send to an ASSIGNED address?\n(not ${group.entity || result.merchantName}'s own)\n\n`
                 : `Send this statement?\n\n`)
-        + `Merchant:   ${result.merchantName}\n`
+        + `Entity:     ${group.entity || '(none — this brand stands alone)'}\n`
+        + `Brands:     ${group.brands.join(', ')}\n`
         + `Period:     ${periodTag(run.periodStart)}\n`
-        + `Payout:     ${fmt2(result.payout)} ${vars.currency}\n`
+        + `Payout:     ${fmt2(group.payout)} ${vars.currency}\n`
         + `To:         ${recipients.join(', ')}\n`
         + (statementCc ? `Cc:         ${statementCc}\n` : '')
         + `From:       ${from}\n`
@@ -7511,18 +7701,27 @@ function mailSendDialog(result, run, sentAlready, template) {
 
       const sent = await sendGmail(buildMimeMessage({
         from, to: recipients, cc: statementCc, subject: $('#ms-subject').value,
-        body: $('#ms-body').value, filename, attachment: bytes,
+        // `filename` and `type`, which is what buildMimeMessage reads — `name` would have gone
+        // out as `attachment` labelled application/octet-stream, unopenable as a spreadsheet.
+        body: $('#ms-body').value, attachments: files.map(f => ({
+          filename: f.filename, bytes: f.bytes,
+          type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })),
       }));
-      await api(`/bulk-runs/${encodeURIComponent(run.runId)}/mail-log`, {
+      // ONE LOG ROW PER BRAND, even though it was one letter: "already sent" is answered per
+      // brand, and a group whose membership changes next month must not hide a brand that was
+      // never written to.
+      for (const r of results) await api(`/bulk-runs/${encodeURIComponent(run.runId)}/mail-log`, {
         method: 'POST',
         // Enough to reconcile the Sent log against the run itself: which merchant, which
         // period, and what figure the letter quoted. Without the amount, "we sent it" cannot be
         // checked against "we sent the right one".
-        body: JSON.stringify({ contractId: result.contractId, merchantName: result.merchantName,
+        body: JSON.stringify({ contractId: r.contractId, merchantName: r.merchantName,
+                               entity: group.entity || null,
                                to: recipients.join(', '), cc: statementCc || null,
                                subject: $('#ms-subject').value,
-                               attachment: filename, gmailId: sent.id, fromAlias: from,
-                               period: periodTag(run.periodStart), payout: Number(result.payout) || 0,
+                               attachment: `${sanitizeFilename(r.merchantName)}.xlsx`,
+                               gmailId: sent.id, fromAlias: from,
+                               period: periodTag(run.periodStart), payout: Number(r.payout) || 0,
                                attachmentRows: rows, assigned: !!assign }),
       });
       close();

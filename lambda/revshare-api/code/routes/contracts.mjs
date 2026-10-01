@@ -31,6 +31,10 @@ const WRITABLE = [
   // The contract is the payout entity now: it owns the rule, how it aggregates, whether it
   // is paid at all, and in which currency. These were PARTNER fields until 2026-08-07.
   'rule', 'aggregationMode', 'noPayout', 'currency',
+  // Machine types this brand is DELIBERATELY not paid per machine for (2026-10-01). "What if
+  // their S8 literally has no terms, only LL40 has?" — then the app should stop asking. Recorded
+  // per model, so adding a new type later is still raised.
+  'uncoveredModelsAck',
   // Manual archive, set when a contract ends. `archivedAt` is stamped server-side, not
   // taken from the client.
   'archived',
