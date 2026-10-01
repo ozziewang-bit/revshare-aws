@@ -1,6 +1,6 @@
 # revshare-aws — handoff
 
-Last updated: 2026-09-04 (Merchant view gained a **Finance Information** column group — bank
+Last updated: 2026-10-01. (History: 2026-09-04: the Merchant view gained contract
 details + finance contact, editable inline, in the download sheet, **both regions**; and the
 screen now opens with **every column group collapsed** — §1n. 2026-09-18: `Contract entity` is no
 longer read from the weekly file — a column is writable by a file or by hand, never both — §1l.
@@ -15,8 +15,11 @@ stored roster (§1t); editing left the Merchant view grid for one Edit dialog (�
 2026-09-30: the statement follows finance's own template, with the share split for tax (§1x);
 a term can no longer be discarded in silence, and the set you maintain by hand opens by
 default (§1y).
+2026-10-01: **the vocabulary is settled** — Brand / Merchant / Registry (§1aa); the Upload
+page is the file-vs-registry workbench with nine tabs (§1ab); three caller/callee bugs and the
+test that catches them (§1ac); **`L40` is retired** and two brands were being paid 0 (§1ad).
 A payment-schedule notice goes to every merchant with a share that month, in one send (§1z).
-Service-worker `CACHE_VERSION` is at `revshare-v237` (bump on every shell change).
+Service-worker `CACHE_VERSION` is at `revshare-v259` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
 end-to-end before touching anything. The codebase is the ultimate source of
@@ -1377,6 +1380,114 @@ Three bugs found by the user while building it, all mine:
   It has its own `.msend-scroll` now and sits AFTER the form rather than between its fields.
 - `collectAttachments` is shared by both send paths, so they cannot differ about what is attached
   or how large it may be.
+
+## 1aa. THE VOCABULARY (2026-10-01) — settled by the user, use it everywhere
+
+Three words had been used for two things, and the app's own nav contradicted itself. The user
+defined them; everything written for a person now uses these and nothing else:
+
+| Word | Means |
+|---|---|
+| **app** | this platform |
+| **Brand** | the file's `Merchant label` column. The record carrying terms. Stored as `CONTRACT`. |
+| **Merchant** | the file's `merchant name (English)` — ONE SHOP/BRANCH. Stored as `MERCHANT`. |
+| **File** | the user's upload (Businessmen list / Machine List) |
+| **Registry** | anything currently held on the app |
+| **Deployed machine** | machine `State` = `Deployed(New)` |
+
+Renames applied: nav **Merchant view → Overview**; grid column **Merchant/Brand → Brand**;
+**Branch → Merchants**; group **Merchant terms → Brand terms**; download-sheet group
+`Merchant` → `Brand`, column `Branch` → `Merchants`. ~95 user-visible strings and ~110 comments.
+
+**DO NOT say branch, shop or store in anything a user reads.** A table header must name what its
+ROWS are — a bulk swap put "Merchant" on four tables whose rows are brands, and that is the easy
+mistake. Four things legitimately keep the old words and must not be "fixed":
+`WEEKLY_ALIASES` (they match real column headers in the files), `WEEKLY_FIELD_KEY`'s `'Branch'`
+key, `localStorage`/"stored"/"restore", and the sample name `Example Store`.
+
+**Verification trap, cost four wrong "it's clean" reports:** a scanner that requires a SPACE in
+the string silently skips every single-word header — `'Branches'`, `'Shop'`, `'Stores'`. Scan
+every literal regardless of spaces, and scan the DEPLOYED bundle, not the working copy.
+
+The statement .xlsx still uses `Template_Revenue Share.xlsx`'s own headings. `Rental Merchant` /
+`Return Merchant` are already correct under this vocabulary; `Rental KA Name` means Brand and was
+left alone deliberately — changing it deviates from the template the user supplied.
+
+## 1ab. The Upload page is the file-vs-registry workbench (2026-10-01)
+
+`Files` plus nine tabs, each a different KIND of disagreement because each needs a different fix.
+Every tab re-reads on demand (`refreshMismatchData`, forced contract refetch — the team edits the
+app while someone is looking at it) and says *"Against your 1 Oct file · read at 14:31"*.
+
+| Tab | Source | Action |
+|---|---|---|
+| Terms vs machines | `fileMismatches` | Edit terms |
+| Brand not registered | `fileMismatches` | Add to list |
+| Brand left the file | `fileMismatches` | Archive / Delete |
+| Counts differ | `fileMismatches` | marks a changed MODEL, which can break a term |
+| No terms / No finance email | `fileMismatches` | Edit |
+| Not approved, machines live · Approved, no machine · Machine, no merchant | `machineCheck` | report only |
+| Registry vs file | `registryCheck` | Add / Link / Point at — all via `POST /registry` |
+
+New read routes, all open (reads): **`GET /registry/check`** (missing / wrongLink / noLink /
+notInFile / duplicated + `machineCheck`), **`GET /roster/brands`** (the file's own merchant and
+machine counts per brand), **`GET /roster/shops?brand=`** (the merchants behind a count, opened by
+clicking the **Merchants** number in Overview). All compute server-side because the registry is
+several MB; only the differences cross the wire. Every bucket is CAPPED (400) with an honest count.
+
+**The file now owns merchant and machine counts** — the grid reads `branchesOf`/`unitsOf`, which
+prefer the file and fall back to the stored column for a brand the file does not mention.
+
+**Machine `State` and `Business ID` are read and stored** (`parseMachineCountFile` →
+`{counts, deployed, total, businessId}`). A stored row with NO `deployed` field means NOT KNOWN,
+not zero — reading it as zero reported all 2,380 merchants as having no machine.
+
+## 1ac. Three bugs of one shape, and the test that catches them (2026-10-01)
+
+**A caller and a callee can each be right while the pair is wrong.** Every test read one file.
+
+1. **`getBulkRunInputsRoute(runId)` was called as `fn(event)`** — it looked up
+   `BULKRUN#[object Object]`, returned 409 `no_stored_inputs`, and the client rendered that as
+   "this run predates the stored order detail". **Broken since `ca74a1c`; it had never returned a
+   single order.** `recomputeBulkRunRoute` had it too — Recompute had never worked.
+2. **`withParam(event, 'runId', path, 2)`** on `/bulk-runs/<id>/mail-log` — the split drops the
+   empty leading segment, so index 2 is the literal word `mail-log`. Every send was filed under
+   `MAILLOG#mail-log`. Harmless with one month of data; the month a second exists, September's
+   sends read as "already sent" for October and those brands are silently skipped.
+   Re-filed by `infra/refile-mail-log.mjs` (copy-only, originals untouched).
+3. **Bare `catch { return null; }`** in `getBulkRunInputs` and `getRosterRows` — any S3 failure
+   became "this run is too old" / "no upload on record". Now only `NoSuchKey`/404 returns null.
+   **Hand-mirrored into `~/revshare_sg/.../db.mjs`** (db.mjs is never synced).
+
+`tests/route-signatures.test.mjs` reads index.mjs and the handlers TOGETHER: every dispatched
+handler must declare `event`, and every `withParam` index must land on its route pattern's own
+placeholder. Both were verified to go red on the real bugs.
+
+**The run inputs are PAGED now** (`?offset&limit`, 5,000 rows ≈ 1.9 MB, `total` on every page) —
+plain JSON, the transport every working route uses. The gzip+base64 attempt was removed:
+`isBase64Encoded` is honoured only when the content-type is in the API's `binaryMediaTypes`, and
+NEITHER REGION HAS ONE.
+
+## 1ad. L40 is retired; the device-type trap that created it (2026-10-01)
+
+Device Types held `code L40` with `displayName "Advertising Player-LL40"`, and `code LL40` named
+`"LL40"`. The terms editor's dropdown shows `displayName` and stores `code`, so picking the one
+labelled correctly stored the WRONG code. A per-machine term on `L40` matches no roster row and
+pays **nothing**: SEACON Bangkae earned 17,200 and was paid 0; Platinum Fashion Mall 2,580 → 0;
+PMCU's guarantee could not fire.
+
+Fixed: `infra/rekey-models.mjs L40=LL40 --apply` (3 brands, terms only), then
+`infra/retire-l40.mjs --apply` — renames LL40 to `Advertising Player-LL40` and deletes `L40`.
+That script **refuses to run while any contract still names L40**, so the two steps cannot be done
+in the wrong order. Verified against the raw file: 154 × `Advertising Player-LL40`, **zero L40**.
+
+Consequences: September would pay **+12,740 THB** on a recompute (not done — the user will re-run).
+**July's run can no longer be recomputed** — its stored roster has 1,336 rows parsed as `L40`.
+SG uses L40 nowhere; its unused device type was left alone (Device Types is per region).
+
+Four rows in the merchant file list TWO devices in one cell (`…-LL40,ChargeSpot Station-S8`);
+`parseDeviceModel` returns the longest single match, so **4 machines are invisible**. 15 rows have
+a blank device type. Not fixed — reported.
 
 ## 2. Live URLs and resources
 

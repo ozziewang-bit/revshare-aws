@@ -183,6 +183,7 @@ export async function putRosterRoute(event) {
     machines: Array.isArray(body.machines) ? body.machines : [],
     machinesAt: body.machinesAt || null,
     machineStoreCount: body.machineStoreCount ?? null,
+    machinesUnbound: body.machinesUnbound ?? null,
     by: event.auth?.email || null,
   });
   return resp(200, { ...rec, lastUpload });
@@ -191,6 +192,365 @@ export async function putRosterRoute(event) {
 // GET /roster — the pointer only, so a screen can say when the merchant list was last refreshed.
 export async function getRosterRoute() {
   return resp(200, (await dbModule.getRosterMeta()) || { at: null });
+}
+
+// ── Branches and machines come from the FILE (2026-10-01) ────────────────────────────────────
+// The user's model, stated plainly: "if my files says 5, then it is 5". Merchant INFORMATION —
+// brand, branches, machine counts, contacts — is read from the weekly upload and never edited.
+// The grid was showing `branchCount`/`units` stored on the CONTRACT instead, which are only as
+// fresh as the last import that happened to touch them: `Central` read 10 branches and 10 LL40
+// while the file had 5 of each, a leftover from before that brand was split per mall.
+//
+// This serves the FILE's own counts, aggregated per `Merchant label`, so the grid can show them
+// without anything being written. Nothing here modifies a contract — the stored columns stay
+// exactly as they are, and remain the fallback for a brand the latest file does not mention.
+//
+// A roster row is a STATION. Counting rows per model is therefore the same unit the payout
+// counts (§1h) — a 4-cabinet BTS station is one here and one there, and the two cannot disagree.
+// The machine list's cabinet counts are a different number and are reported separately.
+export function brandsFromRoster(merchants, machines) {
+  const brands = new Map();
+  for (const r of merchants || []) {
+    const label = String(r.partnerName || '').trim();
+    if (!label) continue;
+    const key = label.toLowerCase();
+    if (!brands.has(key)) brands.set(key, { label, shops: new Set(), units: {} });
+    const b = brands.get(key);
+    const shop = String(r.name || '').trim();
+    if (shop) b.shops.add(shop.toLowerCase());
+    const model = String(r.model || '').trim();
+    if (model) b.units[model] = (b.units[model] || 0) + 1;
+  }
+
+  // The machine list, when the upload kept its rows, gives CABINETS per shop. Attached per brand
+  // by shop name, which is the only identifier the two files share.
+  const cabinetsOf = new Map();
+  for (const m of machines || []) {
+    const shop = String(m.store || '').trim().toLowerCase();
+    if (shop) cabinetsOf.set(shop, m.counts || {});
+  }
+  const out = {};
+  for (const [key, b] of brands) {
+    let cabinets = null;
+    if (cabinetsOf.size) {
+      cabinets = {};
+      for (const shop of b.shops) {
+        for (const [model, n] of Object.entries(cabinetsOf.get(shop) || {})) {
+          cabinets[model] = (cabinets[model] || 0) + (Number(n) || 0);
+        }
+      }
+    }
+    out[key] = { label: b.label, branches: b.shops.size, units: b.units, cabinets };
+  }
+  return out;
+}
+
+// ── The shops behind a branch count (2026-10-01) ─────────────────────────────────────────────
+// Clicking the Branch number in the Merchant view opens the shops it counts. Straight from the
+// uploaded file, which is what that number already comes from: the Thai name, the English name,
+// the Merchant label the brand is grouped under, and the machine.
+//
+// The non-Approved rows come too, kept apart. A branch count is Approved-only, so a shop held
+// back by its review state is missing from the list with no explanation unless it is named —
+// and "where is that shop?" is exactly the question this view exists to answer.
+export function shopsOfBrand(doc, brand) {
+  const key = s => String(s || '').trim().toLowerCase();
+  const want = key(brand);
+  if (!want) return { shops: [], heldBack: [] };
+
+  const shops = [], seen = new Set();
+  for (const r of (doc && doc.merchants) || []) {
+    if (key(r.partnerName) !== want) continue;
+    const k = key(r.name);
+    if (!k || seen.has(k)) continue;        // a shop with two stations is ONE branch
+    seen.add(k);
+    shops.push({
+      name: String(r.name || '').trim(),
+      nameEn: String(r.nameEn || '').trim(),
+      label: String(r.partnerName || '').trim(),
+      model: r.model || null,
+      externalId: String(r.externalId || '').trim() || null,
+    });
+  }
+  // Stations beyond the first are counted here rather than dropped: the branch count is shops,
+  // the unit count is stations, and showing one without the other invites the wrong subtraction.
+  const stations = ((doc && doc.merchants) || []).filter(r => key(r.partnerName) === want).length;
+
+  const heldBack = [];
+  for (const r of (doc && doc.excluded) || []) {
+    if (key(r.label) !== want) continue;
+    heldBack.push({ name: String(r.name || '').trim(), reviewState: r.reviewState || null });
+  }
+  shops.sort((a, b) => a.name.localeCompare(b.name));
+  return { shops, heldBack, stations };
+}
+
+export async function rosterShopsRoute(event) {
+  const brand = event?.queryStringParameters?.brand;
+  if (!brand) return resp(400, { error: 'missing_brand' });
+  const [meta, doc] = await Promise.all([dbModule.getRosterMeta(), dbModule.getRosterRows()]);
+  return resp(200, { at: meta?.at || null, brand, ...shopsOfBrand(doc, brand) });
+}
+
+// ── A shop whose registry row points at the wrong merchant (2026-10-01) ──────────────────────
+// The store registry maps shop -> contract. It is how `Assign→` decides which merchant an order
+// belongs to, and it OUTLIVES the thing it points at: a brand split in two, a shop that changed
+// hands, a merchant deleted — the old row stays. Measured 1 Oct: 6,770 rows for 2,540 shops, 33
+// shop ids claimed by more than one contract.
+//
+// The file is the answer. Where it names a brand and the registry names a DIFFERENT live
+// merchant for the same shop, that is a real disagreement someone has to settle.
+//
+// Reported only when BOTH sides name a merchant that still exists. A row pointing at a deleted
+// or archived contract is a stale link, not a competing answer — counting those would bury the
+// handful that matter under a list about merchants that are not there any more. That is the same
+// rule `matchMachineStores` applies on the upload, deliberately: two screens, one definition.
+//
+// This reads the STORED roster, so it needs no file to be uploaded — which is the whole point of
+// it being here rather than only in the machine-list flow.
+export function shopConflicts(rosterMerchants, registry, contracts) {
+  const key = s => String(s || '').toLowerCase().trim();
+  const live = new Map();                       // contractId -> contract, live only
+  const liveByName = new Map();                 // merchantName -> contractId, live only
+  for (const c of contracts || []) {
+    if (!c || c.archived || !c.contractId) continue;
+    live.set(c.contractId, c);
+    const k = key(c.merchantName);
+    if (k && !liveByName.has(k)) liveByName.set(k, c.contractId);
+  }
+
+  // The registry's answer per shop, preferring a live link over a dead one — a shop routinely has
+  // several rows, and letting a dangling pointer speak for it is how a shop appears to have moved
+  // away from a merchant that two of its three rows still name.
+  const regOf = new Map(), rowsOf = new Map();
+  for (const m of registry || []) {
+    const k = key(m.name);
+    if (!k) continue;
+    rowsOf.set(k, (rowsOf.get(k) || 0) + 1);
+    if (!m.contractId) continue;
+    const have = regOf.get(k);
+    if (!have || (!live.has(have) && live.has(m.contractId))) regOf.set(k, m.contractId);
+  }
+
+  const out = [];
+  const seen = new Set();
+  for (const r of rosterMerchants || []) {
+    const shop = String(r.name || '').trim();
+    const k = key(shop);
+    if (!k || seen.has(k)) continue;
+    seen.add(k);
+    const fileCid = liveByName.get(key(r.partnerName));
+    const regCid = regOf.get(k);
+    if (!fileCid || !regCid || regCid === fileCid || !live.has(regCid)) continue;
+    out.push({
+      shop,
+      fileBrand: String(r.partnerName || '').trim(),
+      fileContractId: fileCid,
+      registryContractId: regCid,
+      registryBrand: live.get(regCid).merchantName || '',
+      rows: rowsOf.get(k) || 0,
+      model: r.model || null,
+    });
+  }
+  out.sort((a, b) => a.fileBrand.localeCompare(b.fileBrand) || a.shop.localeCompare(b.shop));
+  return out;
+}
+
+// ── Merchant review state against machine state (2026-10-01) ─────────────────────────────────
+// What reaches the registry is a shop that is APPROVED and has a machine DEPLOYED and BOUND to
+// it. Three ways the two files disagree about that, and each is somebody's job to go and fix:
+//
+//   • not approved, yet machines are deployed under it  — earning while the paperwork lags
+//   • approved, yet nothing is deployed                 — a merchant signed up with no machine
+//   • a machine deployed under a shop no merchant file names
+//
+// The machine export carries `State` per machine and a `Business ID`/`Business name` it is bound
+// to. Neither was read until now, so none of these questions could be asked.
+export function machineCheck(doc, cap = 400) {
+  const key = s => String(s || '').toLowerCase().trim();
+  const out = { notApprovedDeployed: [], approvedNoDeployed: [], deployedUnbound: [] };
+  const counts = { notApprovedDeployed: 0, approvedNoDeployed: 0, deployedUnbound: 0,
+                   unboundMachines: 0, hasMachineFile: false };
+  if (!doc) return { ...out, counts, cap };
+
+  const machines = new Map();
+  for (const m of doc.machines || []) {
+    const k = key(m.store);
+    if (k) machines.set(k, m);
+  }
+  // A stored machine row only answers these questions if it CARRIES the state. Rows written
+  // before 2026-10-01 have counts and no `deployed`, and reading those as "nothing is deployed"
+  // reported all 2,380 shops as having no machine — 2,380 findings, every one false. The absence
+  // of the field means "not known", which is not the same as zero.
+  const withState = [...machines.values()].some(m => Number.isFinite(Number(m.deployed)));
+  counts.hasMachineFile = machines.size > 0 && withState;
+  counts.unboundMachines = Number(doc.machinesUnbound) || 0;
+  // Without machine state there is nothing to compare, and saying every merchant has no machine
+  // would be a page of findings about a file nobody has uploaded yet.
+  if (!counts.hasMachineFile) return { ...out, counts, cap };
+
+  const seen = new Set();
+  for (const r of doc.merchants || []) {
+    const k = key(r.name);
+    if (!k || seen.has(k)) continue;
+    seen.add(k);
+    const m = machines.get(k);
+    if (!m || !(Number(m.deployed) > 0)) {
+      counts.approvedNoDeployed++;
+      if (out.approvedNoDeployed.length < cap) {
+        out.approvedNoDeployed.push({ name: String(r.name).trim(), brand: String(r.partnerName || '').trim(),
+                                      machines: m ? Number(m.total) || 0 : 0 });
+      }
+    }
+  }
+  for (const r of doc.excluded || []) {
+    const k = key(r.name);
+    if (!k || seen.has(k)) continue;
+    seen.add(k);
+    const m = machines.get(k);
+    if (m && Number(m.deployed) > 0) {
+      counts.notApprovedDeployed++;
+      if (out.notApprovedDeployed.length < cap) {
+        out.notApprovedDeployed.push({ name: String(r.name).trim(), brand: String(r.label || '').trim(),
+                                       state: r.reviewState || 'held back', deployed: Number(m.deployed) || 0 });
+      }
+    }
+  }
+  for (const [k, m] of machines) {
+    if (seen.has(k)) continue;
+    if (!(Number(m.deployed) > 0)) continue;
+    counts.deployedUnbound++;
+    if (out.deployedUnbound.length < cap) {
+      out.deployedUnbound.push({ name: m.store, deployed: Number(m.deployed) || 0,
+                                 businessId: m.businessId || null });
+    }
+  }
+  return { ...out, counts, cap };
+}
+
+// ── The file against the registry (2026-10-01) ───────────────────────────────────────────────
+// "compare my file with the registry, point out what's mismatched and a button to allow us
+// update the registry."
+//
+// The registry is the shop index: shop -> merchant. The file states the same thing weekly and is
+// the authority. This reports every way the two differ, in buckets that need different actions —
+// a shop with no row is an add, a wrong link is a repoint, a row with no link is a link.
+//
+// REVIEW STATE IS NOT A FILTER HERE. A shop held back by the platform's review is still a shop,
+// and the user's rule is explicit: run share and approved status are not related. The state is
+// carried on each row so it can be seen, never used to drop one.
+//
+// Pure. Caps what it returns per bucket so a 1,900-row answer cannot become the payload.
+export function registryCheck(doc, registry, contracts, cap = 400) {
+  const key = s => String(s || '').toLowerCase().trim();
+  const live = new Map();
+  const byBrand = new Map();
+  for (const c of contracts || []) {
+    if (!c || c.archived || !c.contractId) continue;
+    live.set(c.contractId, c);
+    const k = key(c.merchantName);
+    if (k && !byBrand.has(k)) byBrand.set(k, c.contractId);
+  }
+
+  // Every shop the file names, Approved or not, with where the file puts it.
+  const file = new Map();
+  for (const r of (doc && doc.merchants) || []) {
+    const k = key(r.name);
+    if (k && !file.has(k)) file.set(k, { name: String(r.name).trim(), brand: String(r.partnerName || '').trim(),
+                                         state: 'Approved', model: r.model || null,
+                                         externalId: String(r.externalId || '').trim() || null });
+  }
+  for (const r of (doc && doc.excluded) || []) {
+    const k = key(r.name);
+    if (k && !file.has(k)) file.set(k, { name: String(r.name).trim(), brand: String(r.label || '').trim(),
+                                         state: r.reviewState || 'held back', model: null, externalId: null });
+  }
+
+  const rows = new Map();
+  for (const m of registry || []) {
+    const k = key(m.name);
+    if (!k) continue;
+    if (!rows.has(k)) rows.set(k, []);
+    rows.get(k).push(m);
+  }
+  const pick = (list) => list.find(r => r.contractId && live.has(r.contractId)) || list[0];
+
+  const out = { missing: [], wrongLink: [], noLink: [], notInFile: [], duplicated: [] };
+  const counts = { missing: 0, missingNoMerchant: 0, wrongLink: 0, noLink: 0, notInFile: 0,
+                   duplicated: 0, duplicateRows: 0 };
+
+  for (const [k, f] of file) {
+    const want = byBrand.get(key(f.brand)) || null;
+    const list = rows.get(k);
+    if (!list) {
+      // No row at all. Only actionable when the brand has a merchant record — otherwise the
+      // merchant has to exist first, which is the "No contract" tab's job, not this one.
+      if (want) { counts.missing++; if (out.missing.length < cap) out.missing.push({ ...f, contractId: want }); }
+      else counts.missingNoMerchant++;
+      continue;
+    }
+    if (list.length > 1) {
+      counts.duplicated++; counts.duplicateRows += list.length - 1;
+      if (out.duplicated.length < cap) out.duplicated.push({ name: f.name, state: f.state, rows: list.length });
+    }
+    const r = pick(list);
+    const linked = r.contractId && live.has(r.contractId);
+    if (!linked) {
+      counts.noLink++;
+      if (out.noLink.length < cap) out.noLink.push({ ...f, rows: list.length, contractId: want });
+    } else if (want && r.contractId !== want) {
+      counts.wrongLink++;
+      if (out.wrongLink.length < cap) {
+        out.wrongLink.push({ ...f, rows: list.length, contractId: want,
+                             registryBrand: live.get(r.contractId).merchantName || '' });
+      }
+    }
+  }
+  for (const [k, list] of rows) {
+    if (file.has(k)) continue;
+    counts.notInFile++;
+    if (out.notInFile.length < cap) {
+      const r = pick(list);
+      out.notInFile.push({ name: r.name, rows: list.length,
+                           brand: (live.get(r.contractId) || {}).merchantName || null });
+    }
+  }
+  return { ...out, counts, cap };
+}
+
+export async function registryCheckRoute() {
+  const [meta, doc, contracts, registry] = await Promise.all([
+    dbModule.getRosterMeta(), dbModule.getRosterRows(), listContracts(), dbModule.listMerchants(),
+  ]);
+  return resp(200, { at: meta?.at || null,
+                     machinesAt: meta?.machinesAt || null,
+                     ...(doc ? registryCheck(doc, registry, contracts)
+                             : registryCheck(null, [], contracts)),
+                     machineCheck: machineCheck(doc) });
+}
+
+// Read-only. The registry is several MB, so the comparison happens HERE and only the handful of
+// disagreements crosses the wire.
+export async function rosterConflictsRoute() {
+  const [meta, doc, contracts, registry] = await Promise.all([
+    dbModule.getRosterMeta(), dbModule.getRosterRows(), listContracts(), dbModule.listMerchants(),
+  ]);
+  return resp(200, {
+    at: meta?.at || null,
+    conflicts: doc ? shopConflicts(doc.merchants, registry, contracts) : [],
+  });
+}
+
+// Read-only. 302 brands is a few KB, so it loads beside the contract list.
+export async function rosterBrandsRoute() {
+  const meta = await dbModule.getRosterMeta();
+  const doc = await dbModule.getRosterRows();
+  return resp(200, {
+    at: meta?.at || null,
+    by: meta?.by || null,
+    machinesAt: meta?.machinesAt || null,
+    brands: doc ? brandsFromRoster(doc.merchants, doc.machines) : {},
+  });
 }
 
 export async function importContractsRoute(event) {

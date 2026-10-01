@@ -272,11 +272,20 @@ export async function getBulkRunInputs(runId) {
     Key: { pk: 'BULKRUN', sk: `BULKRUN#${runId}` }
   }));
   const key = out.Item?.inputsKey;
-  if (!key) return null;
+  if (!key) return null;                    // genuinely a run from before inputs were stored
   try {
     const obj = await s3.send(new GetObjectCommand({ Bucket: RUNS_BUCKET, Key: key }));
     return JSON.parse(await obj.Body.transformToString());
-  } catch { return null; }
+  } catch (e) {
+    // `null` means ONE thing to the caller: this run is too old to have kept its orders, which it
+    // reports as a 409 and the statement prints as "this run predates the stored order detail".
+    // A bare catch here made every S3 or JSON failure say that too — about runs made the same
+    // day. Only a genuinely absent object may answer null; anything else must be heard.
+    if (e?.name === 'NoSuchKey' || e?.name === 'NotFound' || e?.$metadata?.httpStatusCode === 404) {
+      return null;
+    }
+    throw e;
+  }
 }
 
 export async function deleteBulkRun(runId) {
@@ -586,11 +595,17 @@ export async function getRosterMeta() {
 // The rows themselves. Several MB — fetched only when a run is actually computed.
 export async function getRosterRows() {
   const meta = await getRosterMeta();
-  if (!meta || !meta.s3Key) return null;
+  if (!meta || !meta.s3Key) return null;      // no file has been uploaded yet
   try {
     const obj = await s3.send(new GetObjectCommand({ Bucket: RUNS_BUCKET, Key: meta.s3Key }));
     return JSON.parse(await obj.Body.transformToString());
-  } catch {
-    return null;
+  } catch (e) {
+    // `null` means "no upload on record", which the grid shows as a blank branch count. A read
+    // failure saying that would quietly replace the file's numbers with nothing. Same bare-catch
+    // mistake as getBulkRunInputs, which cost a month of statements.
+    if (e?.name === 'NoSuchKey' || e?.name === 'NotFound' || e?.$metadata?.httpStatusCode === 404) {
+      return null;
+    }
+    throw e;
   }
 }

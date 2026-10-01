@@ -72,3 +72,56 @@ test('the run says how old the stored merchant list is', () => {
   assert.match(body, /days >= 14/, 'and a stale list is called out');
   assert.match(body, /No merchant list stored yet/, 'the empty state sends you to Upload');
 });
+
+// ── The machine file must survive the upload (2026-10-01) ───────────────────────────────────
+// "please read Central again for the branches and machines from my last file upload" — the
+// branches were there; the machines were not. `putRosterRoute` has accepted a `machines` array
+// since it was written, and the client never sent one: each upload stored `machineStoreCount:
+// 2401` and discarded the 2,401 rows behind it. CLAUDE.md's rule is explicit — retain every
+// column on upload so future features can reuse it.
+import { test as t2 } from 'node:test';
+import assert2 from 'node:assert/strict';
+import { readFileSync as read2 } from 'node:fs';
+
+// byStore entries carry machine STATE and BINDING since 2026-10-01 (`{counts, deployed, total}`),
+// because the registry only takes a shop that is Approved AND has a deployed machine bound to it.
+// Tests still state plain counts; this wraps them, so the shape lives in one place.
+const M = (counts) => {
+  const n = Object.values(counts).reduce((a, b) => a + b, 0);
+  return { counts, deployed: n, total: n, businessId: null };
+};
+
+const appSrc = read2(new URL('../../../frontend/app.js', import.meta.url), 'utf8');
+const remember = appSrc.slice(appSrc.indexOf('async function rememberUploadedFile('),
+                               appSrc.indexOf('\n}', appSrc.indexOf('async function rememberUploadedFile(')));
+
+t2('the upload sends the machine rows, not just how many there were', () => {
+  assert2.match(remember, /machines: machines \? \[\.\.\.machines\.byStore\]/);
+  assert2.match(remember, /store, counts: e\.counts, deployed: e\.deployed/,
+    'the shop, its per-model counts, and HOW MANY ARE DEPLOYED');
+  assert2.match(remember, /businessId: e\.businessId/, 'and what the machines are bound to');
+  assert2.match(remember, /machineCount: machines \? machines\.counted : null/,
+    'and the cabinet total, which store count is not');
+});
+
+t2('the route stores exactly what it is sent', () => {
+  const route = read2(new URL('../code/routes/contracts.mjs', import.meta.url), 'utf8');
+  const fn = route.slice(route.indexOf('export async function putRosterRoute'),
+                         route.indexOf('\n}', route.indexOf('export async function putRosterRoute')));
+  assert2.match(fn, /machines: Array\.isArray\(body\.machines\) \? body\.machines : \[\]/);
+});
+
+// The shape has to round-trip, or "retained" is a claim rather than a fact.
+t2('a store with two models survives as two counts', () => {
+  const byStore = new Map([
+    ['เซ็นทรัลเวสต์เกต ชั้น1', M({ LL40: 2 })],
+    ['7-Eleven สยาม', M({ S8: 1, S5: 3 })],
+  ]);
+  const sent = [...byStore].map(([store, e]) => ({
+    store, counts: e.counts, deployed: e.deployed, total: e.total, businessId: e.businessId }));
+  const back = new Map(sent.map(m => [m.store, m.counts]));
+  assert2.deepEqual(back.get('7-Eleven สยาม'), { S8: 1, S5: 3 });
+  const cabinets = sent.reduce((a, m) => a + Object.values(m.counts).reduce((x, y) => x + y, 0), 0);
+  assert2.equal(cabinets, 6, 'cabinets, which is not the 2 stores');
+  assert2.equal(sent.length, 2);
+});

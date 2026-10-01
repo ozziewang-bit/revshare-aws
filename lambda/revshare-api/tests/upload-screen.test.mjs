@@ -2,6 +2,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
+// byStore entries carry machine STATE and BINDING since 2026-10-01 (`{counts, deployed, total}`),
+// because the registry only takes a shop that is Approved AND has a deployed machine bound to it.
+// Tests still state plain counts; this wraps them, so the shape lives in one place.
+const M = (counts) => {
+  const n = Object.values(counts).reduce((a, b) => a + b, 0);
+  return { counts, deployed: n, total: n, businessId: null };
+};
+
 // The weekly job as its own page: drop in the two files, see what disagrees, then decide.
 // It shares its matcher, its differ and its route with the dialog it replaces, so the page
 // cannot describe an import that is not the one that would run.
@@ -306,7 +314,7 @@ test('a machine-list miss shows the store name, not an object', () => {
   const uploadTableHtml = runTable();
   const html = uploadTableHtml(null,
     { unknown: [{ store: 'Named Shop', machines: 2 }], unlinked: [], conflicts: [] },
-    { byStore: new Map([['Named Shop', { S8: 2 }]]) }, null);
+    { byStore: new Map([['Named Shop', M({ S8: 2 })]]) }, null);
   assert.ok(html.includes('Named Shop'), 'the store name is rendered');
   assert.ok(!html.includes('[object Object]'), 'never the object itself');
 });
@@ -320,10 +328,10 @@ test('a miss says how many machines are there, and which models', () => {
 });
 
 // Three answers, not two — and the one that matters most is "your file knows this shop".
-test('a miss says whether the merchant FILE knows the shop', () => {
+test('a miss says whether the FILE knows the merchant', () => {
   const fn = grab('machineMissWhy');
   assert.match(fn, /x\.fileBrand/, 'the file is consulted before anything else is said');
-  assert.match(fn, /add it above and this shop places itself/);
+  assert.match(fn, /add it above and this merchant places itself/);
   assert.match(fn, /are not paid to anybody/, 'unlinked: money is at stake');
   assert.match(fn, /A run will not fix it/, 'unknown: a run is a snapshot, not a repair');
 });
@@ -338,7 +346,7 @@ test('a miss says whether the merchant FILE knows the shop', () => {
 // test is what let a ReferenceError reach production earlier in this session.
 test('the file wins when both the file and the registry name a live merchant', () => {
   const run = new Function('return ' + grab('matchMachineStores'))();
-  const stores = new Map([['Shop', { S5: 1 }]]);
+  const stores = new Map([['Shop', M({ S5: 1 })]]);
   const cons = [{ contractId: 'a', merchantName: 'Alpha' }, { contractId: 'b', merchantName: 'Beta' }];
   const reg = [{ name: 'Shop', contractId: 'a' }];
   const roster = { merchants: [{ name: 'Shop', partnerName: 'Beta' }] };
@@ -351,7 +359,7 @@ test('the file wins when both the file and the registry name a live merchant', (
 
 test('the registry answers only for shops the file does not mention', () => {
   const run = new Function('return ' + grab('matchMachineStores'))();
-  const stores = new Map([['Shop', { S5: 1 }]]);
+  const stores = new Map([['Shop', M({ S5: 1 })]]);
   const cons = [{ contractId: 'a', merchantName: 'Alpha' }];
   const m = run(stores, [{ name: 'Shop', contractId: 'a' }], { merchants: [] }, cons);
   assert.equal(m.totals.get('a')?.S5, 1);
@@ -417,7 +425,7 @@ const runTable = () => {
 
 test('the table renders every bucket without throwing', () => {
   const uploadTableHtml = runTable();
-  const machines = { byStore: new Map([['Shop A', { S8: 2 }], ['Shop B', { S5: 1 }]]) };
+  const machines = { byStore: new Map([['Shop A', M({ S8: 2 })], ['Shop B', M({ S5: 1 })]]) };
   const misses = {
     unknown:  [{ store: 'Shop A', machines: 2 }],
     unlinked: [{ store: 'Shop B', machines: 1, fileBrand: 'Glow' }],
@@ -469,7 +477,7 @@ const CONS = [{ contractId: 'mixue', merchantName: 'Mixue' },
               { contractId: 'old', merchantName: 'Old Brand' },
               { contractId: 'dead', merchantName: 'Archived Brand', archived: true }];
 const ROSTER = { merchants: [{ name: 'Mixue Asiatique', partnerName: 'Mixue' }] };
-const STORES = new Map([['Mixue Asiatique', { S5: 1 }]]);
+const STORES = new Map([['Mixue Asiatique', M({ S5: 1 })]]);
 
 test('a live registry row wins over a dangling sibling', () => {
   const m = runMatcher()(STORES, REG, null, CONS);
@@ -523,9 +531,9 @@ const ROSTER2 = { merchants: [
   { name: 'Shop C', partnerName: 'Beta'  },
 ] };
 const MACH2 = { byStore: new Map([
-  ['Shop A', { S5: 2 }],
-  ['Shop C', { S8: 1, S5: 1 }],
-  ['Shop Z', { S5: 3 }],            // machines, but the merchant file never names it
+  ['Shop A', M({ S5: 2 })],
+  ['Shop C', M({ S8: 1, S5: 1 })],
+  ['Shop Z', M({ S5: 3 })],            // machines, but the merchant file never names it
 ]) };
 
 test('the join makes one merchant-information set from the two files', () => {
@@ -550,7 +558,7 @@ test('a shop with a brand and no machines is highlighted too', () => {
 
 test('matching ignores case and surrounding space', () => {
   const j = joinFiles()({ merchants: [{ name: '  shop a ', partnerName: 'Alpha' }] },
-                        { byStore: new Map([['SHOP A', { S5: 1 }]]) });
+                        { byStore: new Map([['SHOP A', M({ S5: 1 })]]) });
   assert.equal(j.onlyInMachineFile.length, 0);
   assert.equal(j.onlyInMerchantFile.length, 0);
   assert.equal(j.stores.get('shop a').machines, 1);
@@ -621,7 +629,7 @@ test('it refuses rather than inventing a merchant that is not in the list', () =
 
 test('it confirms, names the count, and promises nothing about past runs', () => {
   const fn = grab('repointStoreFromFile');
-  assert.match(fn, /store-registry row\(s\) change/);
+  assert.match(fn, /registry row\(s\) change/);
   assert.match(fn, /no past run is altered/);
   assert.match(fn, /can\('manageMerchants'\)/);
 });
@@ -641,9 +649,9 @@ test('a shop already pointing at the right merchant says so instead of writing',
 //   • a shop IN the merchant file under a brand the app does not carry was only in the second
 // So the two counts could not be reconciled by reading them. The user asked directly whether one
 // was a subset of the other; it was not.
-test('a shop is reported once, not in two buckets', () => {
+test('a merchant is reported once, not in two buckets', () => {
   const uploadTableHtml = runTable();
-  const machines = { byStore: new Map([['S1', { S5: 1 }], ['S2', { S5: 1 }], ['S3', { S5: 1 }]]) };
+  const machines = { byStore: new Map([['S1', M({ S5: 1 })], ['S2', M({ S5: 1 })], ['S3', M({ S5: 1 })]]) };
   const join = { bothFiles: true,
                  onlyInMachineFile: [{ store: 'S1', machines: 1 }, { store: 'S2', machines: 1 }],
                  onlyInMerchantFile: [] };
@@ -656,7 +664,7 @@ test('a shop is reported once, not in two buckets', () => {
   assert.equal((html.match(/>S1</g) || []).length, 1, 'S1 appears once');
   // S2: reported as a gap, but not described as unattributable — the index still placed it.
   assert.equal((html.match(/>S2</g) || []).length, 1);
-  assert.match(html, /store index still knows it/);
+  assert.match(html, /registry still knows it/);
   // S3: not a file-to-file gap at all — the file names it, the app lacks the merchant.
   assert.equal((html.match(/>S3</g) || []).length, 1);
   assert.match(html, /there is no merchant of that name/);
@@ -664,7 +672,7 @@ test('a shop is reported once, not in two buckets', () => {
 
 test('a placed shop is not told its machines belong to nobody', () => {
   const uploadTableHtml = runTable();
-  const machines = { byStore: new Map([['S2', { S5: 1 }]]) };
+  const machines = { byStore: new Map([['S2', M({ S5: 1 })]]) };
   const join = { bothFiles: true, onlyInMachineFile: [{ store: 'S2', machines: 1 }], onlyInMerchantFile: [] };
   const html = uploadTableHtml(null, { unknown: [], unlinked: [], conflicts: [] }, machines, join);
   assert.match(html, /its machines are counted/);
@@ -673,7 +681,7 @@ test('a placed shop is not told its machines belong to nobody', () => {
 
 test('a genuinely orphaned shop still says so', () => {
   const uploadTableHtml = runTable();
-  const machines = { byStore: new Map([['S1', { S5: 1 }]]) };
+  const machines = { byStore: new Map([['S1', M({ S5: 1 })]]) };
   const join = { bothFiles: true, onlyInMachineFile: [{ store: 'S1', machines: 1 }], onlyInMerchantFile: [] };
   const misses = { unknown: [{ store: 'S1', machines: 1 }], unlinked: [], conflicts: [] };
   const html = uploadTableHtml(null, misses, machines, join);
@@ -688,9 +696,9 @@ test('a genuinely orphaned shop still says so', () => {
 // merchants this file would add" — and its shops were being nagged about separately, so the same
 // fact appeared twice with nothing linking them. And the left column said "In your app" while
 // showing a row from the hidden shop index, which is not a merchant anyone can search for.
-test('a brand being added is not also complained about shop by shop', () => {
+test('a brand being added is not also complained about merchant by merchant', () => {
   const uploadTableHtml = runTable();
-  const machines = { byStore: new Map([['Shop 1', { L20: 1 }]]) };
+  const machines = { byStore: new Map([['Shop 1', M({ L20: 1 })]]) };
   const misses = { unknown: [{ store: 'Shop 1', machines: 1, fileBrand: 'Yunomori' }],
                    unlinked: [], conflicts: [] };
   const diff = { added: [{ name: 'Yunomori', vals: { Type: 'Wellness' } }],
@@ -699,14 +707,14 @@ test('a brand being added is not also complained about shop by shop', () => {
                  brands: new Map([['yunomori', { brand: 'Yunomori', stores: 3, machines: 3, counts: { L20: 3 } }]]) };
   const html = uploadTableHtml(diff, misses, machines, join);
   assert.equal((html.match(/Shop 1/g) || []).length, 0,
-    'the shop is not listed separately — adding the merchant places it');
-  assert.match(html, /Brings <strong>3 shops<\/strong> and 3 machines \(L20 ×3\)/,
-    'the machines are stated on the row that adds the merchant');
+    'the merchant is not listed separately — adding the brand places it');
+  assert.match(html, /Brings <strong>3 merchants<\/strong> and 3 machines \(L20 ×3\)/,
+    'the machines are stated on the row that adds the brand');
 });
 
 test('the left column no longer claims a hidden index row is in your app', () => {
   const uploadTableHtml = runTable();
-  const machines = { byStore: new Map([['Orphan', { S5: 1 }]]) };
+  const machines = { byStore: new Map([['Orphan', M({ S5: 1 })]]) };
   const misses = { unknown: [], unlinked: [{ store: 'Orphan', machines: 1 }], conflicts: [] };
   const html = uploadTableHtml(null, misses, machines, null);
   assert.match(html, /Your merchant list<\/th>/, 'the header says what the column really holds');
@@ -719,7 +727,7 @@ test('a brand with no machines still says so on its add row', () => {
   const diff = { added: [{ name: 'Quiet', vals: {} }], changed: [], missing: [], unchanged: 0 };
   const join = { bothFiles: true, onlyInMachineFile: [], onlyInMerchantFile: [],
                  brands: new Map([['quiet', { brand: 'Quiet', stores: 1, machines: 0, counts: {} }]]) };
-  assert.match(uploadTableHtml(diff, null, null, join), /Brings <strong>1 shop<\/strong> and no machines/);
+  assert.match(uploadTableHtml(diff, null, null, join), /Brings <strong>1 merchant<\/strong> and no machines/);
 });
 
 // ── NOTHING IS REPORTED TWICE (2026-09-29) ─────────────────────────────────────────────────
@@ -736,12 +744,12 @@ const ALL_CASES = () => {
     { contractId: 'old',  merchantName: 'Old Owner' },
   ];
   const machines = { byStore: new Map([
-    ['OnlyMachine', { S5: 1 }],     // machine file only
-    ['ArchShop',    { S5: 1 }],     // file names a brand that exists but is archived
-    ['CaseShop',    { S5: 1 }],     // same shop as the next, different capitals
-    ['caseshop',    { S5: 1 }],
-    ['MovedShop',   { S5: 1 }],     // file moves it to a live merchant
-    ['AddedShop',   { S5: 1 }],     // belongs to a brand being added
+    ['OnlyMachine', M({ S5: 1 })],     // machine file only
+    ['ArchShop',    M({ S5: 1 })],     // file names a brand that exists but is archived
+    ['CaseShop',    M({ S5: 1 })],     // same shop as the next, different capitals
+    ['caseshop',    M({ S5: 1 })],
+    ['MovedShop',   M({ S5: 1 })],     // file moves it to a live merchant
+    ['AddedShop',   M({ S5: 1 })],     // belongs to a brand being added
   ]) };
   const join = { bothFiles: true,
     onlyInMachineFile: [{ store: 'OnlyMachine', machines: 1 }],
@@ -827,7 +835,7 @@ test('the table can be filtered by merchant or shop name', () => {
 test('filtering matches either column, and is case-insensitive', () => {
   const uploadTableHtml = runTable();
   const misses = { unknown: [{ store: 'Sukhumvit Shop', machines: 1 }], unlinked: [], conflicts: [] };
-  const machines = { byStore: new Map([['Sukhumvit Shop', { S5: 1 }]]) };
+  const machines = { byStore: new Map([['Sukhumvit Shop', M({ S5: 1 })]]) };
   assert.ok(uploadTableHtml(null, misses, machines, null, 'SUKHUM').includes('Sukhumvit Shop'));
   assert.ok(!uploadTableHtml(null, misses, machines, null, 'silom').includes('Sukhumvit Shop'));
 });
@@ -928,7 +936,7 @@ test('nothing is auto-applied — it is a question, not an answer', () => {
 test('a shop held back by its review state is not called absent from the file', () => {
   const j = joinFiles()(
     { merchants: [], excluded: [{ name: 'Kliff Beach', label: 'Kliff', reviewState: 'Disapproved' }] },
-    { byStore: new Map([['Kliff Beach', { S8: 1 }]]) });
+    { byStore: new Map([['Kliff Beach', M({ S8: 1 })]]) });
   assert.deepEqual(j.onlyInMachineFile, [], 'not reported as missing from the file');
   assert.equal(j.notApproved.length, 1);
   assert.equal(j.notApproved[0].brand, 'Kliff');
@@ -939,7 +947,7 @@ test('an Approved row still wins over a held-back one of the same name', () => {
   const j = joinFiles()(
     { merchants: [{ name: 'Shop', partnerName: 'Brand' }],
       excluded: [{ name: 'Shop', label: 'Brand', reviewState: 'Pending' }] },
-    { byStore: new Map([['Shop', { S5: 1 }]]) });
+    { byStore: new Map([['Shop', M({ S5: 1 })]]) });
   assert.deepEqual(j.notApproved, []);
   assert.equal(j.stores.get('shop').machines, 1);
 });
@@ -947,17 +955,17 @@ test('an Approved row still wins over a held-back one of the same name', () => {
 test('a file of ONLY held-back rows still counts as a join', () => {
   const j = joinFiles()(
     { merchants: [], excluded: [{ name: 'A', label: 'B', reviewState: 'Pending' }] },
-    { byStore: new Map([['A', { S5: 1 }]]) });
+    { byStore: new Map([['A', M({ S5: 1 })]]) });
   assert.equal(j.bothFiles, true, 'otherwise the page would say nothing at all');
 });
 
 test('the row says the file lists it, and what to do', () => {
   const uploadTableHtml = runTable();
   const html = uploadTableHtml(null, null,
-    { byStore: new Map([['Kliff Beach', { S8: 1 }]]) },
+    { byStore: new Map([['Kliff Beach', M({ S8: 1 })]]) },
     { bothFiles: true, onlyInMachineFile: [], onlyInMerchantFile: [],
       notApproved: [{ store: 'Kliff Beach', machines: 1, brand: 'Kliff', reviewState: 'Disapproved' }] });
-  assert.match(html, /DOES list this shop/);
+  assert.match(html, /DOES list this merchant/);
   assert.match(html, /review state is <strong>Disapproved<\/strong>/);
   assert.match(html, /Approve it on the platform/);
   assert.ok(!html.includes('does not\nlist this shop'));
@@ -965,7 +973,7 @@ test('the row says the file lists it, and what to do', () => {
 
 test('it is not also reported by the placement buckets', () => {
   const uploadTableHtml = runTable();
-  const machines = { byStore: new Map([['Kliff Beach', { S8: 1 }]]) };
+  const machines = { byStore: new Map([['Kliff Beach', M({ S8: 1 })]]) };
   const join = { bothFiles: true, onlyInMachineFile: [], onlyInMerchantFile: [],
                  notApproved: [{ store: 'Kliff Beach', machines: 1, brand: 'Kliff', reviewState: 'Pending' }] };
   const misses = { unknown: [{ store: 'Kliff Beach', machines: 1 }], unlinked: [], conflicts: [] };
@@ -976,13 +984,13 @@ test('it is not also reported by the placement buckets', () => {
 // ── The two files name the store in DIFFERENT COLUMNS (2026-09-29) ─────────────────────────
 // merchant list → 'merchant name.'   ·   machine list → 'Business name'
 // Two exports, two strings for one shop. Joining them on an exact match and then telling someone
-// "your merchant file does not list this shop" is wrong when the file lists it under a slightly
+// "your merchant file does not list this merchant" is wrong when the file lists it under a slightly
 // different spelling. I asserted a review-state cause for this without evidence and was wrong;
 // these are the two causes that actually exist in the code.
 test('a blank Merchant label no longer reads as absent from the file', () => {
   const j = joinFiles()(
     { merchants: [{ name: 'Kliff Beach', partnerName: '' }], excluded: [] },
-    { byStore: new Map([['Kliff Beach', { S8: 1 }]]) });
+    { byStore: new Map([['Kliff Beach', M({ S8: 1 })]]) });
   assert.deepEqual(j.onlyInMachineFile, [], 'the file DOES list it');
   assert.equal(j.noLabelShops.length, 1);
   assert.equal(j.noLabelShops[0].store, 'Kliff Beach');
@@ -990,12 +998,12 @@ test('a blank Merchant label no longer reads as absent from the file', () => {
 
 test('the row says the label is blank, and where to fix it', () => {
   const uploadTableHtml = runTable();
-  const html = uploadTableHtml(null, null, { byStore: new Map([['Kliff Beach', { S8: 1 }]]) },
+  const html = uploadTableHtml(null, null, { byStore: new Map([['Kliff Beach', M({ S8: 1 })]]) },
     { bothFiles: true, onlyInMachineFile: [], onlyInMerchantFile: [], notApproved: [],
       noLabelShops: [{ store: 'Kliff Beach', machines: 1 }], fileStoreNames: ['Kliff Beach'] });
   assert.match(html, /<strong>Merchant label<\/strong> is blank/);
   assert.match(html, /Fill it in on the platform/);
-  assert.ok(!html.includes('does not list this shop'));
+  assert.ok(!html.includes('does not list this merchant'));
 });
 
 test('a near-miss spelling names what the file actually has', () => {
@@ -1005,20 +1013,20 @@ test('a near-miss spelling names what the file actually has', () => {
                  fileStoreNames: ['Kliff Beach Bistro and Bar'] };
   const html = uploadTableHtml(null, { unknown: [{ store: 'Kliff Beach Bistro & Bar', machines: 1 }],
                                        unlinked: [], conflicts: [] },
-    { byStore: new Map([['Kliff Beach Bistro & Bar', { S8: 1 }]]) }, join);
+    { byStore: new Map([['Kliff Beach Bistro & Bar', M({ S8: 1 })]]) }, join);
   assert.match(html, /Kliff Beach Bistro and Bar<\/strong>, which is close/);
-  assert.match(html, /name the store in different/);
+  assert.match(html, /name the merchant in different/);
 });
 
-test('a genuinely absent shop still says so plainly', () => {
+test('a genuinely absent merchant still says so plainly', () => {
   const uploadTableHtml = runTable();
   const join = { bothFiles: true, onlyInMerchantFile: [], notApproved: [], noLabelShops: [],
                  onlyInMachineFile: [{ store: 'Totally Unrelated Venue', machines: 1 }],
                  fileStoreNames: ['Kliff Beach Bistro and Bar'] };
   const html = uploadTableHtml(null, { unknown: [{ store: 'Totally Unrelated Venue', machines: 1 }],
                                        unlinked: [], conflicts: [] },
-    { byStore: new Map([['Totally Unrelated Venue', { S8: 1 }]]) }, join);
-  assert.match(html, /does not list this shop/);
+    { byStore: new Map([['Totally Unrelated Venue', M({ S8: 1 })]]) }, join);
+  assert.match(html, /does not list this merchant/);
 });
 
 test('closestFileStore does not reach for a bad match', () => {
@@ -1037,6 +1045,6 @@ test('a shop with no label is reported once, not also as unplaceable', () => {
   const join = { bothFiles: true, onlyInMachineFile: [], onlyInMerchantFile: [], notApproved: [],
                  noLabelShops: [{ store: 'Kliff Beach', machines: 1 }], fileStoreNames: ['Kliff Beach'] };
   const misses = { unknown: [{ store: 'Kliff Beach', machines: 1 }], unlinked: [], conflicts: [] };
-  const html = uploadTableHtml(null, misses, { byStore: new Map([['Kliff Beach', { S8: 1 }]]) }, join);
+  const html = uploadTableHtml(null, misses, { byStore: new Map([['Kliff Beach', M({ S8: 1 })]]) }, join);
   assert.equal((html.match(/Kliff Beach/g) || []).length, 1);
 });

@@ -5,7 +5,7 @@ import { meRoute } from './routes/me.mjs';
 import { listUsersRoute, putUserRoute, deleteUserRoute } from './routes/users.mjs';
 import { listFeatureRequestsRoute, createFeatureRequestRoute, updateFeatureRequestRoute, deleteFeatureRequestRoute } from './routes/features.mjs';
 import { listEntitiesRoute, putEntityRoute, deleteEntityRoute } from './routes/entities.mjs';
-import { putRosterRoute, getRosterRoute, putRegistryRoute } from './routes/contracts.mjs';
+import { putRosterRoute, getRosterRoute, rosterBrandsRoute, rosterConflictsRoute, rosterShopsRoute, registryCheckRoute, putRegistryRoute } from './routes/contracts.mjs';
 import { listMailTemplatesRoute, putMailTemplateRoute, deleteMailTemplateRoute,
          listMailLogRoute, createMailLogRoute,
          putTemplateAttachmentRoute, getTemplateAttachmentRoute } from './routes/mail.mjs';
@@ -94,8 +94,13 @@ export const handler = async (event) => {
     else if (method === 'DELETE' && /^\/mail-templates\/[^/]+$/.test(path))                      result = await deleteMailTemplateRoute(withParam(event, 'templateId', path));
     else if (method === 'PUT'    && /^\/mail-templates\/[^/]+\/attachment$/.test(path))           result = await putTemplateAttachmentRoute(withParam(event, 'templateId', path));
     else if (method === 'GET'    && /^\/mail-templates\/[^/]+\/attachment$/.test(path))           result = await getTemplateAttachmentRoute(withParam(event, 'templateId', path));
-    else if (method === 'GET'    && /^\/bulk-runs\/[^/]+\/mail-log$/.test(path))                  result = await listMailLogRoute(withParam(event, 'runId', path, 2));
-    else if (method === 'POST'   && /^\/bulk-runs\/[^/]+\/mail-log$/.test(path))                  result = await createMailLogRoute(withParam(event, 'runId', path, 2));
+    // index 1, not 2. `withParam` splits on '/' and DROPS the empty leading segment, so
+    // /bulk-runs/<runId>/mail-log is ['bulk-runs', '<runId>', 'mail-log'] — index 2 is the literal
+    // word "mail-log". Every send was filed under `MAILLOG#mail-log` instead of its run; 6 live
+    // rows are in there. Harmless-looking until a second month exists, at which point September's
+    // sends read as "already sent" for October and those merchants get silently skipped.
+    else if (method === 'GET'    && /^\/bulk-runs\/[^/]+\/mail-log$/.test(path))                  result = await listMailLogRoute(withParam(event, 'runId', path));
+    else if (method === 'POST'   && /^\/bulk-runs\/[^/]+\/mail-log$/.test(path))                  result = await createMailLogRoute(withParam(event, 'runId', path));
     // Partners
     else if (method === 'GET'    && path === '/partners')                                        result = await listPartnersRoute();
     else if (method === 'POST'   && path === '/partners')                                        result = await createPartnerRoute(event);
@@ -125,6 +130,10 @@ export const handler = async (event) => {
     else if (method === 'POST'   && path === '/import/rev-share')                               result = await importRevShareRoute(event);
     // Bulk runs
     else if (method === 'POST'   && path === '/registry')                                        result = await putRegistryRoute(event);
+    else if (method === 'GET'    && path === '/roster/shops')                                   result = await rosterShopsRoute(event);
+    else if (method === 'GET'    && path === '/registry/check')                                 result = await registryCheckRoute();
+    else if (method === 'GET'    && path === '/roster/conflicts')                               result = await rosterConflictsRoute();
+    else if (method === 'GET'    && path === '/roster/brands')                                  result = await rosterBrandsRoute();
     else if (method === 'GET'    && path === '/roster')                                          result = await getRosterRoute();
     else if (method === 'PUT'    && path === '/roster')                                          result = await putRosterRoute(event);
     else if (method === 'GET'    && path === '/entities')                                        result = await listEntitiesRoute();

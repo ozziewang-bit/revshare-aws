@@ -85,7 +85,15 @@ const grabFn = (n) => {
   if (i < 0) throw new Error('missing ' + n);
   return appSrc.slice(i, appSrc.indexOf('\n', i) + 1);
 };
-const unitsTotal = new Function(grabFn('unitsTotal') + 'return unitsTotal;')();
+// 2026-10-01: `unitsTotal` now sums `unitsOf(c)`, which prefers the latest upload's own counts
+// over the stored column (the user: "if my files says 5, then it is 5"). These tests are about
+// the SUM, so they run with NO upload on record — the case where unitsOf returns `c.units` and
+// the behaviour below is exactly what it has always been. The file-preference itself is tested
+// in file-owned-counts.test.mjs.
+const unitsTotal = new Function(
+  'let ROSTER_BRANDS = { at: null, brands: {} };'
+  + grabFn('fileBrandOf') + grabFn('unitsOf') + grabFn('unitsTotal')
+  + 'return unitsTotal;')();
 
 test('Units totals a contract whose machines are LL40 — the SEACON case', () => {
   assert.equal(unitsTotal({ units: { LL40: 3 } }), 3);

@@ -48,13 +48,14 @@ test('a merchant deleted since the run reads as nothing rather than throwing', (
 const detail = app.slice(app.indexOf('async function renderBulkRunDetail('));
 const payoutTable = detail.slice(detail.indexOf('<table class="ts"><thead><tr>'));
 
-test('the entity column comes BEFORE the merchant column', () => {
+test('the entity column comes BEFORE the brand column', () => {
   // The ordering is the request, not a detail: finance reads down the entity column.
   const head = payoutTable;
   const entity = head.indexOf('Contract entity');
-  const merchant = head.indexOf('<th>Merchant</th>');
-  assert.ok(entity > 0 && merchant > 0, 'both headers must exist');
-  assert.ok(entity < merchant, 'Contract entity must be rendered before Merchant');
+  // The payout row is a BRAND (vocabulary settled 2026-10-01), so the header says Brand.
+  const brand = head.indexOf('<th>Brand</th>');
+  assert.ok(entity > 0 && brand > 0, 'both headers must exist');
+  assert.ok(entity < brand, 'Contract entity must be rendered before Brand');
 });
 
 // ── Reconcile: which name is the app's and which is the file's (2026-09-22) ─────────────────
@@ -137,5 +138,5 @@ test('a short list shows every name and claims nothing is hidden', () => {
 test('the store count is labelled, because 50 read as 50 merchants', () => {
   const groups = app.slice(app.indexOf('const RECONCILE_GROUPS'),
                            app.indexOf('// Repeated under every category'));
-  assert.match(groups, /machine-list-miss[\s\S]*unit: 'stores'/);
+  assert.match(groups, /machine-list-miss[\s\S]*unit: 'merchants'/);
 });

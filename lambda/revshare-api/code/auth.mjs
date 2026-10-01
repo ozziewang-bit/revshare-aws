@@ -39,6 +39,9 @@ export function requiredPermission(method, path) {
   // stay open like every other read.
   // The stored Businessmen list. Reading when it was refreshed is open — every run screen says
   // it — while storing one is the same act as importing the merchants it describes.
+  // '/roster/brands' is a read of what the last file said — open, like every other read.
+  if (path === '/roster/brands' || path === '/roster/conflicts' || path === '/roster/shops'
+      || path === '/registry/check') return null;   // reads, like every other read
   if (path === '/roster') return method === 'GET' ? null : 'manageMerchants';
   // Writing the shop index from the uploaded files is the same act as importing the merchants.
   if (path === '/registry') return method === 'GET' ? null : 'manageMerchants';

@@ -583,13 +583,60 @@ function resp(statusCode, body) {
 // The run payload holds only aggregates, so the per-merchant download cannot show order-level
 // detail without this. Kept as a separate object (and a separate request) because it is several
 // MB: the run-detail page must never pay for it just to draw a table.
-export async function getBulkRunInputsRoute(runId) {
+// GZIPPED, because a month of orders outgrew API Gateway's 10 MB RESPONSE limit (2026-09-30).
+// September's stored inputs are 10.4 MB: the request 413'd, `runOrderIndex` swallowed it in a
+// bare catch, and every statement for that run went out summary-only — with a message blaming
+// the run's age. This is §1p's wall in the other direction; orders are dense repetitive JSON, so
+// the same trick buys the same ~10x.
+//
+// `application/gzip` + base64 is what API Gateway needs to pass bytes through. The limit applies
+// to the ENCODED response, so base64's 4/3 inflation is accounted for by the compression itself.
+// A run's stored order rows, IN PAGES.
+//
+// Two separate faults lived here, and the second hid the first for a month.
+//
+// 1. THE SIGNATURE. `routeBulkRun` (index.mjs) calls every bulk-run handler as `fn(event)`. This
+//    one declared its parameter as `runId`, so it received the event object, asked DynamoDB for
+//    `BULKRUN#[object Object]`, got nothing, and returned 409 `no_stored_inputs`. The client reads
+//    that as "this run is too old to have kept its orders" and every statement said so — about
+//    runs made that morning. Broken since the download was written (2026-09-01, ca74a1c); it has
+//    never returned a single order.
+// 2. THE SIZE. September's inputs are 10.40 MB — orders alone are 9.92 MB of it — against API
+//    Gateway's hard 10 MB response ceiling. So even once (1) was fixed it could not have shipped
+//    whole. A gzip+base64 body was tried first and is gone: `isBase64Encoded` is only honoured
+//    when the response content-type is in the API's `binaryMediaTypes`, and NEITHER REGION HAS
+//    ONE CONFIGURED, so it arrived as text the browser could not inflate.
+//
+// Pages of plain JSON instead — the same transport every working route in this app already uses,
+// with no ceiling to grow back into. 5,000 orders is 1.9 MB; September is 6 requests.
+//
+// Returns ORDERS ONLY. That is all the statement download reads, and the roster on the side would
+// add 0.48 MB to every page for nothing.
+const ORDER_PAGE = 5000;
+const ORDER_PAGE_MAX = 10000;
+
+export async function getBulkRunInputsRoute(event) {
+  const runId = event?.pathParameters?.runId;
+  if (!runId) return resp(400, { error: 'missing_run' });
+
   const inputs = await getBulkRunInputs(runId);
   if (!inputs) {
     return resp(409, { error: 'no_stored_inputs',
       message: 'This run predates stored inputs (2026-08-24), so its orders were not kept.' });
   }
-  return resp(200, inputs);
+
+  return resp(200, pageOrders(inputs.orders, event.queryStringParameters));
+}
+
+// Pure, so the paging can actually be executed by a test rather than grepped for.
+// `total` on every page is what lets the client tell "that is all of them" from "the connection
+// stopped early" — without it a truncated read is an incomplete statement that looks finished.
+export function pageOrders(orders, query) {
+  const all = Array.isArray(orders) ? orders : [];
+  const q = query || {};
+  const offset = Math.min(all.length, Math.max(0, Math.trunc(Number(q.offset) || 0)));
+  const limit = Math.min(ORDER_PAGE_MAX, Math.max(1, Math.trunc(Number(q.limit) || ORDER_PAGE)));
+  return { total: all.length, offset, limit, orders: all.slice(offset, offset + limit) };
 }
 
 // POST /bulk-runs/:id/recompute — rebuild a run from its stored inputs and REPLACE it.
@@ -599,7 +646,13 @@ export async function getBulkRunInputsRoute(runId) {
 // runs. The frozen-snapshot rule (CLAUDE.md §5) is preserved where it matters — the result is
 // still a self-consistent snapshot with its own ruleSnapshots, and an ARCHIVED run is refused
 // (409), so locking a payout you have acted on is the one click that makes it immutable.
-export async function recomputeBulkRunRoute(runId) {
+export async function recomputeBulkRunRoute(event) {
+  // `routeBulkRun` in index.mjs calls every handler as `fn(event)`. This one declared `runId`, so
+  // it received the whole event and looked up `BULKRUN#[object Object]` — a 404 for every run that
+  // exists. Same defect as getBulkRunInputsRoute below, same commit, never noticed because the
+  // only symptom was a plausible-looking error message.
+  const runId = event?.pathParameters?.runId;
+  if (!runId) return resp(400, { error: 'missing_run' });
   const old = await getBulkRun(runId);
   if (!old) return resp(404, { error: 'not_found' });
   if (old.archived) return resp(409, { error: 'archived', message: 'This run is locked. Unarchive it first.' });

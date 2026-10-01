@@ -93,7 +93,7 @@ test('contract, finance and share terms are one category', () => {
     assert.match(block, new RegExp(`key: '${k}',[^\\n]*category: 'terms'`),
       `${k} belongs to the Merchant terms category`);
   }
-  assert.match(block, /CONTRACT_CATEGORIES = \{ terms: 'Merchant terms' \}/);
+  assert.match(block, /CONTRACT_CATEGORIES = \{ terms: 'Brand terms' \}/);
 });
 
 test('the file-owned groups are NOT folded into it', () => {

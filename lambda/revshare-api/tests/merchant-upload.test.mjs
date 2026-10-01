@@ -2,6 +2,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
+// byStore entries carry machine STATE and BINDING since 2026-10-01 (`{counts, deployed, total}`),
+// because the registry only takes a shop that is Approved AND has a deployed machine bound to it.
+// Tests still state plain counts; this wraps them, so the shape lives in one place.
+const M = (counts) => {
+  const n = Object.values(counts).reduce((a, b) => a + b, 0);
+  return { counts, deployed: n, total: n, businessId: null };
+};
+
 // `missingFromUpload` lives in frontend/app.js — it decides which merchants the Merchant view
 // marks ⦿ and which the import preview counts under "in your list, not in this file". Extract
 // and evaluate it rather than keeping a second copy: an import never deletes, so this function
@@ -69,7 +77,7 @@ const REGISTRY = [
 ];
 
 test('machines are summed per merchant across the stores it owns', () => {
-  const byStore = new Map([['BTS Asok', { S8: 2 }], ['BTS Nana', { S8: 1, L40: 3 }]]);
+  const byStore = new Map([['BTS Asok', M({ S8: 2 })], ['BTS Nana', M({ S8: 1, L40: 3 })]]);
   const { totals, matchedStores, matchedMachines } = matchMachineStores(byStore, REGISTRY);
   assert.deepEqual(totals.get('bts'), { S8: 3, L40: 3 });
   assert.equal(matchedStores, 2);
@@ -79,9 +87,9 @@ test('machines are summed per merchant across the stores it owns', () => {
 // Two misses that need different fixes: add the shop, versus link the shop to a merchant.
 test('an unrecognised store and an unlinked store are reported apart', () => {
   const byStore = new Map([
-    ['BTS Asok', { S8: 2 }],
-    ['Lawson Silom', { S5: 4 }],        // in the registry, no merchant
-    ['Somewhere New', { S5: 1, S8: 1 }],// not in the registry at all
+    ['BTS Asok', M({ S8: 2 })],
+    ['Lawson Silom', M({ S5: 4 })],        // in the registry, no merchant
+    ['Somewhere New', M({ S5: 1, S8: 1 })],// not in the registry at all
   ]);
   const r = matchMachineStores(byStore, REGISTRY);
   assert.deepEqual(r.unlinked, [{ store: 'Lawson Silom', machines: 4 }]);
@@ -93,8 +101,8 @@ test('an unrecognised store and an unlinked store are reported apart', () => {
 // to the file's own store count rather than quietly losing some.
 test('matched + unknown + unlinked accounts for every store in the file', () => {
   const byStore = new Map([
-    ['BTS Asok', { S8: 1 }], ['bts nana', { S8: 1 }],
-    ['Lawson Silom', { S5: 1 }], ['Ghost A', { S5: 1 }], ['Ghost B', { S5: 1 }],
+    ['BTS Asok', M({ S8: 1 })], ['bts nana', M({ S8: 1 })],
+    ['Lawson Silom', M({ S5: 1 })], ['Ghost A', M({ S5: 1 })], ['Ghost B', M({ S5: 1 })],
   ]);
   const r = matchMachineStores(byStore, REGISTRY);
   assert.equal(r.matchedStores + r.unknown.length + r.unlinked.length, byStore.size);
@@ -102,7 +110,7 @@ test('matched + unknown + unlinked accounts for every store in the file', () => 
 });
 
 test('an empty registry skips everything rather than throwing', () => {
-  const r = matchMachineStores(new Map([['A', { S5: 1 }]]), []);
+  const r = matchMachineStores(new Map([['A', M({ S5: 1 })]]), []);
   assert.equal(r.totals.size, 0);
   assert.deepEqual(r.unknown, [{ store: 'A', machines: 1 }]);
 });

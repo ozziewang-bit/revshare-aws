@@ -249,8 +249,12 @@ async function api(path, opts = {}) {
   const res = await fetch(API_URL + path, { ...opts, headers });
   if (res.status === 401) { ID_TOKEN = ''; localStorage.removeItem('rs_idtoken'); showLoginGate(); initGsi(); throw new Error('unauthenticated'); }
   if (!res.ok) { const text = await res.text(); throw new Error(`HTTP ${res.status}: ${text}`); }
-  return res.status === 204 ? null : res.json();
+  if (res.status === 204) return null;
+  return res.json();
 }
+
+// Inflate a gzipped body. `DecompressionStream` is in every browser this app supports; if it
+// somehow is not, say so rather than hand back a half-read object.
 function showLoginGate(msg) {
   // NOTE: the gate has inline `display:flex`, which overrides the [hidden] attribute —
   // so we must toggle style.display directly, not just the hidden property.
@@ -379,7 +383,7 @@ function initApp() {
   const rs = document.getElementById('region-switch');
   if (rs) { rs.value = REGION; rs.onchange = e => switchRegion(e.target.value); }
   renderNav();
-  renderContractsScreen();   // Merchant view is the first tab, so it is also the landing screen
+  renderContractsScreen();   // Overview is the first tab, so it is also the landing screen
 }
 
 function switchRegion(rk) {
@@ -481,7 +485,7 @@ function renderNav() {
   // + New run button. Mailing is the same shape — anyone may read what was sent, sending is
   // gated where it happens.
   nav.innerHTML = `
-    <button id="nav-contracts" class="nav-btn active">Merchant view</button>
+    <button id="nav-contracts" class="nav-btn active">Overview</button>
     <button id="nav-upload" class="nav-btn">Upload</button>
     <button id="nav-bulk-runs" class="nav-btn">Run share</button>
     <button id="nav-mailing" class="nav-btn">Mailing</button>
@@ -748,7 +752,7 @@ async function renderDeviceTypesScreen(host) {
     out.innerHTML = `
       <p class="muted" style="font-size:12.5px;margin:0 0 10px;">
         This list is per country — you are editing <strong>${escape(R().name)}</strong>. It decides which
-        machine columns the Merchant view shows, and which models a run will accept.
+        machine columns the Overview shows, and which models a run will accept.
       </p>
       <table class="ts">
         <thead><tr><th>Display Name</th><th>Code</th><th>In use</th><th></th></tr></thead>
@@ -953,7 +957,7 @@ function similarity(a, b) {
 
 // A term set, compared by value rather than by identity. DynamoDB does not preserve map key
 // order, so a plain JSON.stringify of two equal rules can differ — the same trap §1h hit with
-// `units`. Sorting keys is what makes "do these branches agree?" answerable at all.
+// `units`. Sorting keys is what makes "do these merchants agree?" answerable at all.
 function termSignature(c) {
   if (c?.noPayout) return 'NO_PAYOUT';
   if (!c?.rule) return 'NONE';
@@ -1034,7 +1038,7 @@ function classifyDifferences(opts) {
   // linking them. The branch members are ATTACHED to whatever item the tag already has rather
   // than emitted as a second item, so one brand is one finding (spec §1, §10) and no contract
   // is ever reported twice. A tag whose row is LIVE and in the file has no item to attach to,
-  // so it gets a `brand-has-branches` item of its own — the branches are just as unreachable.
+  // so it gets a `brand-has-merchants` item of its own — the merchants are just as unreachable.
   //
   // A member is WITHHELD when it looks much more like the rename of some OTHER rowless file
   // name than like a branch of this tag: file `Glow` + `Glow Fis` against rows `Glow Fish` and
@@ -1069,7 +1073,7 @@ function classifyDifferences(opts) {
       && (o.type === 'archived-in-file' || o.type === 'in-file-no-row'));
     if (existing && existing.type === 'archived-in-file') {
       // Keep the archived item's own type: "archived and still earning" is the more severe
-      // fact and the group it belongs in. The branches ride along as extra facts on that row.
+      // fact and the group it belongs in. The merchants ride along as extra facts on that row.
       Object.assign(existing, branch, {
         contractIds: [...existing.contractIds, ...branchIds],
         // The branch rows themselves are listed under the row, so the detail only adds the one
@@ -1205,22 +1209,22 @@ function classifyDifferences(opts) {
     for (const { o } of scored) { removeItem(o); consumedOrphans.add(o); }
   }
 
-  // The optional machine-list upload matches each shop to a merchant through the store registry.
+  // The optional machine-list upload matches each merchant to a brand through the registry.
   // Two different failures need two different fixes (§1l): `unknown` usually resolves itself
   // once the next run's roster teaches the registry the name; `unlinked` needs a person to link
-  // the shop to a merchant. Keeping them apart is the point — merging them would hide which fix
+  // the merchant to a merchant. Keeping them apart is the point — merging them would hide which fix
   // each name needs. Name lists are capped at 200 by the backend, so `count` carries the exact
   // total rather than `names.length`.
   const mm = upload?.machineMisses;
   if (mm?.unknownTotal) out.push({ type: 'machine-list-miss', key: 'unknown',
     appNames: [], fileNames: mm.unknown || [],
     names: mm.unknown || [], contractIds: [], money: 0, count: mm.unknownTotal,
-    detail: 'These shops are not in the store registry. The registry learns store names from run '
+    detail: 'These merchants are not in the registry. The registry learns merchant names from run '
           + 'rosters, so they usually resolve after the next run.' });
   if (mm?.unlinkedTotal) out.push({ type: 'machine-list-miss', key: 'unlinked',
     appNames: [], fileNames: mm.unlinked || [],
     names: mm.unlinked || [], contractIds: [], money: 0, count: mm.unlinkedTotal,
-    detail: 'These shops are in the registry but belong to no merchant, so their machines were '
+    detail: 'These merchants are in the registry but belong to no brand, so their machines were '
           + 'not counted anywhere.' });
 
   const silenced = new Set((dismissals || []).map(d => `${d.type}::${d.key}`));
@@ -1273,11 +1277,11 @@ const FINANCE_COLUMNS = [
 function buildContractGridColumns(models) {
   const codes = (models && models.length ? models : UNIT_MODELS_FALLBACK);
   return [
-    { key: 'merchantName',          label: 'Merchant/Brand', type: 'text',  width: 165 , group: 'id' },
+    { key: 'merchantName',          label: 'Brand',         type: 'text',  width: 165 , group: 'id' },
     { key: 'merchantType',          label: 'Type',          type: 'select', width: 120 , group: 'id' },
-    // How many branches this brand has. Set by the weekly upload, which counts the store rows
-    // sharing a merchant label — so it is as current as the last file.
-    { key: 'branchCount',           label: 'Branch',        type: 'number', width: 70  , group: 'id' },
+    // How many MERCHANTS this brand has — merchant being one merchant, read from the file's
+    // `merchant name (English)`. Counted from the file, so it is as current as the last upload.
+    { key: 'branchCount',           label: 'Merchants',     type: 'number', width: 86  , group: 'id' },
     { key: 'salesPerson',           label: 'Sales person',  type: 'text',   width: 125 , group: 'contact' },
     { key: 'contactName',           label: 'Contact',       type: 'text',   width: 125 , group: 'contact' },
     { key: 'contactPhone',          label: 'Phone',         type: 'text',   width: 110 , group: 'contact' },
@@ -1319,6 +1323,11 @@ function modelsInUse(contracts, configured) {
     for (const [m, n] of Object.entries(c.units || {})) if (Number(n) > 0) used.add(m);
     fromRule(c.rule);
   }
+  // And every model the latest upload mentions. The grid now shows the FILE's counts, so a model
+  // that exists only in the file would otherwise have its numbers hidden behind a missing column.
+  for (const b of Object.values(ROSTER_BRANDS.brands || {})) {
+    for (const [m, n] of Object.entries(b.units || {})) if (Number(n) > 0) used.add(m);
+  }
   // Keep the configured order, so the columns do not reshuffle as data changes.
   const inUse = (configured || []).filter(m => used.has(m));
   // A model in use but NOT configured still gets a column — otherwise its numbers would be
@@ -1337,7 +1346,7 @@ function refreshContractGridColumns() {
 // no toggle: the merchant is what identifies the row.
 // TWO CATEGORIES, stated by the user 2026-09-29:
 //
-//   MERCHANT INFORMATION — brand, branches, machines, contacts. Read from the file you upload;
+//   MERCHANT INFORMATION — brand, merchants, machines, contacts. Read from the file you upload;
 //                          never edited in the app.
 //   MERCHANT TERMS       — contract, finance AND share terms. ONE data set, maintained by hand.
 //
@@ -1352,7 +1361,7 @@ const CONTRACT_GROUPS = [
   { key: 'terms',    label: 'Share terms',         category: 'terms' },
 ];
 // What the grid's category row shows for a merged category, and the one key its toggle writes.
-const CONTRACT_CATEGORIES = { terms: 'Merchant terms' };
+const CONTRACT_CATEGORIES = { terms: 'Brand terms' };
 // A column's category is its group's, falling back to the group itself.
 function contractCategoryOf(groupKey) {
   const g = CONTRACT_GROUPS.find(x => x.key === groupKey);
@@ -1488,7 +1497,497 @@ const AUTO_RENEWAL_OPTIONS = ['Yes', 'No'];
 // Summing the row's own keys is the only version that cannot drift from the columns, and it
 // follows the rule §1f already set for those columns: showing a machine under an unexpected
 // code beats hiding a machine that is really there.
-const unitsTotal = c => Object.values((c && c.units) || {}).reduce((a, n) => a + (Number(n) || 0), 0);
+const unitsTotal = c => Object.values(unitsOf(c) || {}).reduce((a, n) => a + (Number(n) || 0), 0);
+
+// The tab strip on the Upload page. One tab per KIND of disagreement, because they are fixed in
+// different places: a wrong model code is a terms edit, a missing brand is an add, a missing
+// finance address is a contact edit. A single mixed list would make you re-decide what kind of
+// problem you are looking at on every row.
+const UP_TABS = [
+  { id: 'files',      label: 'Files' },
+  { id: 'terms',      label: 'Terms vs machines',  hint: 'A per-machine term names a model the file says this brand does not have, so it pays nothing.' },
+  { id: 'noContract', label: 'Brand not registered', hint: 'In your file and earning, but this brand is not registered, so it cannot be paid. Registering it creates the brand that carries the terms.' },
+  { id: 'notInFile',  label: 'Brand left the file', hint: 'A registered brand your latest file no longer mentions — no merchant is left under it. Nothing is deleted; archive or remove it one by one.' },
+  { id: 'counts',     label: 'Counts differ',      hint: 'The stored branch or machine numbers differ from the file. The grid already SHOWS the file\'s numbers — this is the stored record drifting. A changed MODEL is the one worth acting on.' },
+  { id: 'noTerms',    label: 'No terms',           hint: 'A registered brand in your file with no share terms set, so a run pays it nothing.' },
+  { id: 'noFinance',  label: 'No finance email',   hint: 'This brand cannot be sent a statement or a payment notice.' },
+  { id: 'mDeployed',  label: 'Not approved, machines live', hint: 'The merchant is not Approved, yet machines are deployed under it. They are earning while the paperwork lags — these merchants do not reach the registry until the review state changes.' },
+  { id: 'mNone',      label: 'Approved, no machine',  hint: 'The merchant is Approved but no deployed machine is bound to it, so there is nothing to pay for yet.' },
+  { id: 'mUnbound',   label: 'Machine, no merchant', hint: 'A machine is deployed under a merchant name your file does not carry, so nothing can attribute it to a brand.' },
+  { id: 'registry',   label: 'Registry vs file',   hint: 'The registry maps each merchant to its brand. Your file states the same thing every week and is the authority. Review state is shown but never used to leave a merchant out: a run and the platform\'s approval are not related.' },
+];
+
+// Served by the backend, which holds both the registry (several MB) and the stored roster, so
+// only the differences cross the wire. Loaded with the screen; never fatal.
+let REGISTRY_CHECK = null;
+let MISMATCH_READ_AT = null;
+
+// Everything the comparison needs, re-read together. The team edits this app WHILE someone is
+// looking at it — terms get set, merchants get added, a new file lands — so a page painted at
+// 09:00 is quietly answering a question about 09:00. One button re-asks, and every row that has
+// since been settled disappears.
+//
+// `ensureContractCache(true)` forces the refetch; without the flag it returns early on a warm
+// cache and the counts would not move after someone else's save.
+async function refreshMismatchData() {
+  await ensureContractCache(true);
+  const [rb, rc] = await Promise.all([
+    api('/roster/brands').catch(() => null),
+    api('/registry/check').catch(() => null),
+  ]);
+  if (rb && rb.brands) ROSTER_BRANDS = rb;
+  if (rc && rc.counts) REGISTRY_CHECK = rc;
+  MISMATCH_READ_AT = new Date();
+}
+
+let UP_TAB = 'files';
+
+function upMismatchCounts() {
+  const m = fileMismatches(CONTRACTS, ROSTER_BRANDS.brands || {});
+  m.registry = REGISTRY_CHECK;
+  const mc = (REGISTRY_CHECK && REGISTRY_CHECK.machineCheck) || { counts: {} };
+  m.mDeployed = mc.notApprovedDeployed || [];
+  m.mNone = mc.approvedNoDeployed || [];
+  m.mUnbound = mc.deployedUnbound || [];
+  const rc = (REGISTRY_CHECK && REGISTRY_CHECK.counts) || {};
+  return { m, n: { terms: m.terms.length, noContract: m.noContract.length,
+                   notInFile: m.notInFile.length, counts: m.counts.length,
+                   noTerms: m.noTerms.length, noFinance: m.noFinance.length,
+                   mDeployed: (mc.counts || {}).notApprovedDeployed || 0,
+                   mNone: (mc.counts || {}).approvedNoDeployed || 0,
+                   mUnbound: (mc.counts || {}).deployedUnbound || 0,
+                   registry: (rc.missing || 0) + (rc.wrongLink || 0) + (rc.noLink || 0) } };
+}
+
+function paintUploadTabs() {
+  const strip = document.getElementById('up-tabs');
+  if (!strip) return;
+  const { m, n } = upMismatchCounts();
+  strip.innerHTML = UP_TABS.map(t => {
+    const count = t.id === 'files' ? null : n[t.id];
+    const label = count == null ? t.label : `${t.label} (${count})`;
+    return `<button type="button" class="subtab${t.id === UP_TAB ? ' active' : ''}"
+             data-tab="${t.id}"${count === 0 ? ' data-zero="1"' : ''}>${escape(label)}</button>`;
+  }).join('');
+  strip.querySelectorAll('.subtab').forEach(b => b.addEventListener('click', () => {
+    UP_TAB = b.dataset.tab;
+    paintUploadTabs();
+  }));
+
+  const files = document.getElementById('up-files');
+  const box = document.getElementById('up-mismatch');
+  if (!files || !box) return;
+  files.hidden = UP_TAB !== 'files';     // hidden, never rebuilt — a held file survives
+  box.hidden = UP_TAB === 'files';
+  if (UP_TAB !== 'files') drawMismatchTab(box, UP_TAB, m);
+}
+
+// Each row states what the APP holds and what the FILE says, side by side, and offers the one
+// action that resolves it. Nothing is applied in bulk and nothing is applied automatically.
+function drawMismatchTab(box, tab, m) {
+  const meta = UP_TABS.find(t => t.id === tab);
+  const rows = tab === 'registry'
+    ? [...(((m.registry || {}).missing) || []), ...(((m.registry || {}).wrongLink) || []),
+       ...(((m.registry || {}).noLink) || [])]
+    : (m[tab] || []);
+  const readAt = MISMATCH_READ_AT
+    ? MISMATCH_READ_AT.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
+    : null;
+  const head = `<p class="muted" style="margin:0 0 12px;font-size:13px;max-width:780px;">
+      ${escape(meta.hint)}</p>
+    <p class="muted" style="margin:-6px 0 12px;font-size:12.5px;">
+      Against your ${escape(rosterDateLabel())} file${readAt ? ` · read at ${escape(readAt)}` : ''}
+      <button type="button" class="btn-ghost" id="up-recheck" style="margin-left:8px;">Re-check</button>
+      <span class="muted" style="margin-left:6px;">someone else may have changed something since</span></p>`;
+
+  if (!rows.length) {
+    const noMachines = ['mDeployed', 'mNone', 'mUnbound'].includes(tab)
+      && !(((REGISTRY_CHECK || {}).machineCheck || {}).counts || {}).hasMachineFile;
+    box.innerHTML = head + (noMachines
+      ? `<p class="muted">No machine list has been stored yet. Upload one on the
+         <strong>Files</strong> tab and this fills in — the merchant list alone cannot say what is
+         deployed.</p>`
+      : `<p class="muted">Nothing here — the app and your ${escape(rosterDateLabel())} file agree.</p>`);
+    wireMismatchActions(box);
+    return;
+  }
+
+  // `table.ts` is this app's table, and `.up-mm-wrap` scrolls it HORIZONTALLY on its own rather
+  // than letting the page scroll sideways. Deliberately NOT `.ct-scroll`: that sets a border and
+  // no overflow, and reusing it once painted a table straight over the controls above it.
+  const t = (cols, body) => `<div class="up-mm-wrap"><table class="ts">
+      <thead><tr>${cols.map(c => `<th>${escape(c)}</th>`).join('')}</tr></thead>
+      <tbody>${body}</tbody></table></div>`;
+  const act = (label, kind, id) =>
+    `<button type="button" class="btn-ghost up-fix" data-kind="${kind}" data-id="${escape(id)}">${escape(label)}</button>`;
+  const u = (obj) => Object.entries(obj || {}).map(([k, v]) => `${k} ${v}`).join(', ') || '—';
+
+  let html = head;
+  if (tab === 'terms') {
+    html += t(['Brand', 'The term is set on', 'The file says they run', 'Effect', ''],
+      rows.map(r => `<tr>
+        <td>${escape(r.label)}</td>
+        <td>${r.dead.length ? `<span class="rc-warn">${escape(r.dead.join(', '))}</span>` : escape(r.termModels.join(', ') || '—')}</td>
+        <td>${escape(r.fileModels.join(', ') || '—')}</td>
+        <td>${r.dead.length
+              ? `pays <strong>nothing</strong> for ${escape(r.uncovered.join(', ') || 'these machines')}`
+              : `no per-machine term covers ${escape(r.uncovered.join(', '))}`}</td>
+        <td>${act('Edit terms', 'terms', r.c.contractId)}</td></tr>`).join(''));
+  } else if (tab === 'noContract') {
+    html += t(['In your file', 'Merchants', 'Machines', ''],
+      rows.map(r => `<tr><td>${escape(r.label)}</td><td>${r.branches}</td><td>${escape(u(r.units))}</td>
+        <td>${act('Add to list', 'add', r.label)}</td></tr>`).join(''));
+  } else if (tab === 'notInFile') {
+    html += t(['In the registry', 'Merchants recorded', ''],
+      rows.map(r => `<tr><td>${escape(r.label)}</td><td>${r.branches ?? '—'}</td>
+        <td>${act('Archive', 'archive', r.c.contractId)} ${act('Delete', 'delete', r.c.contractId)}</td></tr>`).join(''));
+  } else if (tab === 'counts') {
+    html += t(['Brand', 'App merchants', 'File merchants', 'App machines', 'File machines', ''],
+      rows.map(r => {
+        const modelChange = r.changed.some(mm => !(mm in (r.appUnits || {})) || !(mm in (r.fileUnits || {})));
+        return `<tr>
+          <td>${escape(r.label)}${modelChange ? ' <span class="rc-warn" title="A model code changed. A per-machine term keyed to the old code would pay nothing.">model changed</span>' : ''}</td>
+          <td>${r.appBranches ?? '—'}</td><td><strong>${r.fileBranches}</strong></td>
+          <td>${escape(u(r.appUnits))}</td><td><strong>${escape(u(r.fileUnits))}</strong></td>
+          <td>${act('Edit terms', 'terms', r.c.contractId)}</td></tr>`;
+      }).join(''));
+  } else if (tab === 'noTerms') {
+    html += t(['Brand', 'Merchants', ''],
+      rows.map(r => `<tr><td>${escape(r.label)}</td><td>${r.branches}</td>
+        <td>${act('Set terms', 'terms', r.c.contractId)}</td></tr>`).join(''));
+  } else if (tab === 'mDeployed') {
+    html += t(['Merchant', 'Review state', 'Brand', 'Machines deployed'],
+      rows.map(r => `<tr><td>${escape(r.name)}</td>
+        <td><span class="rc-warn">${escape(r.state)}</span></td>
+        <td>${escape(r.brand) || '<span class="muted">no label</span>'}</td>
+        <td>${r.deployed}</td></tr>`).join(''));
+  } else if (tab === 'mNone') {
+    html += t(['Merchant', 'Brand', 'Machines bound (none deployed)'],
+      rows.map(r => `<tr><td>${escape(r.name)}</td><td>${escape(r.brand)}</td>
+        <td>${r.machines || 0}</td></tr>`).join(''));
+  } else if (tab === 'mUnbound') {
+    html += t(['Merchant on the machine', 'Machines deployed', 'Business ID'],
+      rows.map(r => `<tr><td>${escape(r.name)}</td><td>${r.deployed}</td>
+        <td class="muted">${escape(r.businessId || '—')}</td></tr>`).join(''));
+  } else if (tab === 'registry') {
+    box.innerHTML = head + registryHtml(m.registry);
+    wireMismatchActions(box);
+    return;
+  } else {
+    html += t(['Brand', 'Merchants', 'Contact on file', ''],
+      rows.map(r => `<tr><td>${escape(r.label)}</td><td>${r.branches}</td>
+        <td class="muted">${escape(r.c.contactEmail || '—')}</td>
+        <td>${act('Edit', 'edit', r.c.contractId)}</td></tr>`).join(''));
+  }
+  box.innerHTML = html;
+
+  wireMismatchActions(box);
+}
+
+// ── Registry vs file (2026-10-01) ────────────────────────────────────────────────────────────
+// Five ways the registry and the weekly file can differ, each needing a different action.
+// Every write goes through POST /registry, which is additive by construction: a merchant keeps its
+// id, its notes and its externalId, only the link and the model can be refreshed from a value
+// the file actually carries, and a merchant the file does not mention is never touched.
+function registryHtml(chk) {
+  if (!chk) return `<p class="muted">The registry comparison could not be read. Use Re-check.</p>`;
+  const c = chk.counts || {};
+  const esc = escape;
+  const sec = (title, note, body) => `<h4 style="margin:22px 0 6px;font-size:14px;">${esc(title)}</h4>
+    <p class="muted" style="margin:0 0 8px;font-size:12.5px;">${note}</p>${body}`;
+  const tbl = (cols, rowsHtml) => `<div class="up-mm-wrap"><table class="ts">
+      <thead><tr>${cols.map(x => `<th>${esc(x)}</th>`).join('')}</tr></thead>
+      <tbody>${rowsHtml}</tbody></table></div>`;
+  const state = (v) => v === 'Approved'
+    ? `<span class="muted">Approved</span>` : `<span class="rc-warn">${esc(v || '—')}</span>`;
+  const payload = (r) => esc(JSON.stringify({ name: r.name, contractId: r.contractId,
+                                              machineModel: r.model || null, externalId: r.externalId || null }));
+
+  let html = '';
+
+  if (c.missing) {
+    html += sec(`Not in the registry — ${c.missing}`,
+      `Your file names these shops and the registry has no row for them. Adding one records
+       which brand the shop belongs to. Review state is shown, not used to exclude.`,
+      tbl(['Merchant', 'Review state', 'Your file puts it under', ''],
+        chk.missing.map(r => `<tr><td>${esc(r.name)}</td><td>${state(r.state)}</td>
+          <td><strong>${esc(r.brand)}</strong></td>
+          <td><button type="button" class="btn-ghost reg-one" data-shop="${payload(r)}">Add</button></td></tr>`).join(''))
+      + `<p style="margin:10px 0 0;"><button type="button" class="btn-primary" id="reg-add-all"
+           >Add all ${c.missing} to the registry</button>
+         <span class="muted" style="margin-left:8px;">one row per merchant; nothing else is changed</span></p>`);
+  }
+
+  if (c.wrongLink) {
+    html += sec(`Pointing at a different brand — ${c.wrongLink}`,
+      `The registry links the merchant to a live brand your file does not name. The file is the
+       authority, so the button moves <em>every</em> row for that shop.`,
+      tbl(['Merchant', 'Your file says', 'The registry says', ''],
+        chk.wrongLink.map(r => `<tr><td>${esc(r.name)}</td>
+          <td><strong>${esc(r.brand)}</strong></td>
+          <td><span class="rc-warn">${esc(r.registryBrand)}</span> <span class="muted">· ${r.rows} row(s)</span></td>
+          <td><button type="button" class="btn-ghost up-fix" data-kind="repoint"
+               data-id="${esc(r.name)}" data-brand="${esc(r.brand)}">Point at ${esc(r.brand)}</button></td></tr>`).join('')));
+  }
+
+  if (c.noLink) {
+    const can = chk.noLink.filter(r => r.contractId), cannot = chk.noLink.length - can.length;
+    html += sec(`In the registry with no brand — ${c.noLink}`,
+      `The shop has a row but it points at nothing, or at a brand that has been deleted or
+       archived.${cannot ? ` ${cannot} of these name a brand that is not registered yet — register
+       it first (see the <strong>Brand not registered</strong> tab).` : ''}`,
+      tbl(['Merchant', 'Review state', 'Your file puts it under', ''],
+        chk.noLink.map(r => `<tr><td>${esc(r.name)}</td><td>${state(r.state)}</td>
+          <td>${r.contractId ? `<strong>${esc(r.brand)}</strong>` : `<span class="muted">${esc(r.brand)} — brand not registered</span>`}</td>
+          <td>${r.contractId
+            ? `<button type="button" class="btn-ghost reg-one" data-shop="${payload(r)}">Link</button>` : ''}</td></tr>`).join(''))
+      + (can.length ? `<p style="margin:10px 0 0;"><button type="button" class="btn-primary" id="reg-link-all"
+           >Link all ${can.length}</button></p>` : ''));
+  }
+
+  if (c.notInFile) {
+    html += sec(`In the registry, not in your file — ${c.notInFile}`,
+      `Nothing is deleted: shops come and go, and the registry is not where that is decided.
+       Listed so you know what the file no longer mentions.`,
+      tbl(['Merchant', 'Currently under', 'Rows'],
+        chk.notInFile.map(r => `<tr><td>${esc(r.name)}</td>
+          <td>${r.brand ? esc(r.brand) : '<span class="muted">nothing</span>'}</td>
+          <td>${r.rows}</td></tr>`).join('')));
+  }
+
+  if (c.duplicated) {
+    html += sec(`Merchants with more than one row — ${c.duplicated}`,
+      `${c.duplicateRows} rows beyond one per shop, all created before the 24 Aug pagination fix.
+       They change no payout. Collapsing them is a separate job — nothing here writes to them.`, '');
+  }
+
+  if (c.missingNoMerchant) {
+    html += `<p class="muted" style="margin:18px 0 0;font-size:12.5px;">
+      ${c.missingNoMerchant} further shop(s) in your file have no registry row <em>and</em>
+      belong to a brand that is not registered. Register the brand first — see the
+      <strong>Brand not registered</strong> tab.</p>`;
+  }
+  return html || `<p class="muted">The registry matches your file.</p>`;
+}
+
+function wireMismatchActions(box) {
+  const refreshAll = async () => { await refreshMismatchData().catch(() => {}); paintUploadTabs(); };
+
+  // One merchant, or a whole bucket — the same request either way, so there is one write path.
+  const send = async (btn, shops, what) => {
+    if (!shops.length) return;
+    if (shops.length > 1 && !confirm(`${what}\n\n${shops.length} shop(s) in the registry.\n\n`
+        + `Each keeps its own id, notes and shop id — only the brand it points at, and its\n`
+        + `machine model, are set from your file. No brand, terms or past run are touched.`)) return;
+    const was = btn.textContent;
+    btn.disabled = true; btn.textContent = 'Updating…';
+    try {
+      const r = await api('/registry', { method: 'POST', body: JSON.stringify({ shops }) });
+      await refreshAll();
+      alert(`Registry updated — ${r.created} added, ${r.updated} changed, ${r.unchanged} already correct.`);
+    } catch (e) {
+      btn.disabled = false; btn.textContent = was;
+      alert('Could not update the registry: ' + e.message);
+    }
+  };
+
+  const chk = (REGISTRY_CHECK || {});
+  box.querySelectorAll('.reg-one').forEach(b => b.addEventListener('click', () =>
+    send(b, [JSON.parse(b.dataset.shop)], 'Add this merchant to the registry?')));
+  const addAll = box.querySelector('#reg-add-all');
+  if (addAll) addAll.addEventListener('click', () => send(addAll,
+    (chk.missing || []).map(r => ({ name: r.name, contractId: r.contractId,
+                                    machineModel: r.model || null, externalId: r.externalId || null })),
+    'Add every merchant your file names that the registry does not have?'));
+  const linkAll = box.querySelector('#reg-link-all');
+  if (linkAll) linkAll.addEventListener('click', () => send(linkAll,
+    (chk.noLink || []).filter(r => r.contractId).map(r => ({ name: r.name, contractId: r.contractId,
+                                    machineModel: r.model || null, externalId: r.externalId || null })),
+    'Link every unlinked merchant to the brand your file names?'));
+
+  const recheck = box.querySelector('#up-recheck');
+  if (recheck) recheck.addEventListener('click', async () => {
+    const was = recheck.textContent;
+    recheck.disabled = true; recheck.textContent = 'Checking…';
+    try { await refreshMismatchData(); } catch (e) { console.warn('re-check failed:', e); }
+    recheck.disabled = false; recheck.textContent = was;
+    paintUploadTabs();
+  });
+
+  box.querySelectorAll('.up-fix').forEach(b => b.addEventListener('click', async () => {
+    const id = b.dataset.id;
+    // Each one reuses the editor the Overview already uses, so there is one definition of
+    // what editing a contract means — and `paintUploadTabs` re-counts afterwards, so a row that
+    // now agrees with the file leaves the tab by itself.
+    // After any fix, re-read EVERYTHING rather than only the contracts — a repoint changes the
+    // registry, which only the conflicts route can see.
+    const after = async () => { await refreshMismatchData().catch(() => {}); paintUploadTabs(); };
+    if (b.dataset.kind === 'terms')        await openTermsEditor(id, after);
+    else if (b.dataset.kind === 'edit')    openContractEditor(id);
+    else if (b.dataset.kind === 'add')     { await openAddFromFile(id, b); await after(); }
+    else if (b.dataset.kind === 'archive') { await archiveFromUpload(id, b); await after(); }
+    else if (b.dataset.kind === 'delete')  { await deleteFromUpload(id, b); await after(); }
+    else if (b.dataset.kind === 'repoint') {
+      await repointStoreFromFile(id, b.dataset.brand, b, after);
+    }
+  }));
+}
+
+// ── The merchants behind a merchant count (2026-10-01) ─────────────────────────────────────────────
+// Clicking the Branch number opens the merchants it counts, read straight from the uploaded file —
+// the Thai name, the English name, the Merchant label they are grouped under, and the machine.
+// Nothing here edits anything: it exists to answer "which merchants is this, exactly" while working
+// through a brand one merchant at a time.
+async function openBranchList(brand) {
+  const { card, close } = ctModal(860);
+  card.innerHTML = `<p class="muted" style="margin:0;">Loading the merchants…</p>`;
+  let data;
+  try {
+    data = await api('/roster/shops?brand=' + encodeURIComponent(brand));
+  } catch (e) {
+    card.innerHTML = `<h3 style="margin:0 0 8px;">${escape(brand)}</h3>
+      <p class="rc-warn">Could not read the shops for this brand (${escape(e.message || 'unknown error')}).</p>`;
+    return;
+  }
+  const shops = data.shops || [], held = data.heldBack || [];
+  const when = data.at ? new Date(data.at).toLocaleDateString('en-GB',
+                 { day: 'numeric', month: 'short', year: 'numeric' }) : 'your latest file';
+
+  card.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;">
+      <div>
+        <h3 style="margin:0 0 2px;">${escape(brand)}</h3>
+        <p class="muted" style="margin:0;font-size:12.5px;">
+          ${shops.length} shop(s)${data.stations > shops.length
+            ? ` · ${data.stations} station(s)` : ''} — from your ${escape(when)} upload</p>
+      </div>
+      <button type="button" class="btn-ghost" id="bl-close">Close</button>
+    </div>
+    <input id="bl-filter" class="input" style="margin:14px 0 10px;max-width:320px;"
+           placeholder="Filter by merchant name…">
+    <div class="up-mm-wrap" style="max-height:52vh;overflow-y:auto;">
+      <table class="ts"><thead><tr>
+        <th>Merchant name (Thai)</th><th>Merchant name (English)</th>
+        <th>Merchant label</th><th>Machine type</th></tr></thead>
+        <tbody id="bl-body"></tbody></table>
+    </div>
+    ${held.length ? `<p class="muted" style="margin:12px 0 0;font-size:12.5px;">
+      <span class="rc-warn">${held.length} shop(s) held back by their review state</span>
+      and not counted as branches: ${escape(held.map(h => `${h.name} (${h.reviewState || '—'})`)
+        .slice(0, 8).join(', '))}${held.length > 8 ? ` … and ${held.length - 8} more` : ''}</p>` : ''}`;
+
+  const body = card.querySelector('#bl-body');
+  const draw = (q) => {
+    const k = String(q || '').toLowerCase().trim();
+    const rows = !k ? shops : shops.filter(sh =>
+      (sh.name || '').toLowerCase().includes(k) || (sh.nameEn || '').toLowerCase().includes(k));
+    body.innerHTML = rows.length
+      ? rows.map(sh => `<tr>
+          <td>${escape(sh.name)}</td>
+          <td>${sh.nameEn ? escape(sh.nameEn) : '<span class="muted">—</span>'}</td>
+          <td>${escape(sh.label)}</td>
+          <td>${sh.model ? escape(sh.model) : '<span class="rc-warn">no device type</span>'}</td>
+        </tr>`).join('')
+      : `<tr><td colspan="4" class="muted">No merchant matches that.</td></tr>`;
+  };
+  draw('');
+  card.querySelector('#bl-filter').addEventListener('input', e => draw(e.target.value));
+  card.querySelector('#bl-close').addEventListener('click', close);
+}
+
+// ── Where the app disagrees with the file (2026-10-01) ───────────────────────────────────────
+// "File upload is the real data, if any setting on the app is not corresponding to the file, just
+// highlight it." So this REPORTS; it changes nothing and proposes nothing automatically. Each
+// row names what the app holds and what the file says, and the person decides.
+//
+// The one that costs money: a per-machine term keyed to a model the merchant does not have.
+// `evalFlatPerMachine` counts roster rows of that exact code, so a term on `L40` against `LL40`
+// machines evaluates to ZERO — and nothing says so. Measured 1 Oct: SEACON Bangkae earned 17,200
+// and was paid 0; Platinum Fashion Mall earned 2,580 and was paid 0; PMCU's guarantee cannot
+// fire. The device codes are deliberately distinct and nothing folds (§11), so this cannot be
+// fixed by matching loosely — only by showing it.
+//
+// Pure: contracts + the file's brands in, six lists out.
+function termModelsOf(node, out = new Set()) {
+  if (!node || typeof node !== 'object') return out;
+  if (node.type === 'flat_per_machine') {
+    for (const r of node.rows || []) {
+      if (r.model && r.model !== 'ALL' && Number(r.amount) > 0) out.add(r.model);
+    }
+  }
+  (node.children || []).forEach(c => termModelsOf(c, out));
+  return out;
+}
+
+function fileMismatches(contracts, brands) {
+  const key = s => String(s || '').trim().toLowerCase();
+  const live = (contracts || []).filter(c => !c.archived);
+  const byName = new Map(live.map(c => [key(c.merchantName), c]));
+  const out = { terms: [], noContract: [], notInFile: [], counts: [], noTerms: [], noFinance: [] };
+
+  for (const [k, b] of Object.entries(brands || {})) {
+    const c = byName.get(k);
+    if (!c) { out.noContract.push({ label: b.label, branches: b.branches, units: b.units }); continue; }
+
+    const fileModels = new Set(Object.keys(b.units || {}));
+    const stored = c.units || {};
+    const changed = [...new Set([...Object.keys(stored), ...fileModels])]
+      .filter(m => (Number(stored[m]) || 0) !== (Number((b.units || {})[m]) || 0));
+    if ((c.branchCount ?? null) !== b.branches || changed.length) {
+      out.counts.push({ c, label: b.label, appBranches: c.branchCount ?? null, fileBranches: b.branches,
+                        appUnits: stored, fileUnits: b.units || {}, changed });
+    }
+
+    if (!c.noPayout) {
+      const tm = termModelsOf(c.rule);
+      // A term naming a model the file does not list pays nothing. The other direction — a model
+      // with no term — is only worth saying when the contract HAS per-machine terms; a pure
+      // percentage rule covers every model by design and is not a mismatch.
+      const dead = [...tm].filter(m => !fileModels.has(m));
+      const uncovered = tm.size ? [...fileModels].filter(m => !tm.has(m)) : [];
+      if (dead.length || uncovered.length) {
+        out.terms.push({ c, label: b.label, dead, uncovered,
+                         fileModels: [...fileModels], termModels: [...tm] });
+      }
+      if (!c.rule) out.noTerms.push({ c, label: b.label, branches: b.branches });
+    }
+    if (!String(c.financeContactEmail || '').trim()) {
+      out.noFinance.push({ c, label: b.label, branches: b.branches });
+    }
+  }
+
+  // The reverse direction: in the app, absent from the latest file. Not a fault — a merchant can
+  // leave a file for a week — which is why nothing here deletes anything.
+  for (const c of live) if (!(brands || {})[key(c.merchantName)]) {
+    out.notInFile.push({ c, label: c.merchantName, branches: c.branchCount ?? null });
+  }
+  return out;
+}
+
+// ── Branches and machines are what the FILE says (2026-10-01) ────────────────────────────────
+// "please read from the latest file for branch and machine number, if mu files says 5, then it
+// is 5." Merchant INFORMATION is file-owned; the grid was showing the CONTRACT's stored
+// `branchCount`/`units`, which are only as fresh as the last import that touched them. Central
+// read 10 merchants / 10 LL40 against a file saying 5 of each — a leftover from before the brand
+// was split per mall.
+//
+// Keyed on the brand label, lower-cased, because that is what the file groups merchants under and
+// what a run resolves on. NOTHING IS WRITTEN: the stored columns are left exactly as they are
+// and remain the answer for a brand the latest file does not mention (those rows already carry
+// the ⦿ mark, so the grid is not quietly mixing two vintages without saying so).
+let ROSTER_BRANDS = { at: null, by: null, brands: {} };
+
+const rosterDateLabel = () => {
+  const d = new Date(ROSTER_BRANDS.at || 0);
+  return isNaN(d) || !ROSTER_BRANDS.at
+    ? 'latest' : d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+};
+
+// One line on purpose: the suite extracts these helpers by `const <name> =` up to the newline.
+const fileBrandOf = (c) => (ROSTER_BRANDS.brands || {})[String((c && c.merchantName) || '').trim().toLowerCase()] || null;
+// The file wins where it speaks; the stored value answers where it is silent.
+const branchesOf = (c) => { const b = fileBrandOf(c); return b ? b.branches : (c?.branchCount ?? null); };
+const unitsOf = (c) => { const b = fileBrandOf(c); return b ? b.units : ((c && c.units) || {}); };
 
 // Presentation derived from the column's type, computed once and used by BOTH the header
 // and the body so the two can never drift out of alignment.
@@ -1624,10 +2123,19 @@ function contractRowHtml(c) {
     const col = cell.col;
     // Reads the ENTITY record when the contract is linked, and the contract's own string when
     // it is not — so an unlinked row looks exactly as it always did.
-    const v = col.key === 'counterParty' ? (entityName(c) || null) : cellValue(c, col.key);
+    const v = col.key === 'counterParty' ? (entityName(c) || null)
+            : col.key === 'branchCount'  ? branchesOf(c)
+            : col.key.startsWith('units.') ? (unitsOf(c)[col.key.slice(6)] ?? null)
+            : cellValue(c, col.key);
     let disp;
     if (col.type && col.type.startsWith('term-')) disp = termCellHtml(c, col);
-    else if (col.type === 'computed') disp = `<span class="ct-computed" title="Sum of the per-model counts — edit those instead">${unitsTotal(c)}</span>`;
+    else if (col.type === 'computed') {
+      const fromFile = !!fileBrandOf(c);
+      const why = fromFile
+        ? `From your ${rosterDateLabel()} upload — ${branchesOf(c)} merchant(s). Merchant information is read from the file, not typed.`
+        : 'Sum of the per-model counts. This brand is not in your latest upload, so these are the stored numbers.';
+      disp = `<span class="ct-computed" title="${escape(why)}">${unitsTotal(c)}</span>`;
+    }
     else if (col.type === 'bool') disp = v ? '✓' : '';
     else if (col.type === 'url') {
       disp = !v ? ''
@@ -1637,6 +2145,13 @@ function contractRowHtml(c) {
     }
     // `suffix` is display-only — the editor still shows the bare number, so typing and
     // saving are unaffected.
+    // The merchant count opens the merchants behind it — but only where the file can list them. A
+    // number from the stored column has nothing to show, so it stays plain text rather than
+    // offering a click that would open an empty dialog.
+    else if (col.key === 'branchCount' && v != null && fileBrandOf(c)) {
+      disp = `<button type="button" class="ct-branch" data-brand="${escape(c.merchantName || '')}"
+               title="Show the ${v} merchant(s) this counts, from your ${escape(rosterDateLabel())} file">${escape(String(v))}</button>`;
+    }
     else disp = v == null || v === '' ? '' : escape(String(v)) + (col.suffix ? `<span class="ct-unit">${escape(col.suffix)}</span>` : '');
     // The End-date highlight only helps if that column is on screen; the Merchant column is
     // frozen, so the icon rides there and the row stays spottable however far you scroll.
@@ -1726,7 +2241,7 @@ async function resolveEntityInput(value) {
 //
 // Three sections, matching the two categories of merchant data:
 //   Contract · Finance · Share terms   — all manual, all here
-// Everything else on the row (brand, branches, machine counts, contacts) comes from the weekly
+// Everything else on the row (brand, merchants, machine counts, contacts) comes from the weekly
 // upload and is not editable anywhere, by design.
 function openContractEditor(contractId) {
   const c = CONTRACTS.find(x => x.contractId === contractId);
@@ -1797,7 +2312,7 @@ function openContractEditor(contractId) {
     const btn = card.querySelector('#ce-save'), err = card.querySelector('#ce-err');
     btn.disabled = true; err.hidden = true;
     // Only the fields this dialog actually shows are sent. Nothing the file owns is in the
-    // payload at all, so a save here cannot touch brand, branches, machines or contacts.
+    // payload at all, so a save here cannot touch brand, merchants, machines or contacts.
     const body = {};
     card.querySelectorAll('[data-k]').forEach(el => {
       const raw = el.value == null ? '' : String(el.value).trim();
@@ -1819,7 +2334,7 @@ function openContractEditor(contractId) {
   });
 }
 
-// ── Merchant view: add / delete / link ─────────────────────────────────────
+// ── Overview: add / delete / link ─────────────────────────────────────
 
 // The new-merchant form is generated from CONTRACT_GRID_COLUMNS — the same list the grid
 // renders — so a column added there appears here without a second field list to keep in step.
@@ -2010,7 +2525,7 @@ function openTermsView(contractId) {
 // tab rather than the flattened cells this grid used to carry. The row IS the payout
 // record now; there is no partner to create or link.
 // `onSaved(saved)` is optional and fires only after a successful save (not on cancel) —
-// callers outside the Merchant view screen (e.g. the run wizard) use it to know when to
+// callers outside the Overview screen (e.g. the run wizard) use it to know when to
 // re-check readiness, since this dialog has no other way to report completion.
 async function openTermsEditor(contractId, onSaved) {
   const c = CONTRACTS.find(x => x.contractId === contractId);
@@ -2024,8 +2539,8 @@ async function openTermsEditor(contractId, onSaved) {
     <div style="display:flex;gap:16px;align-items:flex-start;margin-bottom:14px;flex-wrap:wrap;">
       <label style="font-size:12.5px;color:var(--ink-soft);">Aggregation
         <select id="ct-pe-agg" class="input" style="min-width:230px;display:block;margin-top:4px;">
-          <option value="whole"${c.aggregationMode !== 'per_store' ? ' selected' : ''}>Whole — one calculation across all stores</option>
-          <option value="per_store"${c.aggregationMode === 'per_store' ? ' selected' : ''}>Per store — calculate each store separately</option>
+          <option value="whole"${c.aggregationMode !== 'per_store' ? ' selected' : ''}>Whole — one calculation across all merchants</option>
+          <option value="per_store"${c.aggregationMode === 'per_store' ? ' selected' : ''}>Per merchant — calculate each merchant separately</option>
         </select>
       </label>
       <label class="nopay-toggle" style="display:flex;gap:8px;align-items:center;font-size:13px;margin-top:22px;">
@@ -2131,7 +2646,7 @@ const EXAMPLE_ROW = {
 // normalizeContractRow), which is what allows their number to differ by region: the per-model
 // Placement / MG / Units columns come from this region's Device Types. Never insert one of
 // these before column 22 — everything up to there is read by position.
-// The merchant sheet is the Merchant view grid, in the same column ORDER, with row 1 carrying
+// The merchant sheet is the Overview grid, in the same column ORDER, with row 1 carrying
 // the grid's own category names. Every column is addressed by header NAME on import, which is
 // what let the old layout's dead columns go — it had eight of them, kept only because that
 // sheet was read by position and dropping one would have shifted every field after it.
@@ -2157,19 +2672,19 @@ function gridTemplateColumns(contracts) {
   };
   const col = (group, head2, from, desc) => ({ group, head2, from, desc });
   return [
-    col('Merchant', 'Merchant/Brand', c => c.merchantName ?? null,
+    col('Brand', 'Brand', c => c.merchantName ?? null,
       'REQUIRED — the brand name, and the key an upload matches on. An existing name updates that merchant; a new one creates it. '
       + 'Editing a name here therefore ADDS a merchant rather than renaming one. It should also match the "Merchant label" in the '
       + 'ChargeSpot roster, or the brand\u2019s machines will not be found when a run is prepared. A row with this cell empty is skipped.'),
-    col('Merchant', 'Type', c => c.merchantType ?? null, 'Category. One of: ' + MERCHANT_TYPES.join(', ') + '.'),
-    col('Merchant', 'Branch', c => c.branchCount ?? null,
-      'How many branches this brand has, counted from the last weekly upload.'),
+    col('Brand', 'Type', c => c.merchantType ?? null, 'Category. One of: ' + MERCHANT_TYPES.join(', ') + '.'),
+    col('Brand', 'Merchants', c => branchesOf(c),
+      'How many merchants this brand has, counted from the last weekly upload.'),
 
     col('Contact', 'Sales person', c => c.salesPerson ?? null, 'Who at ChargeSpot owns this relationship.'),
     col('Contact', 'Contact', c => c.contactName ?? null, 'Contact name at the merchant.'),
     col('Contact', 'Phone', c => c.contactPhone ?? null, 'Contact phone. Kept exactly as typed.'),
     col('Contact', 'Email', c => c.contactEmail ?? null, 'Contact email.'),
-    col('Machines', 'Units', c => (c.installedUnits ?? (unitsTotal(c) || null)),
+    col('Machines', 'Units', c => (unitsTotal(c) || c.installedUnits || null),
       'Total machines installed. Should equal the eight model columns to its right; the app shows the sum of those, so a mismatch is visible.'),
     ...slots.map(model => col('Machines', model,
       c => model ? ((c.units || {})[model] ?? null) : null,
@@ -2256,7 +2771,7 @@ function withModeDropdown(bytes, sheetName, modeCol, lastRow) {
   } catch { return null; }
 }
 
-// NO CALLER since 2026-09-29 — the Download sheet button was removed from the Merchant view.
+// NO CALLER since 2026-09-29 — the Download sheet button was removed from the Overview.
 // Kept because the format is still real: tests/sheet-grid-shape and tests/finance-columns pin
 // it against the grid's own columns, and infra/import-merchant-sheet.mjs reads that shape.
 // Same situation as parseAllMerchantSheet (§1n). Delete both together or neither.
@@ -2289,7 +2804,7 @@ function downloadMerchantTemplate() {
   const guide = XLSX.utils.aoa_to_sheet([
     ['Merchant list — field guide'],
     [],
-    ['Upload this file with "Upload sheet" on the Merchant view.'],
+    ['Upload this file with "Upload sheet" on the Overview.'],
     ['Only the All_Merchant sheet is read. This sheet, and anything else you add, is ignored.'],
     ['Merchants in the app but missing from this file are LEFT ALONE — an upload never deletes.'],
     ['Revenue-share terms ARE imported now — see the "Rev share guide" sheet for what each term means.'],
@@ -2386,10 +2901,10 @@ async function parseAllMerchantSheet(file) {
   return { rows, header: header2, groups: groups1, skipped: body.length - rows.length };
 }
 
-// Merchant view owns two views of the same merchant list (the grid, and the read-only
+// Overview owns two views of the same merchant list (the grid, and the read-only
 // reconciliation of that list against your last weekly upload) — same in-screen-tabs pattern
-// Run share and Settings already use. The nav button stays "Merchant view"/active for both.
-// NO CALLER since 2026-09-29 — the Merchant view lost its tab strip when Reconcile was removed
+// Run share and Settings already use. The nav button stays "Overview"/active for both.
+// NO CALLER since 2026-09-29 — the Overview lost its tab strip when Reconcile was removed
 // from it. Kept with renderReconcileTab and classifyDifferences, which are still pinned by
 // tests/reconcile-classifier (552 lines) and tests/reconcile-day-grouping: the classifier is the
 // only thing that knows how to explain a rename or a brand group, and the Upload page's
@@ -2411,22 +2926,26 @@ async function renderContractsScreen() {
   // do not go through it, so take one here too — the last paint started is the one that wins.
   const token = newPaintToken();
   el.classList.add('main-wide');   // also covers the boot path, which doesn't go via setActiveNav
-  el.innerHTML = `<h1>Merchant view</h1><p class="muted">Loading…</p>`;
-  const [contracts, machineModels, lastUpload] = await Promise.all([
+  el.innerHTML = `<h1>Overview</h1><p class="muted">Loading…</p>`;
+  const [contracts, machineModels, rosterBrands, lastUpload] = await Promise.all([
     api('/contracts'), api('/machine-models'),
+    // The file's own branch and machine counts. Never fatal: without it the grid falls back to
+    // the stored columns, which is what it showed before.
+    api('/roster/brands').catch(() => null),
     // Never fatal: the grid is worth showing without the marks, so an older backend or a
     // failed read just means no ⦿ column-marker this paint.
     api('/contracts/last-upload').catch(() => null)
   ]);
   CONTRACTS = contracts;
   MACHINE_MODELS_CACHE = machineModels;
+  if (rosterBrands && rosterBrands.brands) ROSTER_BRANDS = rosterBrands;
   LAST_UPLOAD = lastUpload && lastUpload.names && lastUpload.names.length ? lastUpload : null;
   await loadEntities();
   if (!paintIsCurrent(token)) return;   // the user is somewhere else now — do not paint over it
   refreshContractGridColumns();
   el.innerHTML = `
     <div class="page-head" style="margin-bottom:6px;align-items:center;">
-      <h1 style="margin:0;">Merchant view</h1>
+      <h1 style="margin:0;">Overview</h1>
       ${can('manageMerchants') ? '<button type="button" id="ct-add" class="btn btn-primary">+ Add merchants</button>' : ''}
     </div>
     <div class="ct-toolbar">
@@ -2462,6 +2981,8 @@ async function renderContractsScreen() {
     if (ev.target.closest('a')) return;          // let the contract link open normally
     const peBtn = ev.target.closest('.ct-pe-btn');
     if (peBtn) { openContractEditor(peBtn.dataset.id); return; }
+    const branch = ev.target.closest('.ct-branch');
+    if (branch) { openBranchList(branch.dataset.brand); return; }
     const terms = ev.target.closest('.ct-terms');
     if (terms) { openTermsView(terms.closest('tr').dataset.id); return; }
     const delBtn = ev.target.closest('.ct-del-btn');
@@ -2496,7 +3017,7 @@ const RECONCILE_GROUPS = [
   { type: 'in-app-not-in-file', title: 'In your app, not in your file', tone: 'quiet' },
   // Populated starting Task 8 (machine-list-miss items carry `count`, not `names`/`contractIds`
   // the way every other type does) — the group renders, just empty, until then.
-  { type: 'machine-list-miss',  title: 'Stores the machine list could not place', tone: 'quiet', unit: 'stores' },
+  { type: 'machine-list-miss',  title: 'Merchants the machine list could not place', tone: 'quiet', unit: 'merchants' },
 ];
 
 // The two seeding batches big enough to have a name of their own — see §11's duplicate-name
@@ -2557,20 +3078,20 @@ function reconcileFix(item) {
       return item.sameTerms
         ? 'Fix: these rows share identical terms and could merge into one brand-level merchant.'
         : 'Fix: these rows disagree on terms — merging only picks a winner, so it needs a person to choose, '
-          + 'or the roster relabelled per branch (spec §10).';
+          + 'or the roster relabelled per merchant (spec §10).';
     case 'in-file-no-row':
       return 'Fix: add this merchant — or check the "in your app, not in your file" list below for a rename first.';
     case 'in-app-not-in-file':
       return 'Fix: nothing was deleted — confirm it’s still active, or leave it if it’s just missing from this week’s file.';
     case 'machine-list-miss':
-      return 'Fix: link the store to a merchant, once linking ships.';
+      return 'Fix: link the merchant to a brand, once linking ships.';
     default:
       return '';
   }
 }
 
 // Pure: a machine-list-miss item's names, as a plain list rather than the ' ↔ ' rename arrow
-// (that separator means "these are the same thing" — wrong for a list of distinct shops), plus a
+// (that separator means "these are the same thing" — wrong for a list of distinct merchants), plus a
 // line naming how many were left out when the backend's 200-name cap bit. `count` is the exact
 // total the item carries (§1l) — read it, never `names.length`, or a capped list silently reads
 // as complete. Extracted as its own function so the truncation math has one test rather than
@@ -2589,7 +3110,7 @@ function truncatedNameListHtml(names, count) {
 // ever have one side), the detail classifyDifferences already computed, the money at stake, and
 // the fix in words. No buttons — see the section comment above.
 //
-// machine-list-miss is the one shape that isn't a rename pair: it can hold up to 200 shop names
+// machine-list-miss is the one shape that isn't a rename pair: it can hold up to 200 merchant names
 // (the backend's cap) behind a `count` that is the exact total, so it gets its own name rendering
 // via truncatedNameListHtml instead of the arrow-joined `rc-item-names` line below.
 // One difference, one ROW. The card layout this replaced stacked five things vertically per
@@ -2599,7 +3120,7 @@ function truncatedNameListHtml(names, count) {
 //
 // Sides come from `appNames`/`fileNames`, never from position in `names`. Position was already
 // inconsistent: one ambiguous-rename path builds [file, …app] and the other [app, …file], and a
-// brand group is [tag, …branches], which is not a pair at all.
+// brand group is [tag, …merchants], which is not a pair at all.
 const RECONCILE_CELL_NAMES = 8;
 
 function reconcileNameCell(names, item) {
@@ -2625,7 +3146,7 @@ function reconcileRowHtml(item, moneyUnknown) {
     <td class="rc-c-app">${reconcileNameCell(item.appNames, item)}</td>
     <td class="rc-c-file">${reconcileNameCell(item.fileNames, item)}</td>
     <td class="rc-c-why">${item.detail ? escape(item.detail) : ''}${
-        count ? `${item.detail ? '<br>' : ''}${count} shop(s)` : ''}</td>
+        count ? `${item.detail ? '<br>' : ''}${count} merchant(s)` : ''}</td>
     <td class="rc-c-money">${money}</td>
     <td class="rc-c-fix"><span class="rc-fix-text">${escape(reconcileFix(item))}</span></td>
   </tr>`;
@@ -2701,8 +3222,8 @@ function reconcileHtml(items, upload, runState) {
     if (!rows.length) return '';
     const moneyUnknown = !!g.money && state === 'error';
     const money = rows.reduce((sum, r) => sum + (r.money || 0), 0);
-    // machine-list-miss is one row per REASON, not per shop: `rows.length` would read "2"
-    // whether 10 shops or 5,000 could not be placed.
+    // machine-list-miss is one row per REASON, not per merchant: `rows.length` would read "2"
+    // whether 10 merchants or 5,000 could not be placed.
     const count = g.type === 'machine-list-miss'
       ? rows.reduce((sum, r) => sum + (r.count ?? (r.fileNames || []).length), 0)
       : rows.length;
@@ -2726,10 +3247,10 @@ async function renderReconcileTab() {
   const main = document.getElementById('main');
   setActiveNav('nav-contracts');
   const token = newPaintToken();   // setActiveNav bumped it; this is the paint that owns it
-  main.innerHTML = `<h1>Merchant view</h1>${merchantHead('reconcile')}<div id="rc-out"><p class="muted">Loading…</p></div>`;
+  main.innerHTML = `<h1>Overview</h1>${merchantHead('reconcile')}<div id="rc-out"><p class="muted">Loading…</p></div>`;
   wireMerchantTabs();
 
-  // BOTH halves: `names` lives on the cheap CONFIG row (the same one read on every Merchant view
+  // BOTH halves: `names` lives on the cheap CONFIG row (the same one read on every Overview
   // paint for the ⦿ marks), while `brands`/`machineMisses` live in the S3 document. Fetching only
   // the pointer would leave the machine-list section permanently empty — its test would still pass.
   // The run payload (~900KB) is fetched ONLY here, when the tab is actually opened — never from
@@ -2788,7 +3309,7 @@ async function renderReconcileTab() {
 // ── The held upload (2026-09-29) ───────────────────────────────────────────────────────────
 // An upload is not a moment, it is a piece of work: you drop the file in once and then go
 // through the differences one at a time, over hours or days. So the PARSED FILE is kept, and the
-// page comes back to it after a reload, after wandering off to Merchant view, after a deploy.
+// page comes back to it after a reload, after wandering off to Overview, after a deploy.
 //
 // The file itself cannot be kept — a browser will not let a page hold a file selection across a
 // reload, which is exactly how an afternoon's work was lost once. The parsed rows can be, and
@@ -2866,17 +3387,17 @@ async function clearUploadDraft() {
 // applies it. Per-row adjustments are NOT built yet — that is the next conversation.
 const UPLOAD_GROUPS = [
   // Step 1 — the two files against each other.
-  { key: 'noLabel',  title: 'In your merchant file, but with no Merchant label', tone: 'warn',  unit: 'stores' },
-  { key: 'notAppr',  title: 'In your merchant file, but not Approved',           tone: 'warn',  unit: 'stores' },
-  { key: 'noBrand',  title: 'In your machine list, not in your merchant file', tone: 'loss',  unit: 'stores' },
-  { key: 'noMach',   title: 'In your merchant file, no machines recorded',     tone: 'quiet', unit: 'stores' },
+  { key: 'noLabel',  title: 'In your merchant file, but with no Merchant label', tone: 'warn',  unit: 'merchants' },
+  { key: 'notAppr',  title: 'In your merchant file, but not Approved',           tone: 'warn',  unit: 'merchants' },
+  { key: 'noBrand',  title: 'In your machine list, not in your merchant file', tone: 'loss',  unit: 'merchants' },
+  { key: 'noMach',   title: 'In your merchant file, no machines recorded',     tone: 'quiet', unit: 'merchants' },
   // Step 2 — the joined set against the app.
   { key: 'added',    title: 'New merchants this file would add',        tone: 'info',  unit: 'merchants' },
   { key: 'changed',  title: 'Merchants this file would change',         tone: 'warn',  unit: 'merchants' },
   { key: 'missing',  title: 'In your list, not in this file',           tone: 'quiet', unit: 'merchants' },
-  { key: 'moved',    title: 'Shops your file moved to a different merchant', tone: 'warn', unit: 'stores' },
-  { key: 'unknown',  title: 'Shops your file names under a merchant you do not carry', tone: 'warn', unit: 'stores' },
-  { key: 'unlinked', title: 'Shops in the registry with no merchant',    tone: 'warn',  unit: 'stores' },
+  { key: 'moved',    title: 'Merchants your file moved to a different brand', tone: 'warn', unit: 'merchants' },
+  { key: 'unknown',  title: 'Merchants your file names under a brand you do not carry', tone: 'warn', unit: 'merchants' },
+  { key: 'unlinked', title: 'Merchants in the registry with no brand',     tone: 'warn',  unit: 'merchants' },
   { key: 'unchanged',title: 'Already up to date',                       tone: 'quiet', unit: 'merchants' },
 ];
 
@@ -2896,10 +3417,13 @@ async function renderUploadScreen() {
       contract dates, the contract entity, finance details and revenue-share terms are never
       touched by an upload, whatever the file contains.</p>
 
+    <div class="subtabs" id="up-tabs"></div>
+
+    <div id="up-files">
     <div class="up-drop">
       <label class="up-file">
         <span class="up-file-t">Merchant list <span class="muted">(.xlsx)</span></span>
-        <span class="muted up-file-d">One row per shop. The brand is the <strong>Merchant label</strong>
+        <span class="muted up-file-d">One row per merchant. The brand is the <strong>Merchant label</strong>
           column; store names are counted as branches. Approved rows only.</span>
         <input type="file" id="up-merchants" accept=".xlsx,.xls" class="input">
       </label>
@@ -2914,14 +3438,30 @@ async function renderUploadScreen() {
     <div id="up-summary"></div>
     <div id="up-filterbar" hidden style="margin:0 0 12px;">
       <input id="up-filter" class="input" style="max-width:280px"
-             placeholder="Filter by merchant or shop name…"
+             placeholder="Filter by brand or merchant name…"
              title="Narrows every section below. Counts show matches out of the total.">
       <span class="muted" id="up-done" style="margin-left:12px;"></span>
     </div>
     <div id="up-out"><p class="muted">Choose a file to see what would change.</p></div>
-    <p class="nm-err" id="up-err" hidden></p>`;
+    <p class="nm-err" id="up-err" hidden></p>
+    </div>
+
+    <!-- The mismatch tabs are a SIBLING of the file block, and the file block is hidden rather
+         than replaced. Rebuilding this screen's markup on a tab click would throw away a file
+         someone had loaded and half worked through, which is the one thing this page must never
+         do. -->
+    <div id="up-mismatch" hidden></div>`;
 
   if (!CONTRACTS.length) await ensureContractCache().catch(() => {});
+  // The file's own branch and machine counts — read from the STORED roster, so the comparison
+  // works without uploading anything again.
+  try {
+    await refreshMismatchData();
+  } catch (e) {
+    console.warn('could not read the stored file counts:', e);
+  }
+  if (!paintIsCurrent(token)) return;
+  paintUploadTabs();
 
   // Come back to the work in progress rather than an empty file picker.
   let held = null;
@@ -3008,8 +3548,8 @@ async function previewUpload(token) {
   try {
     const parsed = mf ? await parseWeeklyMerchantFile(mf) : null;
     const machines = kf ? await parseMachineCountFile(kf) : null;
-    // The roster view of the very same workbook — one row per station, carrying the store name
-    // and device type a run needs. Parsed here so the page can say how many shops a run would
+    // The roster view of the very same workbook — one row per station, carrying the merchant name
+    // and device type a run needs. Parsed here so the page can say how many merchants a run would
     // see, and stored on Import so the run never asks for this file again.
     const roster = mf ? await parseMerchantList(mf).catch(() => null) : null;
     // The SAME matcher the import runs, so a store reported here as unplaced is exactly a store
@@ -3067,7 +3607,7 @@ function uploadSummaryHtml(parsed, machines, misses, roster) {
     }
     // The single most consequential thing this parser can get wrong — say it loudly.
     if (parsed.brandFromBranch) {
-      bits.push('<div class="rc-warn up-sum-row">No <strong>Merchant label</strong> column. The store name is being read as the brand, so every shop becomes its own merchant.</div>');
+      bits.push('<div class="rc-warn up-sum-row">No <strong>Merchant label</strong> column. The merchant name is being read as the brand, so every merchant becomes its own brand.</div>');
     }
     bits.push(`<div class="up-sum-row">Columns read: ${parsed.fields.map(f => `<span class="badge badge-neutral">${escape(f)}</span>`).join(' ')}</div>`);
     if (parsed.unmapped.length) {
@@ -3084,16 +3624,16 @@ function uploadSummaryHtml(parsed, machines, misses, roster) {
     const j = joinUploadFiles(roster, machines);
     bits.push(`<div class="up-sum-row"><strong>Your two files together:</strong>
       ${j.stores.size.toLocaleString('en-US')} shop(s) across ${j.brands.size.toLocaleString('en-US')} brand(s)
-      ${j.notApproved?.length ? `<span class="rc-warn">· ${j.notApproved.length} shop(s) in the file but not Approved</span>` : ''}
-      ${j.onlyInMachineFile.length ? `<span class="rc-warn">· ${j.onlyInMachineFile.length} shop(s) with machines but no brand</span>` : ''}
-      ${j.onlyInMerchantFile.length ? `<span class="muted">· ${j.onlyInMerchantFile.length} shop(s) with no machines</span>` : ''}</div>`);
+      ${j.notApproved?.length ? `<span class="rc-warn">· ${j.notApproved.length} merchant(s) in the file but not Approved</span>` : ''}
+      ${j.onlyInMachineFile.length ? `<span class="rc-warn">· ${j.onlyInMachineFile.length} merchant(s) with machines but no brand</span>` : ''}
+      ${j.onlyInMerchantFile.length ? `<span class="muted">· ${j.onlyInMerchantFile.length} merchant(s) with no machines</span>` : ''}</div>`);
   }
   if (machines) {
     const placed = misses ? misses.totals.size : 0;
     bits.push(`<div class="up-sum-row"><strong>${(machines.byStore.size ?? Object.keys(machines.byStore).length).toLocaleString('en-US')}</strong>
       store(s) in the machine list · <strong>${placed}</strong> merchant(s) would have counts updated
       ${misses?.matchedViaFile ? `<span class="muted">· ${misses.matchedViaFile} placed by your merchant file</span>` : ''}
-      ${misses?.conflicts?.length ? `<span class="rc-warn">· ${misses.conflicts.length} shop(s) moved merchant</span>` : ''}</div>`);
+      ${misses?.conflicts?.length ? `<span class="rc-warn">· ${misses.conflicts.length} merchant(s) moved brand</span>` : ''}</div>`);
   }
   return `<div class="up-sum">${bits.join('')}</div>`;
 }
@@ -3102,7 +3642,7 @@ function uploadTableHtml(diff, misses, machines, join, filter) {
   // `join` alone can carry findings — the two files disagreeing needs neither a merchant diff
   // nor a placement result.
   if (!diff && !misses && !join) return '';
-  // EVERY SHOP APPEARS IN EXACTLY ONE BUCKET. The first cut let a shop fall into two — "not in
+  // EVERY SHOP APPEARS IN EXACTLY ONE BUCKET. The first cut let a merchant fall into two — "not in
   // your merchant file" and "nothing can place" overlapped without saying so, and neither
   // contained the other, so the two counts could not be reconciled by reading them. Precedence:
   // the file-to-file gap is stated first, and the placement buckets then cover only what is left.
@@ -3111,8 +3651,8 @@ function uploadTableHtml(diff, misses, machines, join, filter) {
   const noBrandKeys = new Set(!join?.bothFiles ? []
     : [...(join.onlyInMachineFile || []), ...(join.notApproved || []), ...(join.noLabelShops || [])]
         .map(x => key(x.store)));
-  // Brands this file would ADD. A shop whose brand is on that list needs no separate complaint:
-  // adding the merchant places the shop, and the action is one section up. Nagging about both
+  // Brands this file would ADD. A merchant whose brand is on that list needs no separate complaint:
+  // adding the merchant places the merchant, and the action is one section up. Nagging about both
   // made the same fact appear twice with no hint they were the same fact.
   const addingBrands = new Set((diff?.added || []).map(a => key(a.name)));
   // Brands that DO exist but are archived. "There is no merchant of that name" was wrong about
@@ -3120,7 +3660,7 @@ function uploadTableHtml(diff, misses, machines, join, filter) {
   // a second one.
   const archivedBrands = new Map((CONTRACTS || []).filter(c => c.archived)
     .map(c => [key(c.merchantName), c.merchantName]));
-  // One real shop, one row. The two files routinely spell a store with different capitals, and
+  // One real merchant, one row. The two files routinely spell a store with different capitals, and
   // both spellings were rendering.
   const onceByStore = (rows) => {
     const seen = new Set();
@@ -3131,33 +3671,33 @@ function uploadTableHtml(diff, misses, machines, join, filter) {
     // Only meaningful when BOTH files are present — with one file there is nothing to join.
     noLabel:   !join?.bothFiles ? [] : onceByStore(join.noLabelShops).map(x => ({
                  app: '', file: escape(x.store),
-                 why: `${machineCountText(x, machines)} Your merchant file lists this shop, but its `
+                 why: `${machineCountText(x, machines)} Your file lists this merchant, but its `
                     + `<strong>Merchant label</strong> is blank — that column is the brand, so there `
                     + `is nothing to attribute the machines to. Fill it in on the platform.` })),
     notAppr:   !join?.bothFiles ? [] : onceByStore(join.notApproved).map(x => ({
                  app: '', file: escape(x.store),
-                 why: `${machineCountText(x, machines)} Your merchant file DOES list this shop`
+                 why: `${machineCountText(x, machines)} Your file DOES list this merchant`
                     + (x.brand ? ` under <strong>${escape(x.brand)}</strong>` : '')
                     + `, but its review state is <strong>${escape(x.reviewState)}</strong> — only `
                     + `Approved rows are read, so it is not placed and its rentals are not paid. `
                     + `Approve it on the platform, or leave it if that is deliberate.` })),
     noBrand:   !join?.bothFiles ? [] : onceByStore(join.onlyInMachineFile).map(x => {
-                 // Saying "these machines belong to nobody" about a shop the registry DID place
+                 // Saying "these machines belong to nobody" about a merchant the registry DID place
                  // was simply false. The gap is still worth reporting; the consequence is not.
                  const stillPlaced = !unplaced.has(key(x.store));
                  // The two files name the store in different columns, so a near-miss is
-                 // ordinary. Saying "your file does not list this shop" when it lists it under a
+                 // ordinary. Saying "your file does not list this merchant" when it lists it under a
                  // slightly different spelling is the wrong thing to tell someone.
                  const near = closestFileStore(x.store, join);
                  return { app: '', file: escape(x.store),
                    why: `${machineCountText(x, machines)} `
                       + (near
                           ? `Your merchant file has <strong>${escape(near)}</strong>, which is close `
-                            + `but not the same name — the two files name the store in different `
+                            + `but not the same name — the two files name the merchant in different `
                             + `columns, so the spellings differ. Match them up on the platform.`
-                          : `Your merchant file does not list this shop.`)
+                          : `Your file does not list this merchant.`)
                       + (stillPlaced
-                          ? ` The app's store index still knows it, so its machines are counted.`
+                          ? ` The registry still knows it, so its machines are counted.`
                           : ` Nothing else knows it either, so these machines are counted toward`
                             + ` nobody this week.`) };
                }),
@@ -3165,7 +3705,7 @@ function uploadTableHtml(diff, misses, machines, join, filter) {
                  .filter(x => !addingBrands.has(key(x.brand)))
                  .map(x => ({
                  app: escape(x.brand), file: escape(x.store),
-                 why: `Your merchant file lists this shop under <strong>${escape(x.brand)}</strong>, `
+                 why: `Your file lists this merchant under <strong>${escape(x.brand)}</strong>, `
                     + `but the machine list records no machines at it.` })),
     added:     (diff?.added || []).map(a => ({ app: '', file: escape(a.name),
                  why: uploadAddedWhy(a, join),
@@ -3190,11 +3730,11 @@ function uploadTableHtml(diff, misses, machines, join, filter) {
                  const was = (CONTRACTS.find(c => c.contractId === x.registryContractId) || {}).merchantName;
                  return { app: escape(was || '(a merchant no longer in your list)'),
                           file: escape(x.store),
-                          why: `${machineCountText(x, machines)} The registry still puts this shop `
+                          why: `${machineCountText(x, machines)} The registry still puts this merchant `
                              + `under <strong>${escape(was || 'another merchant')}</strong>, but your `
                              + `merchant file now says <strong>${escape(x.fileBrand)}</strong>. `
                              + `The file already wins for this upload's counts — updating repoints `
-                             + `the shop itself, so every later run and assignment follows it too.`,
+                             + `the merchant itself, so every later run and assignment follows it too.`,
                           act: `<button class="btn-ghost up-mov-btn" data-store="${escape(x.store)}"`
                              + ` data-brand="${escape(x.fileBrand)}">Update with file data</button>` };
                }),
@@ -3203,8 +3743,8 @@ function uploadTableHtml(diff, misses, machines, join, filter) {
                  .filter(x => !noBrandKeys.has(key(x.store)) && !addingBrands.has(key(x.fileBrand)))
                  .map(x => ({ app: '', file: escape(x.store),
                               why: machineMissWhy(x, machines, 'unknown', archivedBrands) })),
-    // `app` is left EMPTY on purpose. It used to show the store name, which read as "this is in
-    // your app" — and it is not: it is a row in the hidden shop index, not a merchant anyone can
+    // `app` is left EMPTY on purpose. It used to show the merchant name, which read as "this is in
+    // your app" — and it is not: it is a row in the hidden registry, not a merchant anyone can
     // search for. Saying it in the explanation is honest; putting it in that column was not.
     unlinked:  onceByStore(misses?.unlinked)
                  .filter(x => !noBrandKeys.has(key(x.store)) && !addingBrands.has(key(x.fileBrand)))
@@ -3258,7 +3798,7 @@ function uploadTableHtml(diff, misses, machines, join, filter) {
 //
 // A finished row leaves the table, because the differences are recomputed rather than annotated:
 // once a merchant exists, `diffWeeklyRows` no longer calls it new; once its fields match, it is
-// no longer changed; once a shop is repointed, it is no longer moved. Marking rows "✓ done" and
+// no longer changed; once a merchant is repointed, it is no longer moved. Marking rows "✓ done" and
 // leaving them meant the counts above them slowly stopped meaning anything.
 //
 // Cheap enough to run after every single action — it is one pass over data already in memory,
@@ -3278,11 +3818,11 @@ async function refreshUploadTable(note) {
   if (done && note) done.textContent = note;
 }
 
-// Everything about ONE merchant that lives outside its contract row: its shops in the store
+// Everything about ONE merchant that lives outside its contract row: its merchants in the store
 // index, and its machine counts. Called by the row actions, so adding or updating a merchant
-// brings its shops with it — there is no bulk step doing this behind your back.
+// brings its merchants with it — there is no bulk step doing this behind your back.
 const broughtText = b => !b.shops ? ''
-  : ` · ${b.shops} shop${b.shops === 1 ? '' : 's'}${b.machines ? `, ${b.machines} machine${b.machines === 1 ? '' : 's'}` : ''}`;
+  : ` · ${b.shops} merchant${b.shops === 1 ? '' : 's'}${b.machines ? `, ${b.machines} machine${b.machines === 1 ? '' : 's'}` : ''}`;
 
 async function applyShopsForBrand(brand, contractId) {
   const { roster, machines } = UPLOAD_STATE;
@@ -3297,14 +3837,15 @@ async function applyShopsForBrand(brand, contractId) {
   try { await api('/registry', { method: 'POST', body: JSON.stringify({ shops }) }); }
   catch (e) { console.warn('store index not updated for', brand, e); }
 
-  // Machine counts, summed over this merchant's own shops — merchant INFORMATION, owned by the
+  // Machine counts, summed over this merchant's own merchants — merchant INFORMATION, owned by the
   // file, so it follows the file rather than needing a decision of its own.
   let counted = 0;
   if (machines && machines.byStore instanceof Map) {
     const units = {};
     const lower = new Map([...machines.byStore.entries()].map(([k2, v]) => [key(k2), v]));
     for (const shop of shops) {
-      for (const [model, n] of Object.entries(lower.get(key(shop.name)) || {})) {
+      // `.counts` since 2026-10-01 — the entry also carries state and binding now.
+      for (const [model, n] of Object.entries((lower.get(key(shop.name)) || {}).counts || {})) {
         units[model] = (units[model] || 0) + n; counted += n;
       }
     }
@@ -3326,7 +3867,7 @@ async function applyShopsForBrand(brand, contractId) {
 //
 // `diffWeeklyRows` matches on the exact name, so "EBISU Shoten Silom" was offered as a brand-new
 // merchant while "EBISU SHOTEN" sat in the list already — and adding it would have produced two
-// merchants for one shop, with the terms on the wrong one. Reconcile's classifier knew how to
+// merchants for one merchant, with the terms on the wrong one. Reconcile's classifier knew how to
 // spot this; removing that screen from the nav lost it, so the check lives here now.
 //
 // A candidate is never applied automatically. On live data a top-1 name match is wrong at least
@@ -3475,7 +4016,7 @@ async function openAddFromFile(name, btn) {
   const row = (diff?.added || []).find(a => a.name === name);
   if (!row) return;
   if (!can('manageMerchants')) { alert('You do not have permission to add merchants.'); return; }
-  // The branch count travels beside the row, not inside it.
+  // The merchant count travels beside the row, not inside it.
   const idx = parsed ? parsed.rows.findIndex(r => String(r[parsed.fields.indexOf('Merchant/Brand')] ?? '').trim() === name) : -1;
   const branchCount = idx >= 0 ? (parsed.branchCounts?.[idx] ?? null) : null;
 
@@ -3536,8 +4077,8 @@ async function openAddFromFile(name, btn) {
     <div style="display:flex;gap:16px;align-items:flex-start;margin-bottom:12px;flex-wrap:wrap;">
       <label style="font-size:12.5px;color:var(--ink-soft);">Aggregation
         <select id="af-agg" class="input" style="min-width:230px;display:block;margin-top:4px;">
-          <option value="whole">Whole — one calculation across all stores</option>
-          <option value="per_store">Per store — calculate each store separately</option>
+          <option value="whole">Whole — one calculation across all merchants</option>
+          <option value="per_store">Per merchant — calculate each merchant separately</option>
         </select></label>
       <label class="nopay-toggle" style="display:flex;gap:8px;align-items:center;font-size:13px;margin-top:22px;">
         <input type="checkbox" id="af-nopay"> No revenue share — not paid</label>
@@ -3585,7 +4126,7 @@ async function openAddFromFile(name, btn) {
 
       const created = await api('/contracts', { method: 'POST', body: JSON.stringify(body) });
       CONTRACTS.push(created);
-      // Its shops and its machines come with it — that is what the bulk Import used to do for
+      // Its merchants and its machines come with it — that is what the bulk Import used to do for
       // every merchant at once, now done for the one you chose.
       const brought = await applyShopsForBrand(name, created.contractId);
       close();
@@ -3600,7 +4141,7 @@ async function openAddFromFile(name, btn) {
 // Apply ONE merchant's differences, exactly the ones the row states (2026-09-29).
 //
 // This is the only place in the app that writes merchant INFORMATION, and it is safe to do so
-// because those columns are the file's to own: brand, type, branch count, contacts, sales
+// because those columns are the file's to own: brand, type, merchant count, contacts, sales
 // person. It cannot reach contract dates, the contract entity, finance details or share terms —
 // the weekly file carries no such columns, and the body is built from the row's own diff list,
 // so what is written is precisely what the row said would be written.
@@ -3638,7 +4179,7 @@ async function updateFromFile(name, btn) {
 
 // A merchant your file no longer mentions. The row says what is actually at stake, because
 // "not in this file" covers two very different situations: a contract that genuinely ended, and
-// a shop that is simply absent from one week's export.
+// a merchant that is simply absent from one week's export.
 function uploadMissingWhy(m) {
   const bits = ['Nothing has been deleted — an import never removes a merchant.'];
   if (!ruleIsAbsent(m.rule) || m.noPayout) bits.push('It has revenue-share terms set.');
@@ -3696,62 +4237,62 @@ async function deleteFromUpload(contractId, btn) {
 
 
 
-// Why a shop could not be placed — and crucially, whether the merchant FILE knows it. Three
+// Why a merchant could not be placed — and crucially, whether the merchant FILE knows it. Three
 // different answers needing three different responses:
-//   • the file names a brand you do not carry  -> add that merchant, and the shop places itself
-//   • the file does not mention the shop        -> it is not on this week's list at all
+//   • the file names a brand you do not carry  -> add that merchant, and the merchant places itself
+//   • the file does not mention the merchant        -> it is not on this week's list at all
 //   • in the registry but linked to nobody      -> rentals here are paid to no one
 function machineMissWhy(x, machines, kind, archivedBrands) {
   const head = machineCountText(x, machines);
   const archived = archivedBrands && x.fileBrand
     ? archivedBrands.get(String(x.fileBrand).toLowerCase().trim()) : null;
   if (archived) {
-    return `${head} Your merchant file says this shop belongs to <strong>${escape(archived)}</strong>, `
+    return `${head} Your file says this merchant belongs to <strong>${escape(archived)}</strong>, `
       + `which IS in your list but is <strong>archived</strong> — an archived merchant is not paid, `
-      + `so its shops are not placed. Unarchive it from the Archived screen if it is trading again.`;
+      + `so its merchants are not placed. Unarchive it from the Archived screen if it is trading again.`;
   }
   if (x.fileBrand) {
-    return `${head} Your merchant file says this shop belongs to `
+    return `${head} Your file says this merchant belongs to `
       + `<strong>${escape(x.fileBrand)}</strong>, but there is no merchant of that name in your `
-      + `list — add it above and this shop places itself.`;
+      + `list — add it above and this merchant places itself.`;
   }
   if (kind === 'unlinked') {
-    return `${head} The shop IS in the registry, but its row carries no merchant — its rentals `
+    return `${head} The merchant IS in the registry, but its row carries no brand — its rentals `
       + `are not paid to anybody. Your merchant file does not name it either.`;
   }
-  return `${head} Neither your merchant file nor the app's store index mentions this shop. `
-    + `A run will not fix it — runs are left exactly as they were computed. Add the shop to your `
+  return `${head} Neither your file nor the registry mentions this merchant. `
+    + `A run will not fix it — runs are left exactly as they were computed. Add the merchant to your `
     + `merchant file, or accept that these machines belong to nobody this week.`;
 }
 
 
 
-// Repoint a shop at the merchant its file says it belongs to (2026-09-29).
+// Repoint a merchant at the merchant its file says it belongs to (2026-09-29).
 //
 // The file already wins for THIS upload's machine counts — the matcher sees to that. What it
-// cannot do is change the shop itself: the registry row still names the old merchant, so the
+// cannot do is change the merchant itself: the registry row still names the old merchant, so the
 // Assign button, the next machine-list upload and anything else reading the registry keep
 // following a link the file has already contradicted. This makes the move real.
 //
-// Every registry row for that store name is updated, not just the first: a store routinely has
-// several rows (§1c), and leaving siblings pointing at the old merchant is how a shop comes to
+// Every registry row for that merchant name is updated, not just the first: a store routinely has
+// several rows (§1c), and leaving siblings pointing at the old merchant is how a merchant comes to
 // answer two ways at once — the exact fault that made Mixue look like it had moved.
-async function repointStoreFromFile(store, brand, btn) {
-  if (!can('manageMerchants')) { alert('You do not have permission to change the store registry.'); return; }
+async function repointStoreFromFile(store, brand, btn, onDone) {
+  if (!can('manageMerchants')) { alert('You do not have permission to change the registry.'); return; }
   const target = CONTRACTS.find(c => !c.archived
     && String(c.merchantName || '').toLowerCase().trim() === String(brand || '').toLowerCase().trim());
-  if (!target) { alert(`There is no merchant called "${brand}" in your list yet. Add it first — the shop can then point at it.`); return; }
+  if (!target) { alert(`There is no merchant called "${brand}" in your list yet. Add it first — the merchant can then point at it.`); return; }
 
   const registry = await loadRegistry().catch(() => null);
-  if (!registry) { alert('Could not read the store registry.'); return; }
+  if (!registry) { alert('Could not read the registry.'); return; }
   const k = String(store || '').toLowerCase().trim();
   const rows = registry.filter(r => String(r.name || '').toLowerCase().trim() === k);
-  if (!rows.length) { alert('That shop is no longer in the store registry.'); return; }
+  if (!rows.length) { alert('That merchant is no longer in the registry.'); return; }
   const moving = rows.filter(r => r.contractId !== target.contractId);
   if (!moving.length) { await refreshUploadTable(`${store} already points at ${target.merchantName}`); return; }
 
   if (!confirm(`Point "${store}" at ${target.merchantName}?\n\n`
-    + `${moving.length} store-registry row(s) change. Nothing else about the shop is touched, and `
+    + `${moving.length} registry row(s) change. Nothing else about the merchant is touched, and `
     + `no past run is altered — runs keep the figures they were computed with.`)) return;
 
   const was = btn.textContent;
@@ -3765,7 +4306,10 @@ async function repointStoreFromFile(store, brand, btn) {
       r.contractId = target.contractId;
     }
     REGISTRY_CACHE = null;                    // it was just changed underneath us
-    await refreshUploadTable(`✓ ${store} now under ${target.merchantName}`);
+    // The Mismatch tab has no loaded file, so it cannot refresh the upload table — it repaints
+    // itself instead. Default stays the upload flow's own behaviour.
+    if (onDone) await onDone(`✓ ${store} now under ${target.merchantName}`);
+    else await refreshUploadTable(`✓ ${store} now under ${target.merchantName}`);
   } catch (e) {
     btn.disabled = false; btn.textContent = was;
     alert('Could not update the registry: ' + e.message);
@@ -3775,12 +4319,12 @@ async function repointStoreFromFile(store, brand, btn) {
 // STEP 1 of the upload: join the two files to each other (2026-09-29).
 //
 // The merchant file gives store -> brand. The machine file gives store -> machines. Joined on the
-// store name they make ONE merchant-information set — brand, branches, machines — which is the
+// merchant name they make ONE merchant-information set — brand, merchants, machines — which is the
 // week you are holding. Only then is that set mapped against the app (step 2).
 //
-// The join is also where the first real mismatch lives, and it was missing: a shop in one file
+// The join is also where the first real mismatch lives, and it was missing: a merchant in one file
 // and not the other. Machines whose store the merchant file never names cannot be attributed to
-// anybody, and a shop the merchant file lists with no machines recorded is worth knowing about
+// anybody, and a merchant the merchant file lists with no machines recorded is worth knowing about
 // too. Neither is visible once the two are merged, so both are reported here.
 //
 // Pure: no globals, no fetch. Both files in, one set and its gaps out.
@@ -3790,11 +4334,11 @@ function joinUploadFiles(roster, machines) {
 
   // The merchant file's own view: store -> brand. APPROVED ROWS ONLY — `parseMerchantList`
   // filters on the review state, which is correct for a payout but means the join must also
-  // know about the rows it dropped, or a shop your file plainly lists is reported as absent
+  // know about the rows it dropped, or a merchant your file plainly lists is reported as absent
   // from it. Live case: "Kliff Beach Bistro & Bar" was in the file, not Approved, and the page
   // said the file did not list it.
   const brandOf = new Map();
-  // A row with a name but NO `Merchant label` used to be skipped entirely, so a shop your file
+  // A row with a name but NO `Merchant label` used to be skipped entirely, so a merchant your file
   // plainly lists read as absent from it. It is kept, with an empty brand, and reported as its
   // own thing — the fix is to give it a label, not to add a merchant.
   const noLabel = new Map();
@@ -3817,10 +4361,11 @@ function joinUploadFiles(roster, machines) {
 
   // The machine file's own view: store -> counts.
   const machinesOf = new Map();
-  for (const [store, counts] of byStore) {
+  for (const [store, entry] of byStore) {
     const k = key(store);
     if (!k) continue;
-    const n = Object.values(counts || {}).reduce((a, b) => a + b, 0);
+    const counts = (entry && entry.counts) || {};
+    const n = Object.values(counts).reduce((a, b) => a + b, 0);
     machinesOf.set(k, { store, counts: counts || {}, machines: n });
   }
 
@@ -3841,7 +4386,7 @@ function joinUploadFiles(roster, machines) {
     }
     const held = heldBack.get(k);
     if (held) {
-      // The file DOES list it. A different fix from "nobody has heard of this shop": approve it
+      // The file DOES list it. A different fix from "nobody has heard of this merchant": approve it
       // on the platform, or accept that it is deliberately not being paid.
       notApproved.push({ store: mc.store, machines: mc.machines, counts: mc.counts,
                          brand: held.brand, reviewState: held.reviewState });
@@ -3859,8 +4404,8 @@ function joinUploadFiles(roster, machines) {
     for (const [model, c] of Object.entries(v.counts)) acc.counts[model] = (acc.counts[model] || 0) + c;
     brands.set(bk, acc);
   }
-  // Every store name the merchant file carries, whatever state it is in — so the page can tell
-  // you the CLOSE name it found rather than claiming the file does not list a shop at all. The
+  // Every merchant name the merchant file carries, whatever state it is in — so the page can tell
+  // you the CLOSE name it found rather than claiming the file does not list a merchant at all. The
   // two files name the store in different columns ('merchant name.' vs 'Business name'), so a
   // near-miss is ordinary, not exceptional.
   const fileStoreNames = [...new Set([
@@ -3874,10 +4419,10 @@ function joinUploadFiles(roster, machines) {
 }
 
 
-// The nearest store name the merchant FILE carries, when the machine list's spelling does not
+// The nearest merchant name the merchant FILE carries, when the machine list's spelling does not
 // match it exactly. The two exports name the store in different columns — `merchant name.` and
 // `Business name` — so differing spellings are ordinary and worth showing rather than reporting
-// the shop as absent from a file that lists it.
+// the merchant as absent from a file that lists it.
 function closestFileStore(store, join) {
   const names = (join && join.fileStoreNames) || [];
   if (!names.length) return null;
@@ -3893,7 +4438,8 @@ function closestFileStore(store, join) {
 // The models matter as much as the count — "S8 x2" is the line to look for.
 function machineCountText(miss, machines) {
   const n = Number(miss.machines) || 0;
-  const counts = machines?.byStore instanceof Map ? machines.byStore.get(miss.store) : null;
+  const entry = machines?.byStore instanceof Map ? machines.byStore.get(miss.store) : null;
+  const counts = entry && entry.counts;
   const models = counts
     ? Object.entries(counts).filter(([, c]) => c > 0)
         .map(([m, c]) => `${escape(m)} ×${c}`).join(', ')
@@ -3901,15 +4447,15 @@ function machineCountText(miss, machines) {
   return `<strong>${n} machine${n === 1 ? '' : 's'}</strong>${models ? ` (${models})` : ''}.`;
 }
 
-// A new merchant is the costly mistake in this file — one wrong brand column turns 2,357 shops
+// A new merchant is the costly mistake in this file — one wrong brand column turns 2,357 merchants
 // into 2,357 merchants — so the row says what it would arrive with.
 function uploadAddedWhy(a, join) {
   const vals = Object.entries(a.vals || {}).filter(([k]) => k !== 'Merchant/Brand');
   const head = vals.length
     ? 'Would be created with ' + vals.map(([k, v]) => `${escape(k)} <strong>${escape(v)}</strong>`).join(', ')
     : 'Would be created with no other details.';
-  // The shops and machines it brings with it, from the two files joined. This is why the machine
-  // list no longer complains separately about those shops — adding the merchant places them.
+  // The merchants and machines it brings with it, from the two files joined. This is why the machine
+  // list no longer complains separately about those merchants — adding the merchant places them.
   // The costly mistake this file can make is a SECOND merchant for one you already have.
   const near = similarExistingMerchants(a.name);
   const warn = near.length
@@ -3921,7 +4467,7 @@ function uploadAddedWhy(a, join) {
   if (!b) return head + warn;
   const models = Object.entries(b.counts || {}).filter(([, c]) => c > 0)
     .map(([m, c]) => `${escape(m)} ×${c}`).join(', ');
-  return `${head} Brings <strong>${b.stores} shop${b.stores === 1 ? '' : 's'}</strong>`
+  return `${head} Brings <strong>${b.stores} merchant${b.stores === 1 ? '' : 's'}</strong>`
     + (b.machines ? ` and ${b.machines} machine${b.machines === 1 ? '' : 's'}${models ? ` (${models})` : ''}` : ' and no machines')
     + ' from your files.' + warn;
 }
@@ -3935,8 +4481,8 @@ function uploadChangedWhy(c) {
 // Remember the file (2026-09-29). NOT an import: no merchant row is created, changed or
 // deleted here. Two things are recorded, and both are about the FILE rather than your list:
 //
-//   • the roster — the shop rows a run reads, so Run share never asks for this file again
-//   • the upload record — what the ⦿ marks on the Merchant view compare against
+//   • the roster — the merchant rows a run reads, so Run share never asks for this file again
+//   • the upload record — what the ⦿ marks on the Overview compare against
 //
 // It runs when the file is read, because a file you are working through IS your latest file, and
 // making you press a button to say so was a second answer to a question the page already asked.
@@ -3954,6 +4500,18 @@ async function rememberUploadedFile(parsed, machines, roster) {
         excluded: roster.excluded || [],
         machinesAt: machines ? new Date().toISOString() : null,
         machineStoreCount: machines ? machines.byStore.size : null,
+        machineCount: machines ? machines.counted : null,
+        machinesUnbound: machines ? (machines.unbound || 0) : null,
+        // THE MACHINE ROWS THEMSELVES. `putRosterRoute` has always accepted a `machines` array
+        // and nothing ever sent one, so every upload kept the COUNT and threw the file away —
+        // 2,401 merchants reduced to the number 2,401. Asked afterwards how many machines a brand
+        // has, the answer could only come from the merchant grid's stored column, which is a
+        // different thing from what the file said. Per merchant: the merchant name and its per-model
+        // cabinet counts, which is the whole of what the file is read into. ~150 KB for 2,401
+        // merchants, against a 10 MB request ceiling.
+        machines: machines ? [...machines.byStore].map(([store, e]) => ({
+          store, counts: e.counts, deployed: e.deployed, total: e.total, businessId: e.businessId,
+        })) : [],
       }) });
       if (res?.lastUpload?.names?.length) LAST_UPLOAD = res.lastUpload;
     }
@@ -3976,9 +4534,9 @@ async function rememberUploadedFile(parsed, machines, roster) {
 // column is far worse than an unrecognised one.
 const WEEKLY_ALIASES = [
   // The BRAND is the merchant label — the same column a run resolves a roster row by, so a
-  // merchant created here is one a run can actually find. The per-store name is a BRANCH of it:
-  // counted, never stored as a merchant of its own. Reading the store name as the brand is what
-  // would turn 2,357 shops into 2,357 "merchants".
+  // merchant created here is one a run can actually find. The per-merchant name is a BRANCH of it:
+  // counted, never stored as a merchant of its own. Reading the merchant name as the brand is what
+  // would turn 2,357 merchants into 2,357 "merchants".
   { field: 'Merchant/Brand', names: ['merchant label', 'brand', 'merchant/brand', 'ka name', 'ka'] },
   { field: '_branch',        names: ['merchant name.', 'merchant name', 'store', 'store name', 'branch', 'ชื่อร้าน'] },
   { field: 'Type',           names: ['type', 'merchant type', 'merchant type.', 'category'] },
@@ -4029,7 +4587,7 @@ async function parseWeeklyMerchantFile(file) {
     map['Merchant/Brand'] = map._branch; brandFromBranch = true;
   }
   if (!map || !('Merchant/Brand' in map)) {
-    throw new Error('No merchant column found. The sheet needs a header row with "Merchant label" (the brand), or a merchant/store name column.');
+    throw new Error('No merchant column found. The sheet needs a header row with "Merchant label" (the brand), or a merchant name column.');
   }
   const all = Object.keys(map);
   const nameAt = map['Merchant/Brand'];
@@ -4047,7 +4605,7 @@ async function parseWeeklyMerchantFile(file) {
   const branchAt = brandFromBranch ? null : map._branch;
 
   // One row per BRAND. A brand appears once per branch in these files, so the rows are folded:
-  // first value stated for each field wins, and the branches are counted.
+  // first value stated for each field wins, and the merchants are counted.
   const byBrand = new Map();
   for (const r of kept) {
     const brand = String(r[brandAt] ?? '').trim();
@@ -4123,17 +4681,35 @@ async function parseMachineCountFile(file) {
   const name = r => String(pick(r, 'Business name') ?? '').trim();
   const model = r => parseDeviceModel(pick(r, 'Device Type'));
   if (!rows.length || !rows.some(name)) throw new Error('No "Business name" column found — is this the Machine List export?');
+  // STATE AND BINDING, kept from 2026-10-01. The export carries `State` per machine and a
+  // `Business ID`/`Business name` it is bound to, and the app read neither — so "this merchant is
+  // approved but has no machine deployed" and "this machine is deployed under nobody" could not
+  // be asked. The user's rule for what reaches the registry is Approved AND deployed AND bound,
+  // so all three facts have to survive the parse.
+  //
+  // `Deployed` is matched loosely on purpose: the live export says `Deployed(New)`, and a value
+  // the platform spells differently later must not silently read as "not deployed".
+  const isDeployed = (v) => /deploy/i.test(String(v ?? ''));
   const byStore = new Map();
   const models = new Set();
+  let unbound = 0;
   for (const r of rows) {
     const n = name(r); const m = model(r);
-    if (!n || !m) continue;
-    if (!byStore.has(n)) byStore.set(n, {});
-    const c = byStore.get(n);
-    c[m] = (c[m] || 0) + 1;
-    models.add(m);
+    const dep = isDeployed(pick(r, 'State'));
+    if (!n) { if (dep) unbound++; continue; }      // a deployed machine bound to no shop
+    if (!byStore.has(n)) {
+      byStore.set(n, { counts: {}, deployed: 0, total: 0,
+                       businessId: String(pick(r, 'Business ID') ?? '').trim() || null });
+    }
+    const e = byStore.get(n);
+    e.total++;
+    if (dep) e.deployed++;
+    if (m) { e.counts[m] = (e.counts[m] || 0) + 1; models.add(m); }
   }
-  return { byStore, models: [...models], counted: [...byStore.values()].reduce((a, c) => a + Object.values(c).reduce((x, y) => x + y, 0), 0) };
+  const counted = [...byStore.values()]
+    .reduce((a, e) => a + Object.values(e.counts).reduce((x, y) => x + y, 0), 0);
+  return { byStore, models: [...models], counted, unbound,
+           deployedTotal: [...byStore.values()].reduce((a, e) => a + e.deployed, 0) };
 }
 
 async function openAddMerchants() {
@@ -4203,7 +4779,7 @@ async function openAddMerchants() {
             ${parsed.hasReviewColumn
               ? (parsed.skippedNotApproved ? `<div class="muted" style="font-size:12px;">${parsed.skippedNotApproved.toLocaleString('en-US')} row(s) skipped — not Approved.</div>` : '')
               : `<div class="muted" style="font-size:12px;">No review-state column found, so every named row is included.</div>`}
-            ${parsed.brandFromBranch ? `<div class="muted" style="font-size:12px;">No “Merchant label” column — the store name is being read as the brand, so each row becomes its own merchant.</div>` : ''}
+            ${parsed.brandFromBranch ? `<div class="muted" style="font-size:12px;">No “Merchant label” column — the merchant name is being read as the brand, so each brand becomes one merchant.</div>` : ''}
             <div style="margin-top:6px;">Columns read: ${parsed.fields.map(f => `<span class="badge badge-neutral">${escape(f)}</span>`).join(' ')}</div>
             ${parsed.unmapped.length ? `<div class="muted" style="margin-top:4px;font-size:12px;">Ignored: ${parsed.unmapped.slice(0, 8).map(escape).join(', ')}${parsed.unmapped.length > 8 ? '…' : ''}</div>` : ''}
           </div>
@@ -4227,7 +4803,7 @@ async function openAddMerchants() {
                 ${d.added.length > 200 ? `<li class="muted">…and ${d.added.length - 200} more</li>` : ''}</ul>` : ''}
               ${d.missing.length ? `<div style="margin-top:10px;font-weight:600;font-size:12.5px;">In your list, not in this file</div>
                 <p class="muted" style="margin:2px 0 4px;font-size:12px;">Kept exactly as they are. After importing they are marked ⦿ in the grid, and the status filter lists just these.</p>
-                <ul style="font-size:12.5px;margin:4px 0 0;padding-left:18px;">${d.missing.slice(0, 200).map(m => `<li>${escape(m.merchantName || '')}${m.branchCount ? ` <span class="muted">— ${m.branchCount} branch(es)</span>` : ''}</li>`).join('')}
+                <ul style="font-size:12.5px;margin:4px 0 0;padding-left:18px;">${d.missing.slice(0, 200).map(m => `<li>${escape(m.merchantName || '')}${m.branchCount ? ` <span class="muted">— ${m.branchCount} merchant(s)</span>` : ''}</li>`).join('')}
                 ${d.missing.length > 200 ? `<li class="muted">…and ${d.missing.length - 200} more</li>` : ''}</ul>` : ''}
             </div>` : ''}
             <p class="muted" style="margin:8px 0 0;font-size:11.5px;">
@@ -4240,12 +4816,12 @@ async function openAddMerchants() {
             <div style="font-size:13px;">
               <strong>${machines.counted} machine(s)</strong> across ${machines.byStore.size} store(s) — models ${machines.models.join(', ')}.
             </div>
-            ${row('Stores matched to a merchant', `${mm.matchedStores} · ${mm.matchedMachines} machine(s)`, 'color:#2b8a3e;')}
-            ${mm.unknown.length ? row('Store name not in the registry', `${mm.unknown.length} · ${mm.unknown.reduce((a, x) => a + x.machines, 0)} machine(s)`, 'color:#e67700;') : ''}
-            ${mm.unlinked.length ? row('In the registry, but no merchant linked', `${mm.unlinked.length} · ${mm.unlinked.reduce((a, x) => a + x.machines, 0)} machine(s)`, 'color:#e67700;') : ''}
-            ${mm.unknown.length || mm.unlinked.length ? `<button type="button" id="am-mdetail" class="btn-ghost" style="padding:2px 0;font-size:12.5px;margin-top:4px;">Show the stores that would be skipped</button>
+            ${row('Merchants matched to a brand', `${mm.matchedStores} · ${mm.matchedMachines} machine(s)`, 'color:#2b8a3e;')}
+            ${mm.unknown.length ? row('Merchant name not in the registry', `${mm.unknown.length} · ${mm.unknown.reduce((a, x) => a + x.machines, 0)} machine(s)`, 'color:#e67700;') : ''}
+            ${mm.unlinked.length ? row('In the registry, but no brand linked', `${mm.unlinked.length} · ${mm.unlinked.reduce((a, x) => a + x.machines, 0)} machine(s)`, 'color:#e67700;') : ''}
+            ${mm.unknown.length || mm.unlinked.length ? `<button type="button" id="am-mdetail" class="btn-ghost" style="padding:2px 0;font-size:12.5px;margin-top:4px;">Show the merchants that would be skipped</button>
             <div id="am-mdetail-box" hidden style="margin-top:8px;max-height:220px;overflow:auto;">
-              ${[['Store name not in the registry', mm.unknown], ['In the registry, but no merchant linked', mm.unlinked]]
+              ${[['Merchant name not in the registry', mm.unknown], ['In the registry, but no brand linked', mm.unlinked]]
                 .filter(([, list]) => list.length).map(([title, list]) => `
                 <div style="font-weight:600;font-size:12.5px;margin-top:6px;">${title}</div>
                 <ul style="font-size:12.5px;margin:4px 0 0;padding-left:18px;">
@@ -4253,7 +4829,7 @@ async function openAddMerchants() {
                   ${list.length > 100 ? `<li class="muted">…and ${list.length - 100} more</li>` : ''}</ul>`).join('')}
             </div>` : ''}
             <p class="muted" style="margin:8px 0 0;font-size:11.5px;">
-              Matched by store name through the store registry, which learns store names from run
+              Matched by store name through the registry, which learns store names from run
               rosters. Skipped stores are never guessed at — nothing is written for them, and
               nothing is deleted. ⚠ This column counts CABINETS; a payout counts stations, so a
               4-machine station reads 4 here and 1 in a run.
@@ -4262,7 +4838,7 @@ async function openAddMerchants() {
         card.querySelector('#am-mdetail')?.addEventListener('click', (ev) => {
           const mbox = card.querySelector('#am-mdetail-box');
           mbox.hidden = !mbox.hidden;
-          ev.target.textContent = mbox.hidden ? 'Show the stores that would be skipped' : 'Hide the stores that would be skipped';
+          ev.target.textContent = mbox.hidden ? 'Show the merchants that would be skipped' : 'Hide the merchants that would be skipped';
         });
         card.querySelector('#am-detail')?.addEventListener('click', (ev) => {
           const dbox = card.querySelector('#am-detail-box');
@@ -4307,7 +4883,7 @@ async function openAddMerchants() {
           missed = diff ? diff.missing.length : 0;
         }
         // Machine counts are merchant data too, so a review does not write them either. Their
-        // unplaced shops still travel with the upload record, so Reconcile can report them.
+        // unplaced merchants still travel with the upload record, so Reconcile can report them.
         if (machines && !dryRun) {
           const r = await importMachineCounts(machines);
           updated += r;
@@ -4334,7 +4910,7 @@ async function openAddMerchants() {
   });
 }
 
-// The store registry: one row per shop, carrying the merchant it belongs to. Several MB, so it
+// The registry: one row per merchant, carrying the merchant it belongs to. Several MB, so it
 // is fetched once per dialog and reused by both the preview and the import — the preview would
 // otherwise be a second copy of the same download, or (worse) a second copy of the matching.
 let REGISTRY_CACHE = null;
@@ -4343,30 +4919,30 @@ async function loadRegistry() {
   return REGISTRY_CACHE;
 }
 
-// Machine counts arrive per STORE; a merchant's count is the sum over the stores it owns. Store
+// Machine counts arrive per STORE; a merchant's count is the sum over the merchants it owns. Store
 // ownership is whatever the registry already knows, so a store this app has never seen is
 // skipped rather than guessed at — but NAMED rather than skipped in silence, which is what this
 // used to do. Two ways to miss, reported apart because they need different fixes:
-//   `unknown`  — no registry row with that store name at all. The registry learns store names
-//                from run rosters, so this is usually a shop that has never been in one.
-//   `unlinked` — the shop IS in the registry but its row carries no contractId, so there is no
+//   `unknown`  — no registry row with that merchant name at all. The registry learns store names
+//                from run rosters, so this is usually a merchant that has never been in one.
+//   `unlinked` — the merchant IS in the registry but its row carries no contractId, so there is no
 //                merchant to add the machines to.
-// Both are dropped either way; the difference is whether the shop or the link is missing.
+// Both are dropped either way; the difference is whether the merchant or the link is missing.
 // THE TWO FILES ARE MAPPED TO EACH OTHER FIRST, AND THE REGISTRY SECOND (user, 2026-09-29).
 //
 // The merchant file gives store -> brand; the machine file gives store -> machines. Joining them
-// on the store name is the week you are actually holding, and it is what says whether a merchant
+// on the merchant name is the week you are actually holding, and it is what says whether a merchant
 // should be ADDED or UPDATED. The registry is derived history — it learns store names from past
-// run rosters — so it answers only for shops this week's files do not mention.
+// run rosters — so it answers only for merchants this week's files do not mention.
 //
-// Order matters and used to be the other way round. The registry can be stale: a shop that moved
+// Order matters and used to be the other way round. The registry can be stale: a merchant that moved
 // brand, or one whose name the platform restated (§1d), resolves to last month's contract there
 // while the file in your hand says otherwise. The file wins, and the two are reported when they
 // disagree rather than one silently overriding the other.
 function matchMachineStores(byStore, merchants, roster, contracts) {
   // Which contracts still exist and are live. The registry outlives them: 73 rows point at a
   // DELETED contract and 103 at an archived one (measured 2026-09-29), because deleting a
-  // merchant never cleans up the shop rows that referenced it.
+  // merchant never cleans up the merchant rows that referenced it.
   const liveIds = new Set();
   for (const c of contracts || []) if (c && !c.archived && c.contractId) liveIds.add(c.contractId);
   // Without a contracts list there is no way to tell a live link from a dead one — and "I cannot
@@ -4381,14 +4957,14 @@ function matchMachineStores(byStore, merchants, roster, contracts) {
     if (!k) continue;
     known.add(k);
     if (!m.contractId) continue;
-    // PREFER A LIVE CONTRACT. A store name routinely has several registry rows (§1c), and taking
-    // the first one meant a dangling pointer could speak for the shop while its live siblings
+    // PREFER A LIVE CONTRACT. A merchant name routinely has several registry rows (§1c), and taking
+    // the first one meant a dangling pointer could speak for the merchant while its live siblings
     // were ignored — which is how 'มี่เสวี่ย … เอเชียทีค' appeared to have moved away from Mixue
     // when two of its three rows said Mixue all along.
     const have = linkedOf.get(k);
     if (!have || (!isLive(have) && isLive(m.contractId))) linkedOf.set(k, m.contractId);
   }
-  // store name -> brand, straight from the uploaded file; brand -> contract, by name.
+  // merchant name -> brand, straight from the uploaded file; brand -> contract, by name.
   const brandOfStore = new Map(), fromFile = new Map();
   for (const r of (roster && roster.merchants) || []) {
     const k = String(r.name ?? '').toLowerCase().trim();
@@ -4411,12 +4987,14 @@ function matchMachineStores(byStore, merchants, roster, contracts) {
   const unknown = [], unlinked = [];
   let matchedStores = 0, matchedMachines = 0, matchedViaFile = 0;
   const conflicts = [];
-  for (const [store, counts] of byStore) {
+  for (const [store, entry] of byStore) {
+    // `byStore` carries state and binding since 2026-10-01; this loop only needs the counts.
+    const counts = (entry && entry.counts) || {};
     const n = Object.values(counts).reduce((a, b) => a + b, 0);
     const k = String(store ?? '').toLowerCase().trim();
-    // Pass 1 — the two files, joined on the store name.
+    // Pass 1 — the two files, joined on the merchant name.
     const hit = fromFile.get(k);
-    // Pass 2 — the registry, for shops this week's files do not place.
+    // Pass 2 — the registry, for merchants this week's files do not place.
     // A registry link to a contract that no longer exists places nothing. Counting machines
     // against a deleted merchant is not a match, it is a number with nowhere to go — and it
     // would inflate "merchants that would have counts updated" with rows nobody can see.
@@ -4426,13 +5004,13 @@ function matchMachineStores(byStore, merchants, roster, contracts) {
     const viaFile = hit ? hit.brand : null;
     // A disagreement only counts when BOTH sides name a merchant that still exists. A registry
     // row pointing at a deleted or archived contract is a stale link, not a competing answer —
-    // reporting it as "this shop moved merchant" would have produced a long list of findings
+    // reporting it as "this merchant moved merchant" would have produced a long list of findings
     // about merchants that are not there any more.
     if (hit && fromReg && fromReg !== hit.cid && isLive(fromReg)) {
       conflicts.push({ store, machines: n, fileBrand: hit.brand, registryContractId: fromReg });
     }
     if (!cid) {
-      // Still unplaced — but say whether the FILE at least names the shop, because "we have
+      // Still unplaced — but say whether the FILE at least names the merchant, because "we have
       // never heard of this" and "we know the brand but you do not carry it" need different fixes.
       const brand = brandOfStore.get(k);
       (known.has(k) ? unlinked : unknown).push(
@@ -4449,7 +5027,7 @@ function matchMachineStores(byStore, merchants, roster, contracts) {
 }
 
 // The store names a machine list could not place, by the two reasons §1l keeps apart: `unknown`
-// (no registry row with that store name) and `unlinked` (in the registry, but its row carries no
+// (no registry row with that merchant name) and `unlinked` (in the registry, but its row carries no
 // contractId). They need different fixes, so they must not be merged into one list.
 //
 // matchMachineStores pushes {store, machines} OBJECTS, not strings — mapping String over them
@@ -4513,7 +5091,7 @@ async function renderArchivedScreen() {
   el.innerHTML = `
     <h1>Archived merchants</h1>
     <p class="muted">Contracts that have ended. They keep their terms and their history, and are
-      never paid in a run. Unarchive to bring one back into the Merchant view.</p>
+      never paid in a run. Unarchive to bring one back into the Overview.</p>
     <div class="ct-toolbar">
       <input id="ar-search" class="input" placeholder="Search merchant…" style="max-width:240px">
       <span class="muted" id="ar-count"></span>
@@ -4549,7 +5127,7 @@ function paintArchived() {
       <td>${cell(c.endDate)}</td>
       <td>${cell((c.archivedAt || '').slice(0, 10))}</td>
       <td class="ct-c">${can('manageMerchants')
-        ? `<button class="btn-ghost ar-unarch-btn" data-id="${escape(c.contractId)}" title="Return this merchant to the Merchant view">Unarchive</button>`
+        ? `<button class="btn-ghost ar-unarch-btn" data-id="${escape(c.contractId)}" title="Return this merchant to the Overview">Unarchive</button>`
         : ''}</td>
     </tr>`).join('')
     : '<tr><td colspan="7" class="muted">No archived merchants yet.</td></tr>';
@@ -4558,7 +5136,7 @@ function paintArchived() {
 }
 
 function paintContracts() {
-  // No-op when the Merchant view screen isn't mounted — openTermsEditor calls this
+  // No-op when the Overview screen isn't mounted — openTermsEditor calls this
   // unconditionally on save, and it's also opened from other screens (the run wizard).
   const body = document.getElementById('ct-body');
   if (!body) return;
@@ -4612,7 +5190,7 @@ function startCellEdit(td) {
   // writing PUT /contracts/:id like every other cell here.
   if (col.type && col.type.startsWith('term-')) return;
   // Only the CONTRACT and share-terms columns are editable here (user, 2026-09-03). Everything
-  // else on this grid — merchant, type, branches, contacts, machine counts — arrives from the
+  // else on this grid — merchant, type, merchants, contacts, machine counts — arrives from the
   // weekly merchant upload, and typing over it just loses the edit at the next import: the
   // importer merges the file over the row, so a stated cell wins. Fix those in the file.
   if (!EDITABLE_GROUPS.has(col.group)) return;
@@ -4820,7 +5398,7 @@ async function renderBulkRunsList() {
 
 // How stale is the merchant list a run is about to use? Stated plainly, with the age, because
 // "24 days ago" is the difference between a routine run and one that misses a month of new
-// shops. The machine list is reported separately — the two arrive together but mean different
+// merchants. The machine list is reported separately — the two arrive together but mean different
 // things (stations vs cabinets, §1h).
 function wizRosterStatusHtml(meta) {
   if (!meta || !meta.at) {
@@ -4841,9 +5419,9 @@ function wizRosterStatusHtml(meta) {
     ${meta.machinesAt
       ? `<div class="up-sum-row muted">Machine list updated <strong>${escape(new Date(meta.machinesAt).toLocaleDateString('en-GB',
           { day: 'numeric', month: 'short', year: 'numeric' }))}</strong>${meta.machineStoreCount
-          ? ` · ${Number(meta.machineStoreCount).toLocaleString('en-US')} store(s)` : ''}</div>`
+          ? ` · ${Number(meta.machineStoreCount).toLocaleString('en-US')} merchant(s)` : ''}</div>`
       : '<div class="up-sum-row muted">No machine list was uploaded with it.</div>'}
-    ${stale ? '<div class="up-sum-row rc-warn">This list is more than two weeks old — shops opened since then will not be paid.</div>' : ''}
+    ${stale ? '<div class="up-sum-row rc-warn">This list is more than two weeks old — merchants opened since then will not be paid.</div>' : ''}
   </div>`;
 }
 
@@ -4902,7 +5480,7 @@ function renderNewBulkRunForm() {
           ${step2Done ? `<div style="margin-top:10px;padding:12px 16px;background:#ebfbee;border:1px solid #8ce99a;border-radius:8px;font-size:13.5px;">
             <strong>Roster loaded:</strong> ${wiz.prepare.rosterCount} machines · ${wiz.prepare.merchantBrandCount} merchants
             ${wiz.prepare.newMerchants?.length ? `· <span style="color:#e67700;" title="${escape(wiz.prepare.newMerchants.slice(0, 40).join(', '))}">${wiz.prepare.newMerchants.length} brand(s) not in your merchant list</span>` : ''}
-            ${wiz.prepare.unassigned?.length ? `· <span style="color:#e67700;">${wiz.prepare.unassigned.length} unassigned store(s)</span>` : ''}
+            ${wiz.prepare.unassigned?.length ? `· <span style="color:#e67700;">${wiz.prepare.unassigned.length} unassigned merchant(s)</span>` : ''}
             ${wiz.prepare.unitsDiffer?.length ? `· <span style="color:var(--ink-soft);">machine counts differ on ${wiz.prepare.unitsDiffer.length} merchant(s)</span>` : ''}
             <div class="muted" style="margin-top:4px;font-size:12px;">
               A run never changes your merchant list — it reads each merchant's terms and nothing
@@ -4947,7 +5525,7 @@ function renderNewBulkRunForm() {
 
           <div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--line);">
             <span style="font-size:12.5px;color:var(--ink-soft);">Machine List (.xlsx) — <em>optional</em></span>
-            <p class="upload-hint" style="margin:4px 0 8px;">The order report identifies a store only by name, so a store renamed in one export and not the other is paid to nobody. Upload this and any such order is recovered by machine number instead. Needs <code style="font-size:11px;">Machine No</code> and <code style="font-size:11px;">Business ID</code>.</p>
+            <p class="upload-hint" style="margin:4px 0 8px;">The order report identifies a merchant only by name, so a merchant renamed in one export and not the other is paid to nobody. Upload this and any such order is recovered by machine number instead. Needs <code style="font-size:11px;">Machine No</code> and <code style="font-size:11px;">Business ID</code>.</p>
             <input type="file" id="wiz-mach-file" accept=".xlsx" style="display:none">
             <div id="wiz-mach-zone" class="upload-zone" style="cursor:pointer;padding:14px;">
               <button type="button" id="wiz-mach-choose" class="btn">Choose file</button>
@@ -5024,7 +5602,7 @@ function renderNewBulkRunForm() {
         status.innerHTML = 'Parsing machine list…';
         try {
           wiz.machines = await parseMachineList(file);
-          status.innerHTML = `<span style="color:#2b8a3e;">✓ ${wiz.machines.length} machines — renamed stores will be matched by machine number.</span>`;
+          status.innerHTML = `<span style="color:#2b8a3e;">✓ ${wiz.machines.length} machines — renamed merchants will be matched by machine number.</span>`;
         } catch (err) {
           wiz.machines = [];
           status.innerHTML = `<p style="color:#f03e3e;">Error: ${escape(err.message)}</p>`;
@@ -5069,10 +5647,10 @@ function renderNewBulkRunForm() {
     }
   }
 
-  // List the merchants still needing revenue-share terms; each opens the Merchant view's
+  // List the merchants still needing revenue-share terms; each opens the Overview's
   // own terms dialog (openTermsEditor) rather than a partner-shaped editor — the row IS
   // the payout record now. That dialog reads from the CONTRACTS / MACHINE_MODELS_CACHE
-  // globals, which only the Merchant view screen normally populates, so load them here
+  // globals, which only the Overview screen normally populates, so load them here
   // too since the wizard never renders that screen.
   async function renderWizardRuleEditors() {
     const slot = document.getElementById('wiz-rule-editors');
@@ -5369,26 +5947,83 @@ function apportion(total, weights) {
 //
 //   rows 1..n   pivot per store — Rental Place, order count, paid, sharing rate, sharing amount
 //               and a Grand Total row
-//   row  n+3    the orders themselves — rental/return time, both stores and their KA names,
+//   row  n+3    the orders themselves — rental/return time, both merchants and their KA names,
 //               duration, net amount, status
 //
 // The second block needs order-level columns that runs before 2026-09-01 never kept, so for
 // those the sheet carries the pivot and says so rather than inventing rows.
 const SHEET_SAFE = /[\\/?*\[\]:]/g;
 
+
+const modelCode = v => String(v ?? '').trim();
+
+// The contracted term, in words, with its actual numbers (2026-09-30).
+//
+// The statement used to print an EFFECTIVE rate — payout ÷ revenue — under a heading that says
+// percent. For a merchant paid a guarantee that read as "you receive 344% of revenue", and
+// because a `whole`-mode share is apportioned BY revenue it was the same number on every row,
+// so it said nothing per store either. A merchant should be told what was AGREED; the amount
+// beside it is what that produced.
+//
+// Fed the rule the RUN WAS COMPUTED WITH (`ruleSnapshots`), never today's — editing a rule must
+// not rewrite a statement for a period already paid (§10.5).
+//
+// Pure: a rule in, a string out.
+function termText(rule) {
+  const money = n => Number(n).toLocaleString('en-US', { maximumFractionDigits: 2 });
+  const leaf = (n) => {
+    switch (n.type) {
+      case 'percent': {
+        const rows = (n.rows || []).filter(r => Number(r.percent) > 0);
+        if (!rows.length) return '';
+        return rows.map(r => r.model === 'ALL' || !r.model
+          ? `GP ${money(r.percent)}%` : `GP ${modelCode(r.model)} ${money(r.percent)}%`).join(' + ');
+      }
+      case 'flat_per_machine': {
+        const rows = (n.rows || []).filter(r => Number(r.amount) > 0);
+        if (!rows.length) return '';
+        const label = n._t === 'mg' ? 'MG' : n._t === 'placement' ? 'Placement' : 'Per machine';
+        return rows.map(r => `${label} ${modelCode(r.model)} ${money(r.amount)}`).join(' + ');
+      }
+      case 'flat_per_partner_total': {
+        if (!(Number(n.amount) > 0)) return '';
+        const label = n._t === 'elec' ? 'Electricity' : n._t === 'others' ? 'Others' : 'Flat';
+        return `${label} ${money(n.amount)}`;
+      }
+      case 'tiered_percent':
+        return 'Tiered %';
+      default:
+        return '';
+    }
+  };
+  const walk = (n) => {
+    if (!n || typeof n !== 'object') return '';
+    if (n.type === 'sum' || n.type === 'max' || n.type === 'min') {
+      const parts = (n.children || []).map(walk).filter(Boolean);
+      if (!parts.length) return '';
+      if (parts.length === 1) return parts[0];
+      const join = n.type === 'sum' ? ' + ' : ' , ';
+      return n.type === 'sum' ? parts.join(join) : `${n.type}( ${parts.join(join)} )`;
+    }
+    return leaf(n);
+  };
+  return walk(rule) || '';
+}
+
 // THE STATEMENT, in the shape finance already reconciles against (Template_Revenue Share.xlsx,
 // read 2026-09-30). One merchant per file, two blocks.
 //
 // Block 1 — a pivot per rental place, with the share split for tax:
-//   Rental Place · รุ่นเครื่อง · จำนวนการยืม · ยอดรายได้ทั้งหมด · ส่วนแบ่งรายได้ (%) ·
+//   Rental Place · รุ่นเครื่อง · จำนวนการยืม · ยอดรายได้ทั้งหมด · ส่วนแบ่งรายได้ ·
 //   มูลค่าส่วนแบ่ง (ฐานภาษี) · ภาษี · ยอดรวม
+// The share column states the TERM as contracted (see `termText`), not a computed rate.
 // Block 2 — the merchant's name on its own row, then every rental:
 //   Order No. · Rental Time · Rental Merchant · Rental KA Name · Return Time ·
 //   Rental Duration · Net Amount · Order Status
 //
 // Verified against all three rows of the template: ยอดรวม is the payout, the base is that
 // divided by 1.07 and the tax is the difference — i.e. THE PAYOUT IS TREATED AS VAT-INCLUSIVE.
-function buildPartnerSheet(XLSXns, result, orders, kaByStore) {
+function buildPartnerSheet(XLSXns, result, orders, kaByStore, ordersError, ruleSnapshot) {
   const merchants = result.merchants || [];
   const eng = result.engineResult || {};
   const perStore = Array.isArray(eng.byStore);
@@ -5404,15 +6039,19 @@ function buildPartnerSheet(XLSXns, result, orders, kaByStore) {
     shares = apportion(result.payout || 0, merchants.map(m => Math.max(0, Number(m.revenue) || 0)));
   }
 
+  // `(%)` is gone from this heading on purpose: the column states the agreed TERM, which is not
+  // always a percentage. Printing "MG S8 4,000" under a percent sign would repeat the mistake it
+  // is replacing.
+  const term = termText(ruleSnapshot);
   const aoa = [['Rental Place', 'รุ่นเครื่อง', 'จำนวนการยืม', 'ยอดรายได้ทั้งหมด',
-                'ส่วนแบ่งรายได้ (%)', 'มูลค่าส่วนแบ่ง (ฐานภาษี)', 'ภาษี', 'ยอดรวม']];
+                'ส่วนแบ่งรายได้', 'มูลค่าส่วนแบ่ง (ฐานภาษี)', 'ภาษี', 'ยอดรวม']];
   let nOrders = 0, sumPaid = 0, sumShare = 0;
   merchants.forEach((m, i) => {
     const total = shares[i];
     const { base, tax } = splitTax(total);
     nOrders += m.rentals; sumPaid += m.revenue; sumShare += total;
     aoa.push([m.merchantName, modelLabel(m.model), m.rentals, round2(m.revenue),
-              m.revenue > 0 ? round4(total / m.revenue) : 0, base, tax, round2(total)]);
+              term, base, tax, round2(total)]);
   });
   if (perStore && eng.topLevel && eng.topLevel.payout) {
     const lump = eng.topLevel.payout;
@@ -5423,8 +6062,7 @@ function buildPartnerSheet(XLSXns, result, orders, kaByStore) {
   // The total's tax is computed FROM the total, not by adding the rounded parts — which is what
   // the template itself does.
   const gt = splitTax(sumShare);
-  aoa.push(['Grand Total', '', nOrders, round2(sumPaid),
-            sumPaid > 0 ? round4(sumShare / sumPaid) : 0, gt.base, gt.tax, round2(sumShare)]);
+  aoa.push(['Grand Total', '', nOrders, round2(sumPaid), term, gt.base, gt.tax, round2(sumShare)]);
 
   aoa.push([]);
   aoa.push([result.merchantName]);
@@ -5439,9 +6077,14 @@ function buildPartnerSheet(XLSXns, result, orders, kaByStore) {
                 o.duration ?? '', Number(o.netAmount) || 0, o.orderStatus || '']);
     }
   } else {
-    // A run from before the order detail was kept. Say so rather than print an empty block that
-    // reads as "this merchant had no rentals".
-    aoa.push(['This run predates the stored order detail, so the rentals cannot be listed.']);
+    // Two very different reasons, and telling them apart matters: one is a fact about an old run,
+    // the other is a failure that someone must fix before this statement goes out again.
+    aoa.push([ordersError && ordersError !== 'predates'
+      ? `The rentals could not be loaded for this run (${ordersError}). This file is incomplete —`
+        + ` do not send it until that is fixed.`
+      : 'The individual rentals were not kept for this run, so they cannot be listed here.'
+        + ' The totals above were calculated from the order report uploaded at the time of the'
+        + ' run and are complete — only the line-by-line list is missing.']);
   }
   return XLSXns.utils.aoa_to_sheet(aoa);
 }
@@ -5474,7 +6117,7 @@ function splitTax(total) {
 }
 
 // The template writes the device code with a hyphen before the digits — `S-8`, `LL-40` — while
-// the app stores `S8`, `LL40`. Display only; nothing is matched on this.
+// the app merchants `S8`, `LL40`. Display only; nothing is matched on this.
 function modelLabel(code) {
   const c = String(code || '').trim();
   return c ? c.replace(/^([A-Za-z]+)(\d)/, '$1-$2') : '';
@@ -5482,7 +6125,6 @@ function modelLabel(code) {
 
 
 const round2 = v => Math.round(Number(v) * 100) / 100;
-const round4 = v => Math.round(Number(v) * 10000) / 10000;
 
 // ── Settings → Mail templates ──────────────────────────────────────────────────────────────
 // Editing needs `manageMailTemplates` (2026-09-29, was full `admin`), because a template is the
@@ -5893,11 +6535,23 @@ async function renderMessageSend(host, template) {
   // while they still hold what we last generated. The moment someone edits either by hand, their
   // wording wins — re-rendering over a typed correction is the rude version of being helpful.
   const subjEl = host.querySelector('#mmsg-subject'), bodyEl = host.querySelector('#mmsg-body');
+  const modeEl = host.querySelector('#mmsg-mode');
+  const isPaidMode = () => modeEl.value === 'paid';
   let lastGen = { subject: null, body: null };
   const fillText = () => {
-    const vars = {
-      merchant: host.querySelector('#mmsg-entity').value.trim(),
-      entity: host.querySelector('#mmsg-entity').value.trim(),
+    // SENDING TO EVERY PAID MERCHANT, the message is rendered once PER RECIPIENT, so {{merchant}}
+    // has a different answer for each of them and no single answer here. Leaving those two out of
+    // `vars` makes renderTemplate leave the tokens alone (its rule for an unknown placeholder),
+    // so the box shows `เรียน {{merchant}}` — which is the truth — instead of `เรียน` followed by
+    // nothing, which read as a template that had lost the name.
+    //
+    // They are still filled for a typed list, where one wording goes to everyone named.
+    const entity = host.querySelector('#mmsg-entity').value.trim();
+    const vars = isPaidMode()
+      ? { period: host.querySelector('#mmsg-period').value.trim() }
+      : {
+      merchant: entity,
+      entity: entity,
       period: host.querySelector('#mmsg-period').value.trim(),
     };
     const nextSubject = renderTemplate(template.subject, vars);
@@ -5953,8 +6607,6 @@ async function renderMessageSend(host, template) {
     host.querySelector('#mmsg-send').disabled = !list.length;
   };
   let paid = null;                 // { run, plan, ccy } once a period with a run is chosen
-  const modeEl = host.querySelector('#mmsg-mode');
-  const isPaidMode = () => modeEl.value === 'paid';
 
   async function onMode() {
     const on = isPaidMode();
@@ -5971,7 +6623,7 @@ async function renderMessageSend(host, template) {
 
   host.querySelector('#mmsg-to').addEventListener('input', refresh);
   host.querySelector('#mmsg-entity').addEventListener('change', onEntity);
-  modeEl.addEventListener('change', onMode);
+  modeEl.addEventListener('change', () => { fillText(); onMode(); });
   host.querySelector('#mmsg-period').addEventListener('change', () => { fillText(); if (isPaidMode()) onMode(); });
   // States the total as files are chosen, and refuses over the cap HERE rather than after the
   // Gmail token has been asked for — being told the file is too big is not a reason to have
@@ -6018,9 +6670,15 @@ async function renderMessageSend(host, template) {
     if (isPaidMode()) {
       if (!paid?.plan.ready.length) return;
       const { run, plan, ccy } = paid;
+      // The first line as the first recipient will actually read it. The box shows the token,
+      // which is honest but not legible — this is the one place to see the rendered thing before
+      // 58 people get it.
+      const sampleVars = mailVarsFor(plan.ready[0], run);
+      const sample = renderTemplate(bodyEl.value, sampleVars).split('\n').find(l => l.trim()) || '';
       if (!confirm(
           `Send this notice to ${plan.ready.length} merchant(s)?\n\n`
           + `Period:   ${periodMonth(run.periodStart)}\n`
+          + `Opens:    "${sample.trim().slice(0, 70)}"  — filled in per recipient\n`
           + `Who:      every merchant with a share that month — ${fmt2(plan.total)} ${ccy} between them\n`
           + `To:       each merchant's own finance address${cc ? `, copying ${cc}` : ''}\n`
           + `Attached: ${template.attachmentName || 'NOTHING — the template has no file'}${chosen.length ? ` + ${chosen.length} file(s)` : ''}\n\n`
@@ -6033,9 +6691,13 @@ async function renderMessageSend(host, template) {
       let n = 0;
       for (const r of plan.ready) {
         btn.textContent = `Sending ${n + 1} of ${plan.ready.length}…`;
+        // From the BOX, not the stored template: whatever is on screen is what goes out. This
+        // read `template.body`, so a correction typed before pressing Send was dropped without
+        // a word. The box keeps its {{merchant}} token (see fillText), so it is still a template
+        // and still renders per recipient.
         const vars = mailVarsFor(r, run);
-        const subject = renderTemplate(template.subject, vars);
-        const body = renderTemplate(template.body || '', vars);
+        const subject = renderTemplate(subjEl.value, vars);
+        const body = renderTemplate(bodyEl.value, vars);
         try {
           const sent = await sendGmail(buildMimeMessage({
             from, to: r.to, cc, subject, body, attachments: files }));
@@ -6177,11 +6839,11 @@ async function drawMailSendList(runId, template) {
         // after the closing </tr>, and a browser hoists non-cell content out of a table — so
         // 106 loose buttons rendered as a grid and took their rows with them.
         const why = broken.length
-          ? `<span class="rc-warn">${escape(broken.join(', '))} is not a valid address — fix it on the Merchant view</span>`
+          ? `<span class="rc-warn">${escape(broken.join(', '))} is not a valid address — fix it on the Overview</span>`
           : other.length
           ? `<span class="muted">contact email: ${escape(other.join(', '))} — copy it into
-             <strong>Finance email</strong> on the Merchant view if that is the right person</span>`
-          : '<span class="muted">no address at all — add a finance email on the Merchant view</span>';
+             <strong>Finance email</strong> on the Overview if that is the right person</span>`
+          : '<span class="muted">no address at all — add a finance email on the Overview</span>';
         return row(r, why);
       }).join(''))
     + (ready.length || done.length || noFinance.length ? '' : '<p class="muted">This run paid nobody.</p>');
@@ -6209,11 +6871,38 @@ const RUN_ORDER_INDEX = new Map();
 
 async function runOrderIndex(run) {
   if (RUN_ORDER_INDEX.has(run.runId)) return RUN_ORDER_INDEX.get(run.runId);
-  let orders = null;
+  let orders = null, ordersError = null;
   try {
-    const inputs = await api(`/bulk-runs/${encodeURIComponent(run.runId)}/inputs`);
-    if (Array.isArray(inputs?.orders) && inputs.orders.some(o => o.rentalTime != null)) orders = inputs.orders;
-  } catch { /* older run, or inputs gone — the summary block still builds */ }
+    // PAGED, because a month of orders is ~10 MB and API Gateway's response ceiling is 10 MB.
+    // `total` comes back on every page, so a short read is an error rather than a quietly
+    // incomplete statement.
+    const PAGE = 5000;
+    const got = [];
+    let total = 0;
+    for (let offset = 0; ; offset += PAGE) {
+      const page = await api(`/bulk-runs/${encodeURIComponent(run.runId)}/inputs`
+                             + `?offset=${offset}&limit=${PAGE}`);
+      total = Number(page?.total) || 0;
+      const rows = Array.isArray(page?.orders) ? page.orders : [];
+      // The parser kept no rental times before 2026-09-01, so those runs have orders but nothing
+      // to list per rental. One page is enough to know — don't fetch 28,000 rows to find out.
+      if (!offset && total && !rows.some(o => o.rentalTime != null)) { got.length = 0; break; }
+      got.push(...rows);
+      if (!rows.length || got.length >= total) break;
+    }
+    if (total && got.length && got.length < total) {
+      throw new Error(`only ${got.length} of ${total} rentals could be loaded`);
+    }
+    if (got.length) orders = got;
+    else ordersError = 'predates';        // a real run from before the detail was kept
+  } catch (e) {
+    // NOT the same thing as an old run, and saying so is what went wrong: September's inputs
+    // were 10.4 MB, the request failed, and every statement claimed the run was too old.
+    ordersError = /409|no_stored_inputs/.test(e.message || '')
+      ? 'predates'
+      : (e.message || e.name || 'unknown error');
+    console.warn('order detail unavailable for', run.runId, e);
+  }
 
   const contractOfStore = new Map();
   const kaByStore = new Map();
@@ -6240,8 +6929,11 @@ async function runOrderIndex(run) {
     if (!ordersByContract.has(cid)) ordersByContract.set(cid, []);
     ordersByContract.get(cid).push(o);
   }
-  const index = { orders, ordersByContract, kaByStore };
-  RUN_ORDER_INDEX.set(run.runId, index);
+  // Frozen at run time (§10.5). Editing a merchant's terms must not rewrite a statement for a
+  // period that has already been paid.
+  const index = { orders, ordersError, ordersByContract, kaByStore,
+                  ruleSnapshots: run.ruleSnapshots || {} };
+  if (!ordersError || ordersError === 'predates') RUN_ORDER_INDEX.set(run.runId, index);
   return index;
 }
 
@@ -6250,7 +6942,8 @@ function statementWorkbook(result, index) {
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb,
     buildPartnerSheet(XLSX, result, index.orders ? (index.ordersByContract.get(result.contractId) || []) : null,
-                      index.kaByStore),
+                      index.kaByStore, index.ordersError,
+                      (index.ruleSnapshots || {})[result.contractId]),
     sanitizeFilename(result.merchantName).replace(SHEET_SAFE, '-').slice(0, 31));
   return new Uint8Array(XLSX.write(wb, { bookType: 'xlsx', type: 'array' }));
 }
@@ -6468,6 +7161,13 @@ function mailSendDialog(result, run, sentAlready, template) {
 
       // Checked against what is about to be sent, not what was rendered.
       const blockers = statementSendBlockers(result, run, recipients, result.contractId, !!assign);
+      // An incomplete file must not be SENDABLE, not merely carry a warning inside it. The
+      // September run's 10.4 MB inputs failed to load and statements went out with no rentals at
+      // all — the letter promising "every rental in the period" is then simply untrue.
+      if (index.ordersError && index.ordersError !== 'predates') {
+        blockers.push(`The rentals could not be loaded for this run (${index.ordersError}),`
+          + ` so the file would go out with no rental detail.`);
+      }
       if (blockers.length) return fail('Not sent — ' + blockers.join(' '));
 
       const rows = index.orders ? (index.ordersByContract.get(result.contractId) || []).length : 0;
@@ -6854,7 +7554,7 @@ function engineComponents(engineResult) {
   return (engineResult.byStore || []).flatMap(s => s.components || []);
 }
 
-// One row per leaf and model, summed across stores: "S8 x26 @ 4,000 = 104,000".
+// One row per leaf and model, summed across merchants: "S8 x26 @ 4,000 = 104,000".
 // Rates are carried per model because a rule can price each one differently.
 function payoutBreakdown(engineResult) {
   const rows = new Map();
@@ -7013,8 +7713,8 @@ async function renderBulkRunDetail(runId) {
     ${(run.results?.length) ? `<p><a href="#" id="dl-revshare-zip" class="zip-link">↓ ${escape(periodTag(run.periodStart))}_revshare</a></p>` : ''}
 
     <table class="ts"><thead><tr>
-      <th title="The company a payout is settled with, read from the merchant record as it is today — a run does not store it">Contract entity</th>
-      <th>Merchant</th><th>Stores</th><th>Rentals</th><th>Revenue</th><th>Payout</th><th>Share %</th></tr></thead>
+      <th title="The company a payout is settled with, read from the brand record as it is today — a run does not store it">Contract entity</th>
+      <th>Brand</th><th>Merchants</th><th>Rentals</th><th>Revenue</th><th>Payout</th><th>Share %</th></tr></thead>
     <tbody>${(run.results || []).sort((a,b) => b.payout - a.payout).map(r => `<tr>
       <td>${contractEntityFor(r.contractId)
              ? escape(contractEntityFor(r.contractId))
@@ -7046,7 +7746,7 @@ async function renderBulkRunDetail(runId) {
       ${(run.matchedByMachine?.length || run.matchedByAlias?.length) ? `
         <p style="margin:0 0 10px;font-size:13px;color:#1971c2;">
           ↔ Recovered: ${[
-            run.matchedByMachine?.length ? `${run.matchedByMachine.length} store(s) by machine number` : '',
+            run.matchedByMachine?.length ? `${run.matchedByMachine.length} merchant(s) by machine number` : '',
             run.matchedByAlias?.length ? `${run.matchedByAlias.length} name(s) by manual assignment` : '',
           ].filter(Boolean).join(' · ')} — these ARE paid.
           <button type="button" class="btn-ghost np-toggle" data-np="recovered" style="padding:0 4px;font-size:12.5px;">show</button>
@@ -7065,24 +7765,24 @@ async function renderBulkRunDetail(runId) {
       <table class="ts"><tbody>
         ${npRow('skipped', 'Skipped — matched a merchant that is not paid', (run.skipped || []).length, 'brands', skippedRevenue,
           `<table style="font-size:13px;width:100%;">
-            <thead><tr><th style="text-align:left;">Merchant</th><th style="text-align:right;">Stores</th><th style="text-align:right;">Rentals</th><th style="text-align:right;">Revenue</th><th style="text-align:left;">Reason</th></tr></thead>
+            <thead><tr><th style="text-align:left;">Brand</th><th style="text-align:right;">Merchants</th><th style="text-align:right;">Rentals</th><th style="text-align:right;">Revenue</th><th style="text-align:left;">Reason</th></tr></thead>
             <tbody>${(run.skipped || []).slice().sort((a2,b2) => b2.revenue - a2.revenue).map(sk => `<tr>
               <td>${escape(sk.merchantName || '')}</td><td style="text-align:right;">${sk.merchantCount}</td>
               <td style="text-align:right;">${sk.rentals}</td><td style="text-align:right;">${fmt2(sk.revenue)}</td>
               <td class="muted">${escape(sk.reason || '')}</td></tr>`).join('')}</tbody></table>`,
           'Their orders matched, but the merchant is marked no-payout, archived, or has no usable terms.')}
 
-        ${npRow('notapproved', 'Not Approved in the merchant list', naDetail.length, 'stores', naRevenue,
-          `<p class="muted" style="margin:0 0 8px;font-size:13px;">The platform knows these stores; they were excluded because their review state is not Approved. A store marked Disapproved can still have a live machine.</p>
+        ${npRow('notapproved', 'Not Approved in the merchant list', naDetail.length, 'merchants', naRevenue,
+          `<p class="muted" style="margin:0 0 8px;font-size:13px;">The platform knows these merchants; they were excluded because their review state is not Approved. A merchant marked Disapproved can still have a live machine.</p>
            <table style="font-size:13px;width:100%;">
-            <thead><tr><th style="text-align:left;">Store</th><th style="text-align:left;">Review state</th><th style="text-align:left;">Would be paid under</th><th style="text-align:right;">Orders</th><th style="text-align:right;">Revenue</th></tr></thead>
+            <thead><tr><th style="text-align:left;">Merchant</th><th style="text-align:left;">Review state</th><th style="text-align:left;">Would be paid under</th><th style="text-align:right;">Orders</th><th style="text-align:right;">Revenue</th></tr></thead>
             <tbody>${naDetail.map(u => `<tr><td>${escape(u.name || '')}</td>
               <td><span style="color:#d9480f;font-weight:600;">${escape(u.reviewState)}</span></td>
               <td>${escape(u.label || '—')}</td><td style="text-align:right;">${num(u.orders)}</td>
               <td style="text-align:right;">${fmt2(u.revenue)}</td></tr>`).join('')}</tbody></table>`,
           'Fix the review state in ChargeSpot, or assign the name to a merchant below.')}
 
-        ${npRow('unknown', 'Unmatched — no such store anywhere', unknownDetail.length, 'names', unmatchedRevenue - naRevenue,
+        ${npRow('unknown', 'Unmatched — no such merchant anywhere', unknownDetail.length, 'names', unmatchedRevenue - naRevenue,
           `<div style="display:flex;justify-content:flex-end;margin-bottom:6px;"><button id="dl-unmatched" class="btn-ghost" style="color:var(--accent);font-size:12.5px;">↓ Download list (CSV)</button></div>
            <table style="font-size:13px;width:100%;">
             <thead><tr><th style="text-align:left;">Merchant name in order report</th><th style="text-align:right;">Orders</th><th style="text-align:right;">Revenue</th><th></th></tr></thead>
@@ -7416,8 +8116,8 @@ boot();
 // Per the 2026-08-24 decision an alias ADDS a store row to the merchant rather than merging
 // into an existing one, so it also counts as a machine wherever the rule pays per machine.
 // That is why the dialog spells out the per-machine cost before you confirm.
-async function ensureContractCache() {
-  if (CONTRACTS.length && MACHINE_MODELS_CACHE.length) return;
+async function ensureContractCache(force) {
+  if (!force && CONTRACTS.length && MACHINE_MODELS_CACHE.length) return;
   const [contracts, machineModels] = await Promise.all([api('/contracts'), api('/machine-models')]);
   CONTRACTS = contracts;
   MACHINE_MODELS_CACHE = machineModels;
@@ -7536,7 +8236,7 @@ async function addMerchantForUnmatched(orderName, run) {
       CONTRACTS.push(contract);
     }
     await addAliasToContract(contract.contractId, orderName, 'S8');
-    alert(`Created "${contract.merchantName}" and assigned "${orderName}" to it.\n\nSet its revenue-share terms in Merchant view — until then it has no terms and will not be paid.`);
+    alert(`Created "${contract.merchantName}" and assigned "${orderName}" to it.\n\nSet its revenue-share terms in Overview — until then it has no terms and will not be paid.`);
     await offerRecompute(run);
   } catch (e) {
     alert(`Could not add merchant: ${e.message}`);

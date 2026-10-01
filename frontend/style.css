@@ -1308,3 +1308,23 @@ p.rc-warn {
 .msend-scroll table { width: 100%; }
 /* The grid's sticky header is scoped to .ct-table; this table pins to its own scroller. */
 .msend-scroll thead th { position: sticky; top: 0; z-index: 1; background: var(--surface-muted); }
+
+/* Upload → the mismatch tabs (2026-10-01). Scoped to this screen so nothing else shifts. */
+.up-mm-wrap { max-width: none; overflow-x: auto; }
+.up-mm-wrap table.ts { min-width: 640px; }
+.up-mm-wrap td { vertical-align: middle; }
+.up-mm-wrap .btn-ghost {
+  padding: 4px 10px; font-size: 12.5px; border: 1px solid var(--border);
+  border-radius: var(--radius-sm); background: var(--surface); cursor: pointer; white-space: nowrap;
+}
+.up-mm-wrap .btn-ghost:hover { border-color: var(--ink-faint); }
+.up-mm-wrap .btn-ghost + .btn-ghost { margin-left: 6px; }
+/* A tab with nothing in it stays readable but stops competing for attention. */
+#up-tabs .subtab[data-zero="1"] { color: var(--ink-faint); font-weight: 400; }
+
+/* The Branch count opens the shops behind it (2026-10-01). Reads as a number, behaves as a link. */
+.ct-branch {
+  border: 0; background: none; padding: 0; font: inherit; color: var(--ink);
+  cursor: pointer; border-bottom: 1px dotted var(--ink-faint);
+}
+.ct-branch:hover { color: var(--accent, #1864ab); border-bottom-style: solid; }
