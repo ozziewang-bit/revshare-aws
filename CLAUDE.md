@@ -17,9 +17,10 @@ a term can no longer be discarded in silence, and the set you maintain by hand o
 default (§1y).
 2026-10-01: **the vocabulary is settled** — Brand / Merchant / Registry (§1aa); the Upload
 page is the file-vs-registry workbench with nine tabs (§1ab); three caller/callee bugs and the
-test that catches them (§1ac); **`L40` is retired** and two brands were being paid 0 (§1ad).
+test that catches them (§1ac); **`L40` is retired** and two brands were being paid 0 (§1ad);
+the A-B-C spec is built (§1ae) and either file can be uploaded alone (§1af).
 A payment-schedule notice goes to every merchant with a share that month, in one send (§1z).
-Service-worker `CACHE_VERSION` is at `revshare-v259` (bump on every shell change).
+Service-worker `CACHE_VERSION` is at `revshare-v269` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
 end-to-end before touching anything. The codebase is the ultimate source of
@@ -1488,6 +1489,57 @@ SG uses L40 nowhere; its unused device type was left alone (Device Types is per 
 Four rows in the merchant file list TWO devices in one cell (`…-LL40,ChargeSpot Station-S8`);
 `parseDeviceModel` returns the longest single match, so **4 machines are invisible**. 15 rows have
 a blank device type. Not fixed — reported.
+
+## 1ae. The spec, A–C (2026-10-01) — what the app does for each part
+
+The user's own words define the vocabulary (§1aa) and the work. Where a number appears below it
+was measured on the 1 Oct file, not estimated.
+
+**A — brand details come from the FILE.**
+- **A2** What reaches the registry: a merchant that is **Approved AND has a machine Deployed and
+  bound to it**. `parseMachineCountFile` keeps `State` and `Business ID` (it kept neither before);
+  a stored machine row with no `deployed` field means NOT KNOWN, and the deployed test is skipped
+  rather than read as zero. Ignoring review state here offered 347 merchants an Add button when
+  only 2 qualified — 334 were Disapproved.
+- **A3** Three tabs: not approved with machines live · Approved with nothing deployed · a machine
+  under a merchant no file carries. Measured 0 / 15 / 25 on the 29 Sep pair.
+- **A4** **The file is applied, never offered.** `applyFileCounts` writes merchant and machine
+  counts on every page read; `applyFileChanges` writes what a newly read file changes. Only the
+  fields the file owns are sent, so the contract merge cannot touch terms, entity or finance.
+  **A file older than the one on record is never applied**, and a held draft older than it is
+  discarded on sight — the browser keeps the last file loaded on THAT machine, which a colleague's
+  newer upload makes worthless.
+- **A5/A6** Brand not registered · Brand left the file, each with its own action.
+
+**B — terms are the app's, not the file's.**
+- **B2** `Adopt terms from another brand` in the terms editor: every other brand with paying terms,
+  archived included and marked, labelled with what it pays. It FILLS the form (deep-copied, so the
+  two stay independent) and saves nothing until Save.
+- **B4** "If any part is missing, it is incomplete" — three pages matching the editor's three
+  sections. `noPayout` excuses the SHARE TERMS only; an unpaid brand is still invoiced, so entity
+  and finance are still required. A rule that pays nothing counts as missing.
+  Measured: 0 share · 217 contract · 277 finance.
+
+**C — the run.**
+- **C3** Results group by contract **entity**, then brand, each entity with a subtotal. Brands with
+  no entity gather in ONE block at the end (51 of them), by the user's decision.
+- **C4** Clicking a brand opens block 1 of its download, built by the same `buildPartnerSheet`, so
+  the screen cannot disagree with the file the merchant receives.
+- **C5** `brandIsGone` / `goneMerchants` mark what the latest file no longer carries. Neither
+  changes a payout — a run computes what happened in the period.
+- **C1 deferred** by the user: matching stays roster-driven for now.
+
+**Every tab re-reads on demand** (`refreshMismatchData`, forced contract refetch) because the team
+edits the app while someone is looking at it, and **no merchant appears on two tabs**: the brand is
+fixed first, since registering a brand resolves every merchant under it.
+
+## 1af. Either file can be uploaded alone (2026-10-01)
+
+`putRosterRoute` rejected any body without merchants, and the client only POSTed when the MERCHANT
+file was present — so **a machine-list-only upload stored nothing and said nothing**. The two files
+are refreshed independently. Now whichever half an upload does not carry is carried through from
+what is recorded, **and each half keeps the time ITS file was read** (`putRoster` honours a passed
+`at`; hand-mirrored into SG). A machine list with no merchant list on record is a 409 with a reason.
 
 ## 2. Live URLs and resources
 

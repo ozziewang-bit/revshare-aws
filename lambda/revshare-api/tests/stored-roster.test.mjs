@@ -104,11 +104,14 @@ t2('the upload sends the machine rows, not just how many there were', () => {
     'and the cabinet total, which store count is not');
 });
 
-t2('the route stores exactly what it is sent', () => {
+t2('the route stores the machine rows it is sent', () => {
   const route = read2(new URL('../code/routes/contracts.mjs', import.meta.url), 'utf8');
   const fn = route.slice(route.indexOf('export async function putRosterRoute'),
                          route.indexOf('\n}', route.indexOf('export async function putRosterRoute')));
-  assert2.match(fn, /machines: Array\.isArray\(body\.machines\) \? body\.machines : \[\]/);
+  assert2.match(fn, /const machines = Array\.isArray\(body\.machines\) \? body\.machines : \[\]/);
+  // Since 2026-10-01 it keeps the OTHER half rather than blanking it, so the assertion is on
+  // what it does with what it was sent, not on a literal that no longer exists.
+  assert2.match(fn, /machines: hasMachines \? machines :/);
 });
 
 // The shape has to round-trip, or "retained" is a claim rather than a fact.
@@ -124,4 +127,54 @@ t2('a store with two models survives as two counts', () => {
   const cabinets = sent.reduce((a, m) => a + Object.values(m.counts).reduce((x, y) => x + y, 0), 0);
   assert2.equal(cabinets, 6, 'cabinets, which is not the 2 stores');
   assert2.equal(sent.length, 2);
+});
+
+// ── Either file can be uploaded on its own (2026-10-01) ──────────────────────────────────────
+// "if I upload machine file today, why you say nothing is stored" — because nothing WAS. The
+// route rejected any body without merchants, and the client only POSTed when the MERCHANT file
+// was present. A machine-list-only upload was parsed, drawn on screen, and dropped in silence.
+// The two files are refreshed independently: machines as they are deployed, merchants as they
+// sign up.
+t2('the client sends the roster when EITHER file is present', () => {
+  assert2.match(remember, /roster\?\.merchants\?\.length \|\| machines\?\.byStore\?\.size/);
+  assert2.match(remember, /merchants: roster\?\.merchants \|\| \[\]/,
+    'and a machine-only upload sends an empty merchant list rather than crashing');
+});
+
+t2('the route keeps the half this upload does not carry', () => {
+  const route = read2(new URL('../code/routes/contracts.mjs', import.meta.url), 'utf8');
+  const i = route.indexOf('export async function putRosterRoute');
+  const fn = route.slice(i, route.indexOf('\n}', i)).replace(/\/\/[^\n]*/g, '');
+  assert2.match(fn, /merchants: hasMerchants \? merchants : \(prev\.merchants \|\| \[\]\)/);
+  assert2.match(fn, /machines: hasMachines \? machines : \(\(prev && prev\.machines\) \|\| \[\]\)/);
+  assert2.match(fn, /excluded: hasMerchants \?/, 'the held-back list follows the merchant file');
+});
+
+t2('each half keeps the time ITS file was read', () => {
+  const route = read2(new URL('../code/routes/contracts.mjs', import.meta.url), 'utf8');
+  const i = route.indexOf('export async function putRosterRoute');
+  const fn = route.slice(i, route.indexOf('\n}', i)).replace(/\/\/[^\n]*/g, '');
+  // A machine upload must not restamp the merchant list, or a three-day-old list looks like today's.
+  assert2.match(fn, /at: hasMerchants \? null : \(prevMeta\?\.at \|\| null\)/);
+  assert2.match(fn, /machinesAt: hasMachines \?/);
+  const db = read2(new URL('../code/db.mjs', import.meta.url), 'utf8');
+  assert2.match(db, /at: doc\.at \|\| new Date\(\)\.toISOString\(\)/, 'putRoster honours a passed time');
+});
+
+t2('a machine list with no merchant list on record is refused, with a reason', () => {
+  const route = read2(new URL('../code/routes/contracts.mjs', import.meta.url), 'utf8');
+  const i = route.indexOf('export async function putRosterRoute');
+  const fn = route.slice(i, route.indexOf('\n}', i));
+  assert2.match(fn, /no_merchant_list/);
+  assert2.match(fn, /Upload the merchant list first/);
+  assert2.match(fn, /if \(!merchants\.length && !machines\.length\) return resp\(400/,
+    'and an empty body is still a 400');
+});
+
+// db.mjs is never synced between regions (§8).
+t2('the SG copy of putRoster honours the passed read time too', () => {
+  let sg;
+  try { sg = read2('/Users/ozziewang/revshare_sg/lambda/revshare-api/code/db.mjs', 'utf8'); }
+  catch { return; }
+  assert2.match(sg, /at: doc\.at \|\| new Date\(\)\.toISOString\(\)/);
 });

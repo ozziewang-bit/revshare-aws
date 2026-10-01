@@ -168,7 +168,24 @@ export async function putRegistryRoute(event) {
 export async function putRosterRoute(event) {
   const body = JSON.parse(event.body || '{}');
   const merchants = Array.isArray(body.merchants) ? body.merchants : [];
-  if (!merchants.length) return resp(400, { error: 'no_merchants' });
+  const machines = Array.isArray(body.machines) ? body.machines : [];
+  if (!merchants.length && !machines.length) return resp(400, { error: 'no_rows' });
+
+  // A MACHINE-ONLY UPLOAD IS A REAL THING (2026-10-01). The two files are refreshed
+  // independently — the machine list changes as machines are deployed, the merchant list as
+  // merchants sign up — and this route used to reject anything without merchants, so uploading
+  // the machine list on its own stored NOTHING and said nothing. The merchant half is carried
+  // through from what is already recorded, with its own read time, so refreshing one file never
+  // silently ages or discards the other.
+  // Always read what is already recorded: whichever half this upload does NOT carry is carried
+  // through from it, with its own read time.
+  const prev = await dbModule.getRosterRows();
+  const prevMeta = await dbModule.getRosterMeta();
+  if (!merchants.length && !(prev && (prev.merchants || []).length)) {
+    return resp(409, { error: 'no_merchant_list',
+      message: 'There is no merchant list on record yet, so a machine list has nothing to '
+             + 'attach to. Upload the merchant list first — the two can go up together.' });
+  }
 
   // Remembering the file is ONE act, so the brand list it contained is recorded here too — that
   // is what the Merchant view's ⦿ marks compare against. It creates and changes no merchant:
@@ -177,13 +194,21 @@ export async function putRosterRoute(event) {
   if (Array.isArray(body.names) && body.names.length) {
     lastUpload = await putLastUpload(body.names.filter(Boolean), { by: event.auth?.email || null });
   }
+  const hasMerchants = merchants.length > 0;
+  const hasMachines = machines.length > 0;
   const rec = await dbModule.putRoster({
-    merchants,
-    excluded: Array.isArray(body.excluded) ? body.excluded : [],
-    machines: Array.isArray(body.machines) ? body.machines : [],
-    machinesAt: body.machinesAt || null,
-    machineStoreCount: body.machineStoreCount ?? null,
-    machinesUnbound: body.machinesUnbound ?? null,
+    merchants: hasMerchants ? merchants : (prev.merchants || []),
+    excluded: hasMerchants ? (Array.isArray(body.excluded) ? body.excluded : [])
+                           : (prev.excluded || []),
+    machines: hasMachines ? machines : ((prev && prev.machines) || []),
+    // Each half keeps the time ITS file was read. Refreshing one must never restamp the other,
+    // or a machine upload would make a three-day-old merchant list look like today's.
+    at: hasMerchants ? null : (prevMeta?.at || null),
+    machinesAt: hasMachines ? (body.machinesAt || new Date().toISOString())
+                            : (prevMeta?.machinesAt || null),
+    machineStoreCount: hasMachines ? (body.machineStoreCount ?? null)
+                                   : (prevMeta?.machineStoreCount ?? null),
+    machinesUnbound: hasMachines ? (body.machinesUnbound ?? null) : null,
     by: event.auth?.email || null,
   });
   return resp(200, { ...rec, lastUpload });
@@ -240,7 +265,11 @@ export function brandsFromRoster(merchants, machines) {
         }
       }
     }
-    out[key] = { label: b.label, branches: b.shops.size, units: b.units, cabinets };
+    // The merchant NAMES too (C5, 2026-10-01): the run view marks a merchant the latest file no
+    // longer carries, and that can only be answered by the file's own list. ~100 KB for 2,380
+    // merchants across 303 brands, against a comparison that already crosses the wire.
+    out[key] = { label: b.label, branches: b.shops.size, units: b.units, cabinets,
+                 merchantNames: [...b.shops] };
   }
   return out;
 }
@@ -473,20 +502,63 @@ export function registryCheck(doc, registry, contracts, cap = 400) {
     if (!rows.has(k)) rows.set(k, []);
     rows.get(k).push(m);
   }
+
+  // WHAT REACHES THE REGISTRY (user, rule A2): a merchant that is APPROVED and has a machine
+  // DEPLOYED and BOUND to it. Offering an "Add" button for anything else asks for something the
+  // rule forbids — and it is why a Pending merchant appeared both here and under "Not approved,
+  // machines live". Measured 2026-10-01: of 347 listed, 334 were Disapproved and 11 Pending; only
+  // 2 qualified.
+  //
+  // The deployed test applies only where the machine state is actually known: a stored machine
+  // row from before 2026-10-01 carries counts and no `deployed`, and treating that as "nothing is
+  // deployed" would empty the list for the wrong reason.
+  const machinesOf = new Map();
+  for (const m of (doc && doc.machines) || []) {
+    const k = key(m.store);
+    if (k) machinesOf.set(k, m);
+  }
+  const stateKnown = [...machinesOf.values()].some(m => Number.isFinite(Number(m.deployed)));
+  const qualifies = (f) => {
+    if (f.state !== 'Approved') return false;
+    if (!stateKnown) return true;
+    const m = machinesOf.get(key(f.name));
+    return !!(m && Number(m.deployed) > 0);
+  };
   const pick = (list) => list.find(r => r.contractId && live.has(r.contractId)) || list[0];
 
+  // ONE NAME, ONE PAGE (2026-10-01). A brand with a single merchant shares its name with that
+  // merchant, so the same fact surfaced twice: `Minato Shokudou` as an unregistered BRAND and as
+  // a MERCHANT with no brand linked. Precedence — the brand is fixed first, because registering
+  // it resolves every merchant under it, so those merchants are counted here and listed on the
+  // brand tab, never in both. Same rule `uploadTableHtml` already applies to its own buckets.
   const out = { missing: [], wrongLink: [], noLink: [], notInFile: [], duplicated: [] };
   const counts = { missing: 0, missingNoMerchant: 0, wrongLink: 0, noLink: 0, notInFile: 0,
-                   duplicated: 0, duplicateRows: 0 };
+                   duplicated: 0, duplicateRows: 0, onBrandTab: 0, notEligible: 0 };
+
+  // Brands the file names that are not registered, and registered brands the file has dropped —
+  // both already have a tab of their own.
+  const unregistered = new Set();
+  for (const f of file.values()) if (f.brand && !byBrand.has(key(f.brand))) unregistered.add(key(f.brand));
+  const fileBrands = new Set([...file.values()].map(f => key(f.brand)).filter(Boolean));
+  const departed = new Set();
+  for (const c of contracts || []) {
+    if (c && !c.archived && c.merchantName && !fileBrands.has(key(c.merchantName))) {
+      departed.add(c.contractId);
+    }
+  }
+  const onBrandTab = (brand, contractId) =>
+    (brand && unregistered.has(key(brand))) || (contractId && departed.has(contractId));
 
   for (const [k, f] of file) {
     const want = byBrand.get(key(f.brand)) || null;
     const list = rows.get(k);
     if (!list) {
-      // No row at all. Only actionable when the brand has a merchant record — otherwise the
-      // merchant has to exist first, which is the "No contract" tab's job, not this one.
-      if (want) { counts.missing++; if (out.missing.length < cap) out.missing.push({ ...f, contractId: want }); }
-      else counts.missingNoMerchant++;
+      // No row at all. Actionable only when the brand is registered AND the merchant qualifies
+      // under rule A2 — otherwise adding it is not something anyone should be offered.
+      if (!want) { counts.missingNoMerchant++; continue; }
+      if (!qualifies(f)) { counts.notEligible++; continue; }
+      counts.missing++;
+      if (out.missing.length < cap) out.missing.push({ ...f, contractId: want });
       continue;
     }
     if (list.length > 1) {
@@ -496,6 +568,9 @@ export function registryCheck(doc, registry, contracts, cap = 400) {
     const r = pick(list);
     const linked = r.contractId && live.has(r.contractId);
     if (!linked) {
+      // Its brand is not registered — the fix is on the brand tab, and listing the merchant here
+      // too would ask for the same thing twice.
+      if (onBrandTab(f.brand, null)) { counts.onBrandTab++; continue; }
       counts.noLink++;
       if (out.noLink.length < cap) out.noLink.push({ ...f, rows: list.length, contractId: want });
     } else if (want && r.contractId !== want) {
@@ -508,9 +583,11 @@ export function registryCheck(doc, registry, contracts, cap = 400) {
   }
   for (const [k, list] of rows) {
     if (file.has(k)) continue;
+    const r = pick(list);
+    // Its whole brand has left the file; that tab says so once, for the brand.
+    if (onBrandTab(null, r.contractId)) { counts.onBrandTab++; continue; }
     counts.notInFile++;
     if (out.notInFile.length < cap) {
-      const r = pick(list);
       out.notInFile.push({ name: r.name, rows: list.length,
                            brand: (live.get(r.contractId) || {}).merchantName || null });
     }

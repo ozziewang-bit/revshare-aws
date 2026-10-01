@@ -22,8 +22,12 @@ const grab = (n) => {
     if (app[j] === '{') b++; else if (app[j] === '}') { b--; if (!b) return app.slice(i, j + 1); }
   }
 };
+const constOf2 = (n, end) => app.slice(app.indexOf(`const ${n} =`),
+                                       app.indexOf(end, app.indexOf(`const ${n} =`)) + end.length);
 const fileMismatches = new Function(
-  grab('termModelsOf') + grab('fileMismatches') + 'return fileMismatches;')();
+  constOf2('INCOMPLETE_FIELDS', '};') + grab('ruleHasAnyValue')
+  + 'const entityName = c => c.counterParty || "";'
+  + grab('termModelsOf') + grab('fileMismatches') + 'return fileMismatches;')();
 // Assertions must never match words inside a comment — the comments here describe the bugs they
 // prevent, so they contain the strings being looked for. Bitten three times; strip first.
 const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
@@ -117,18 +121,49 @@ test('counts differing from the file are flagged, model changes included', () =>
   assert.deepEqual(m2.counts[0].changed.sort(), ['LL40', 'S8']);
 });
 
-test('a contract agreeing with the file appears nowhere', () => {
+// "Complete" now means every part — the three incomplete-terms pages look at contract and
+// finance details too, so a fixture must carry them to appear nowhere.
+test('a brand agreeing with the file, and complete, appears nowhere', () => {
   const m = fileMismatches(
     [{ contractId: 'ok', merchantName: 'Fine', branchCount: 2, units: { S8: 2 },
-       financeContactEmail: 'a@b.com', rule: gp(20) }],
+       aggregationMode: 'whole', financeContactEmail: 'a@b.com', rule: gp(20),
+       counterParty: 'Some Co Ltd', startDate: '2026-01-01', endDate: '2027-01-01',
+       terminationNoticeDays: 30, autoRenewal: 'Yes', bankName: 'B', bankAccountName: 'A',
+       bankAccountNumber: '1', financeContactName: 'F', }],
     { fine: { label: 'Fine', branches: 2, units: { S8: 2 } } });
   for (const [k, list] of Object.entries(m)) assert.deepEqual(list, [], k);
 });
 
-test('no terms, and no finance email, are separate buckets', () => {
+// B4 (2026-10-01): "if any part is missing, it is incomplete" — three parts, three pages, each
+// opening the section of the editor it is missing.
+test('incomplete terms are split into the editor\'s own three parts', () => {
   const m = fileMismatches(CONTRACTS, BRANDS);
-  assert.deepEqual(m.noTerms.map(x => x.label), ['No Terms']);
-  assert.deepEqual(m.noFinance.map(x => x.label), ['No Mail']);
+  assert.ok(m.noShareTerms.some(x => x.label === 'No Terms'), 'no rule is a share-terms gap');
+  assert.ok(m.noFinanceInfo.some(x => x.label === 'No Mail'), 'no finance email is a finance gap');
+  assert.ok(m.noContractInfo.length, 'and a missing entity or date is a contract gap');
+});
+
+test('each row names exactly what is missing', () => {
+  const m = fileMismatches(CONTRACTS, BRANDS);
+  const row = m.noShareTerms.find(x => x.label === 'No Terms');
+  assert.deepEqual(row.gaps.sort(), ['aggregation', 'rule']);
+});
+
+test('a rule that pays nothing is as incomplete as no rule', () => {
+  const m = fileMismatches(
+    [{ contractId: 'z', merchantName: 'Zero', aggregationMode: 'whole',
+       rule: { type: 'percent', rows: [{ percent: 0, model: 'ALL' }], _t: 'gp' } }],
+    { zero: { label: 'Zero', branches: 1, units: { S8: 1 } } });
+  assert.deepEqual(m.noShareTerms[0].gaps, ['rule pays nothing']);
+});
+
+test('a brand marked no-payout is excused its SHARE TERMS only', () => {
+  const m = fileMismatches(
+    [{ contractId: 'n', merchantName: 'NP', noPayout: true }],
+    { np: { label: 'NP', branches: 1, units: { S8: 1 } } });
+  assert.deepEqual(m.noShareTerms, [], 'deliberately unpaid, so no terms are expected');
+  assert.ok(m.noContractInfo.length, 'but it is still invoiced, so the entity is still required');
+  assert.ok(m.noFinanceInfo.length);
 });
 
 test('no file on record yet means nothing is claimed to disagree', () => {
@@ -175,13 +210,19 @@ const render = (contracts, brands, check = CHECK) =>
   const rosterDateLabel = () => '1 Oct';
   const MISMATCH_READ_AT = new Date('2026-10-01T09:30:00Z');
   let REGISTRY_CHECK = CHK;
+  let FILE_COUNTS_APPLIED = { at: new Date(), done: 3, failed: [] };
   const wireMismatchActions = () => {};
   ${constOf('UP_TABS', '];')}
+  ${constOf('INCOMPLETE_FIELDS', '};')} ${constOf('INCOMPLETE_LABEL', '};')}
+  ${grab('ruleHasAnyValue')}
+  const entityName = c => c.counterParty || '';
   ${grab('termModelsOf')} ${grab('fileMismatches')} ${grab('registryHtml')} ${grab('drawMismatchTab')}
   const m = fileMismatches(CONTRACTS, BRANDS);
   m.registry = CHK;
   const mc = CHK.machineCheck || { counts: {} };
   m.mDeployed = mc.notApprovedDeployed || [];
+  m.noShareTerms = m.noShareTerms || []; m.noContractInfo = m.noContractInfo || [];
+  m.noFinanceInfo = m.noFinanceInfo || [];
   m.mNone = mc.approvedNoDeployed || [];
   m.mUnbound = mc.deployedUnbound || [];
   const out = {};
@@ -216,7 +257,10 @@ test('nothing leaks undefined, [object Object] or NaN into a cell', () => {
 test('an empty tab says the app and the file agree', () => {
   const { out } = render(
     [{ contractId: 'ok', merchantName: 'Fine', branchCount: 1, units: { S8: 1 },
-       financeContactEmail: 'a@b.com', rule: gp(20) }],
+       aggregationMode: 'whole', financeContactEmail: 'a@b.com', rule: gp(20),
+       counterParty: 'Some Co Ltd', startDate: '2026-01-01', endDate: '2027-01-01',
+       terminationNoticeDays: 30, autoRenewal: 'Yes', bankName: 'B', bankAccountName: 'A',
+       bankAccountNumber: '1', financeContactName: 'F', }],
     { fine: { label: 'Fine', branches: 1, units: { S8: 1 } } },
     { counts: {}, missing: [], wrongLink: [], noLink: [], notInFile: [], duplicated: [],
       machineCheck: { counts: { hasMachineFile: true }, notApprovedDeployed: [],
@@ -301,4 +345,174 @@ test('with no machine list stored, the machine tabs say so instead of looking cl
   }
   // The file-only tabs still answer normally.
   assert.ok(!/No machine list/.test(out.terms));
+});
+
+// ── The file's counts are WRITTEN, not listed as a chore (2026-10-01) ────────────────────────
+// "didn't i just say you can update the registry directly?" — yes, and only the DISPLAY had been
+// built. The Counts tab was a to-do list whose only button was "Edit terms", which has nothing to
+// do with a count. The file owns these numbers, so one button writes all of them.
+// "just update, i said my file is the truth, you don't have to ask me to initiate it" —
+// so there is no button and no confirm. The counts are written when the page reads them.
+test('the counts tab has NO button — the file is applied, not offered', () => {
+  const { out } = render(CONTRACTS, BRANDS);
+  assert.ok(!/cnt-apply|Update all/.test(out.counts), 'nothing to press');
+  assert.match(out.counts, /still to write/);
+  assert.match(out.counts, /Terms, entity,\s*contacts and past runs are untouched/);
+});
+
+test('every tab says how many brands were written from the file', () => {
+  const { out } = render(CONTRACTS, BRANDS);
+  for (const [id, html] of Object.entries(out)) {
+    assert.match(html, /3 brand\(s\) updated from the file/, id);
+  }
+});
+
+test('applyFileCounts sends only the three fields the file owns', () => {
+  const fn = strip(grab('applyFileCounts'));
+  assert.match(fn, /branchCount: r\.fileBranches, units, installedUnits/);
+  assert.ok(!/rule|entityId|financeContactEmail|startDate/.test(fn),
+            'a contract PUT merges, so anything else sent would overwrite something it owns');
+  assert.match(fn, /installedUnits = Object\.values\(units\)\.reduce/,
+               'the total is derived from the file, not carried over');
+  assert.match(fn, /failed\.push/, 'one brand failing must not hide the rest');
+  assert.match(fn, /if \(!can\('manageMerchants'\)\) return null/, 'and permission still applies');
+});
+
+test('it runs on its own, as part of reading the file', () => {
+  const fn = strip(grab('refreshMismatchData'));
+  assert.match(fn, /await applyFileCounts\(\)/);
+  assert.match(fn, /ensureContractCache\(true\)/, 'and re-reads, so the tabs show what was written');
+});
+
+// "what do you mean by model change?" — it meant a MACHINE TYPE present on one side and absent
+// on the other, which is not the same as a different count and matters on its own: a per-machine
+// term keyed to the type that disappeared matches no machine and pays nothing (§1ad).
+test('a machine type the file no longer lists is named, in plain words', () => {
+  const { out } = render(
+    [{ contractId: 'b', merchantName: 'Banpuen', branchCount: 1, units: { LL40: 1 },
+       financeContactEmail: 'a@b.com', rule: gp(10) }],
+    { banpuen: { label: 'Banpuen', branches: 1, units: { S8: 1 } } });
+  assert.match(out.counts, /no longer has LL40/);
+  assert.ok(!/model changed/.test(out.counts), 'the word "model" was ours, not yours');
+  assert.match(out.counts, /pays nothing/, 'and the tooltip says why it matters');
+  assert.match(out.counts, /Check terms/, 'with a way straight to the terms');
+});
+
+test('a brand whose counts merely differ gets no warning and no terms button', () => {
+  const { out } = render(
+    [{ contractId: 'c', merchantName: 'Center One', branchCount: 3, units: { S8: 4, L20: 1 },
+       financeContactEmail: 'a@b.com', rule: gp(10) }],
+    { 'center one': { label: 'Center One', branches: 3, units: { S8: 2, L20: 1 } } });
+  assert.ok(!/no longer has/.test(out.counts), 'both types are still there — only the count moved');
+  assert.ok(!/Check terms/.test(out.counts), 'nothing to check: the counts write themselves');
+});
+
+// ── A file older than the recorded one is never applied (2026-10-01) ─────────────────────────
+// The browser holds the last file loaded ON THIS MACHINE. On 2026-10-01 that was the 29 Sept
+// pair while the server's roster was that morning's, uploaded by a colleague. Once the file is
+// applied automatically, re-previewing the held one would write the OLDER numbers over the newer
+// upload without a word — "an improvement overwrote existing data", which is the one rule that
+// has never been allowed to bend.
+const stale = (mine, theirs) => new Function('MINE', 'THEIRS', `
+  const UPLOAD_STATE = { at: MINE };
+  const ROSTER_BRANDS = { at: THEIRS };
+  ${grab('fileIsStale')}
+  return fileIsStale();
+`)(mine, theirs);
+
+test('a held file read before the recorded upload is stale', () => {
+  assert.equal(stale('2026-09-29T09:06:00Z', '2026-10-01T04:05:46Z'), true);
+});
+
+test('a file read after it is not, and neither is the same instant', () => {
+  assert.equal(stale('2026-10-01T05:00:00Z', '2026-10-01T04:05:46Z'), false);
+  assert.equal(stale('2026-10-01T04:05:46Z', '2026-10-01T04:05:46Z'), false);
+});
+
+test('with either date unknown it is NOT called stale', () => {
+  // Refusing to apply on a missing timestamp would block the first upload of all.
+  assert.equal(stale(null, '2026-10-01T04:05:46Z'), false);
+  assert.equal(stale('2026-09-29T09:06:00Z', null), false);
+  assert.equal(stale(null, null), false);
+});
+
+test('the bulk apply stops before writing anything', () => {
+  const fn = strip(grab('applyFileChanges'));
+  const guard = fn.indexOf('fileIsStale()');
+  const write = fn.indexOf("method: 'PUT'");
+  assert.ok(guard > 0 && write > guard, 'the check comes before the first write');
+  assert.match(fn, /return \{ done: 0, failed: \[\], stale: true \}/);
+});
+
+test('the per-row button refuses too, and says why', () => {
+  const fn = strip(grab('updateFromFile'));
+  assert.match(fn, /if \(fileIsStale\(\)\)/);
+  assert.match(fn, /older than the one already recorded/);
+  const guard = fn.indexOf('fileIsStale()');
+  const write = fn.indexOf("method: 'PUT'");
+  assert.ok(guard > 0 && write > guard);
+});
+
+test('the screen says so where the file is named', () => {
+  const fn = strip(grab('heldBannerHtml'));
+  assert.match(fn, /This file is older than the one already recorded/);
+  assert.match(fn, /nothing on this screen is\s*applied/);
+});
+
+// ── A stale held file is discarded, not shown (2026-10-01) ───────────────────────────────────
+// "why don't you just use these fucking new files, instead you want me to forget previous file"
+// — fair. The browser held the 29 Sept pair while the app's record was that morning's upload by
+// a colleague. Telling the person to press "Forget this file" asks them to tidy up after the app.
+test('the screen drops a held file older than the recorded upload, by itself', () => {
+  const src = readFileSync(new URL('../../../frontend/app.js', import.meta.url), 'utf8');
+  const i = src.indexOf('async function renderUploadScreen');
+  const fn = strip(src.slice(i, src.indexOf("el.querySelector('#up-out').addEventListener", i)));
+  assert.match(fn, /new Date\(held\.at\)\.getTime\(\) < new Date\(ROSTER_BRANDS\.at\)\.getTime\(\)/);
+  assert.match(fn, /await clearUploadDraft\(\)/, 'and removes it, so it cannot come back');
+  assert.match(fn, /held = null;/, 'and does not restore it');
+  assert.match(fn, /has been discarded/, 'and says what it did, naming the file');
+});
+
+test('a held file that is NOT older is kept — work in progress survives a reload', () => {
+  const src = readFileSync(new URL('../../../frontend/app.js', import.meta.url), 'utf8');
+  const i = src.indexOf('async function renderUploadScreen');
+  const fn = strip(src.slice(i, src.indexOf("el.querySelector('#up-out').addEventListener", i)));
+  // The guard needs BOTH dates; a missing one must leave the draft alone rather than bin it.
+  assert.match(fn, /if \(held && held\.at && ROSTER_BRANDS\.at/);
+  assert.match(fn, /await restoreUploadDraft\(held\)/);
+});
+
+// ── B2: adopt terms from another brand (2026-10-01) ─────────────────────────────────────────
+// "when edit terms, I can type to complete every details terms, or adopt current or archived one
+// (select by brand)". Archived brands are offered on purpose — an ended contract is often the
+// exact shape being renewed.
+const editorSrc = (() => {
+  const i = app.indexOf('async function openTermsEditor(');
+  return strip(app.slice(i, app.indexOf('\n}\n', i)));
+})();
+
+test('the editor offers every other brand that has terms that pay', () => {
+  assert.match(editorSrc, /x\.contractId !== contractId && x\.rule && ruleHasAnyValue\(x\.rule\)/);
+  assert.match(editorSrc, /d\.archived \? ' \(archived\)' : ''/, 'archived ones are offered, and marked');
+  assert.match(editorSrc, /termText\(d\.rule\)/, 'labelled with what they actually pay');
+});
+
+test('adopting FILLS the form — it saves nothing by itself', () => {
+  const i = editorSrc.indexOf("adopt.addEventListener('change'");
+  const handler = editorSrc.slice(i, editorSrc.indexOf('\n  });', i));
+  assert.ok(!/api\(|method: 'PUT'/.test(handler), 'nothing is written until Save');
+  assert.match(handler, /renderStructuredRuleEditor\(ruleBox/, 'it repaints the editor');
+  assert.match(handler, /agg\.value = d\.aggregationMode/, 'and brings the aggregation mode with it');
+  assert.match(handler, /nopay\.checked = false/, 'adopting paying terms clears "not paid"');
+});
+
+test('the rule is deep-copied, so the two brands stay independent', () => {
+  const i = editorSrc.indexOf("adopt.addEventListener('change'");
+  const handler = editorSrc.slice(i, editorSrc.indexOf('\n  });', i));
+  assert.match(handler, /JSON\.parse\(JSON\.stringify\(d\.rule\)\)/);
+});
+
+test('the editor variable can be replaced when terms are adopted', () => {
+  // `const editor` would make adopting throw on assignment — the save reads `editor` afterwards.
+  assert.match(editorSrc, /let editor = renderStructuredRuleEditor/);
 });

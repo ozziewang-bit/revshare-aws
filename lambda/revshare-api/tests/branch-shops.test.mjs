@@ -107,9 +107,9 @@ test('the dialog shows the four columns, and says when a file read fails', () =>
                    'Merchant label', 'Machine type']) {
     assert.match(fn, new RegExp(h), h);
   }
-  assert.match(fn, /Could not read the shops for this brand/, 'a failure says so');
+  assert.match(fn, /Could not read the merchants for this brand/, 'a failure says so');
   assert.match(fn, /no device type/, 'and a shop with no model is marked, not left blank');
-  assert.match(fn, /bl-filter/, '1,480 shops for 7-Eleven, so it filters');
+  assert.match(fn, /bl-filter/, '1,480 merchants for 7-Eleven, so it filters');
   assert.match(strip(fn), /max-height:52vh;overflow-y:auto/, 'and scrolls inside the dialog');
 });
 

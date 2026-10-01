@@ -1328,3 +1328,11 @@ p.rc-warn {
   cursor: pointer; border-bottom: 1px dotted var(--ink-faint);
 }
 .ct-branch:hover { color: var(--accent, #1864ab); border-bottom-style: solid; }
+
+/* Run detail: results grouped by contract entity (2026-10-01). */
+.ts tr.run-ent td { background: var(--surface-muted); padding-top: 12px; }
+.run-brand {
+  border: 0; background: none; padding: 0; font: inherit; color: var(--ink);
+  cursor: pointer; border-bottom: 1px dotted var(--ink-faint); text-align: left;
+}
+.run-brand:hover { color: var(--accent, #1864ab); border-bottom-style: solid; }

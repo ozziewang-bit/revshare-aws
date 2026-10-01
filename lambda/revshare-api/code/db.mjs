@@ -566,7 +566,10 @@ export async function putRoster(doc) {
     Body: JSON.stringify(doc), ContentType: 'application/json',
   }));
   const rec = {
-    at: new Date().toISOString(),
+    // The merchant list and the machine list are refreshed independently, so each carries its
+    // own read time. `at` is when the MERCHANT list was read — a machine-only upload passes the
+    // previous one through rather than stamping today over a file nobody re-read.
+    at: doc.at || new Date().toISOString(),
     by: doc.by || null,
     s3Key: key,
     rosterCount: (doc.merchants || []).length,

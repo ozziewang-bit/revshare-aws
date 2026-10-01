@@ -157,18 +157,21 @@ const DOC = {
 };
 const CONTRACTS2 = [C('gg', 'GG Bistro'), C('udon', 'Udon'), C('old', 'Archived', { archived: true })];
 
-test('a shop the file names with no registry row is an ADD', () => {
+// REVISED 2026-10-01: rule A2 — only an APPROVED merchant reaches the registry, so a held-back
+// one is counted rather than offered. Review state is still shown on every row it does list, and
+// held-back merchants with machines live have their own tab; what changed is that the registry
+// stopped offering an Add button for something the rule forbids.
+test('a merchant the file names with no registry row is an ADD, if it is Approved', () => {
   const r = registryCheck(DOC, [], CONTRACTS2);
-  assert.equal(r.counts.missing, 4, 'three Approved and the held-back one');
-  assert.equal(r.counts.missingNoMerchant, 1, 'and the one whose brand has brand not registered');
+  assert.equal(r.counts.missing, 3, 'the three Approved ones');
+  assert.equal(r.counts.notEligible, 1, 'the held-back one is counted, not offered');
+  assert.equal(r.counts.missingNoMerchant, 1, 'and the one whose brand is not registered');
   assert.ok(r.missing.every(x => x.contractId === 'gg'), 'each carries where to point it');
 });
 
-test('a held-back shop is included, with its state shown', () => {
+test('a held-back merchant is never offered, and state is shown where it IS listed', () => {
   const r = registryCheck(DOC, [], CONTRACTS2);
-  const held = r.missing.find(x => x.name === 'Held back shop');
-  assert.ok(held, 'approval is not a filter');
-  assert.equal(held.state, 'Disapproved');
+  assert.ok(!r.missing.some(x => x.name === 'Held back shop'));
   assert.equal(r.missing.find(x => x.name === 'Approved shop').state, 'Approved');
 });
 
@@ -326,4 +329,114 @@ test('"deployed" is matched loosely, so a respelling does not read as not-deploy
   const fe = readFileSync(new URL('../../../frontend/app.js', import.meta.url), 'utf8');
   assert.match(fe, /const isDeployed = \(v\) => \/deploy\/i\.test/);
   assert.ok(app2.includes('machineCheck'), 'and the comparison lives on the server');
+});
+
+// ── One name, one page (2026-10-01) ──────────────────────────────────────────────────────────
+// "please don't show the same mismatch in different sub page, it's really confusing." A brand
+// with one merchant shares its name with that merchant, so `Minato Shokudou` appeared as an
+// unregistered BRAND and as a MERCHANT with no brand linked — one fact, two tabs. Measured: 11
+// names on two pages. Precedence: the BRAND is fixed first, because registering it resolves every
+// merchant under it.
+const DOC3 = {
+  merchants: [
+    { name: 'Minato Shokudou', partnerName: 'Minato Shokudou', model: 'S8' },  // brand unregistered
+    { name: 'Real shop', partnerName: 'GG Bistro', model: 'S8' },
+  ],
+  excluded: [],
+};
+const CONTRACTS3 = [C('gg', 'GG Bistro'), C('left', 'Brand That Left')];
+
+test('a merchant whose brand is not registered is NOT also listed under the registry', () => {
+  const r = registryCheck(DOC3, [{ name: 'Minato Shokudou' }], CONTRACTS3);
+  assert.deepEqual(r.noLink.map(x => x.name), [],
+    'the brand tab asks for it once; asking here too is the same request twice');
+  assert.ok(r.counts.onBrandTab >= 1, 'but it is counted, not silently dropped');
+});
+
+test('a merchant of a brand that left the file is not listed either', () => {
+  const r = registryCheck(DOC3, [{ name: 'Old shop', contractId: 'left' }], CONTRACTS3);
+  assert.deepEqual(r.notInFile.map(x => x.name), []);
+  assert.ok(r.counts.onBrandTab >= 1);
+});
+
+test('a merchant whose brand IS registered is still listed', () => {
+  const r = registryCheck(DOC3, [{ name: 'Real shop' }], CONTRACTS3);
+  assert.deepEqual(r.noLink.map(x => x.name), ['Real shop'],
+    'nothing is hidden when the brand is fine and the merchant is the problem');
+});
+
+test('no name appears in two sections of the registry answer', () => {
+  const r = registryCheck(DOC3, [{ name: 'Real shop' }, { name: 'Real shop' }], CONTRACTS3);
+  const seen = new Map();
+  for (const k of ['missing', 'wrongLink', 'noLink', 'notInFile']) {
+    for (const x of r[k]) {
+      const n = String(x.name).toLowerCase();
+      assert.ok(!seen.has(n), `${x.name} is in both ${seen.get(n)} and ${k}`);
+      seen.set(n, k);
+    }
+  }
+});
+
+test('the page says how many were left out, and where they went', () => {
+  const app2 = readFileSync(new URL('../../../frontend/app.js', import.meta.url), 'utf8');
+  const i = app2.indexOf('function registryHtml');
+  const fn = app2.slice(i, app2.indexOf('\n}\n', i));
+  assert.match(fn, /c\.missingNoMerchant \+ \(c\.onBrandTab \|\| 0\)/);
+  assert.match(fn, /whose brand is the thing/);
+  assert.match(fn, /sorting the brand sorts every merchant under it/);
+});
+
+// ── Only what rule A2 allows is offered (2026-10-01) ─────────────────────────────────────────
+// "Demo Ying also shows at not approved, machines live" — because the registry list ignored
+// review state. Rule A2: ONLY an Approved merchant with a machine deployed and bound to it
+// reaches the registry. Measured: of 347 offered with an Add button, 334 were Disapproved and 11
+// Pending; 2 qualified. Offering the rest asks for something the rule forbids, and puts the same
+// merchant on two tabs.
+const DOC4 = {
+  merchants: [{ name: 'Good one', partnerName: 'GG Bistro' },
+              { name: 'No machine', partnerName: 'GG Bistro' }],
+  excluded: [{ name: 'Pending one', label: 'GG Bistro', reviewState: 'Pending' },
+             { name: 'Disapproved one', label: 'GG Bistro', reviewState: 'Disapproved' }],
+  machines: [{ store: 'Good one', counts: { S8: 1 }, deployed: 1, total: 1 },
+             { store: 'No machine', counts: { S8: 1 }, deployed: 0, total: 1 },
+             { store: 'Pending one', counts: { S8: 2 }, deployed: 2, total: 2 }],
+};
+
+test('a merchant that is not Approved is never offered for the registry', () => {
+  const r = registryCheck(DOC4, [], [C('gg', 'GG Bistro')]);
+  assert.deepEqual(r.missing.map(x => x.name), ['Good one']);
+  assert.equal(r.counts.notEligible, 3, 'the other three are counted, not silently dropped');
+});
+
+test('an Approved merchant with nothing deployed is not offered either', () => {
+  const r = registryCheck(DOC4, [], [C('gg', 'GG Bistro')]);
+  assert.ok(!r.missing.some(x => x.name === 'No machine'));
+});
+
+// Machine rows written before 2026-10-01 carry counts and no state. Treating that as "nothing is
+// deployed" would empty the list for the wrong reason.
+test('with no machine state on record, Approved alone is the test', () => {
+  const old = { ...DOC4, machines: DOC4.machines.map(({ store, counts }) => ({ store, counts })) };
+  const r = registryCheck(old, [], [C('gg', 'GG Bistro')]);
+  assert.deepEqual(r.missing.map(x => x.name).sort(), ['Good one', 'No machine']);
+  assert.equal(r.counts.notEligible, 2, 'and the two not Approved are still excluded');
+});
+
+test('the page says how many were held back and why', () => {
+  const app2 = readFileSync(new URL('../../../frontend/app.js', import.meta.url), 'utf8');
+  const i = app2.indexOf('function registryHtml');
+  const fn = app2.slice(i, app2.indexOf('\n}\n', i));
+  assert.match(fn, /c\.notEligible/);
+  assert.match(fn, /not Approved, or\s*\n?\s*have no deployed machine/);
+  assert.match(fn, /Not approved, machines live/, 'and points at the tab that does cover them');
+});
+
+test('the section says the brand is already registered', () => {
+  const app2 = readFileSync(new URL('../../../frontend/app.js', import.meta.url), 'utf8');
+  const i = app2.indexOf('function registryHtml');
+  const fn = app2.slice(i, app2.indexOf('\n}\n', i));
+  // "shouldn't Kliff Beach Bistro & Bar be at brand not registered part?" — no: the BRAND is
+  // registered, only the merchant row is missing, and a one-merchant brand shares its name.
+  assert.match(fn, /whose brand is already registered/);
+  assert.match(fn, /A brand with one merchant shares its name/);
 });
