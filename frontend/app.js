@@ -1820,6 +1820,11 @@ function registryHtml(chk) {
        They change no payout. Collapsing them is a separate job — nothing here writes to them.`, '');
   }
 
+  if (c.internal) {
+    html += `<p class="muted" style="margin:14px 0 0;font-size:12.5px;">
+      ${c.internal} ChargeSpot machine(s) are not listed — internal testing machines, not a
+      merchant. They are skipped from this comparison only; nothing about a run changes.</p>`;
+  }
   if (c.missingNoMerchant || c.onBrandTab || c.notEligible) {
     html += `<p class="muted" style="margin:18px 0 0;font-size:12.5px;">Not listed above:
       ${c.notEligible ? `<strong>${c.notEligible}</strong> merchant(s) that are not Approved, or
@@ -1981,7 +1986,7 @@ function goneMerchants(result) {
 function openRunBrandDetail(run, contractId) {
   const r = (run.results || []).find(x => x.contractId === contractId);
   if (!r) return;
-  const { card, close } = ctModal(900);
+  const { card, close } = ctModal(1180);
   const gone = goneMerchants(r);
   const rule = (run.ruleSnapshots || {})[contractId];
   const term = termText(rule);
@@ -2002,7 +2007,8 @@ function openRunBrandDetail(run, contractId) {
     </div>
     <p class="muted" style="margin:12px 0 8px;font-size:12.5px;">
       The summary block of this brand's download, merchant by merchant. A merchant your latest file
-      no longer carries is marked — it is still paid for what it earned this period.</p>
+      no longer carries is marked — it is still paid for what it earned this period. The share
+      column states the agreed term, which is the same on every row; it is in the heading above.</p>
     <div class="up-mm-wrap" style="max-height:56vh;overflow-y:auto;">
       <table class="ts"><thead><tr>
         <th>Rental Place</th><th>รุ่นเครื่อง</th><th>จำนวนการยืม</th><th>ยอดรายได้ทั้งหมด</th>
@@ -2013,7 +2019,8 @@ function openRunBrandDetail(run, contractId) {
         return `<tr${isTotal ? ' style="font-weight:600;border-top:2px solid var(--border);"' : ''}>
           <td>${escape(String(x[0] ?? ''))}${isGone
             ? ' <span class="rc-warn" title="Your latest file no longer lists this merchant. It is still paid for this period.">gone</span>' : ''}</td>
-          ${[1,2,3,4,5,6,7].map(i => `<td${i >= 2 ? ' style="text-align:right;"' : ''}>${
+          ${[1,2,3,4,5,6,7].map(i => `<td class="${i === 4 ? 'rb-term' : ''}"${
+            i >= 2 && i !== 4 ? ' style="text-align:right;"' : ''}>${
             escape(String(x[i] ?? ''))}</td>`).join('')}
         </tr>`;
       }).join('')}</tbody></table>
@@ -2159,6 +2166,16 @@ function ruleHasAnyValue(node) {
   return (node.children || []).some(ruleHasAnyValue);
 }
 
+// ChargeSpot's own machines are not a merchant (2026-10-01) — "they are all internal testing
+// machines". Matched with punctuation and spacing removed, because the real names are spelled
+// `CHARGESPOT-TH`, `ChargeSpot` and `CHARGESPOT TEST`. The backend has the same rule for the
+// registry and machine comparisons; a test asserts the two agree.
+//
+// COMPARISONS ONLY. Nothing here touches a run or a payout.
+function isInternalName(...names) {
+  return names.some(n => /chargespot/.test(String(n || '').toLowerCase().replace(/[^a-z0-9]/g, '')));
+}
+
 function fileMismatches(contracts, brands) {
   const key = s => String(s || '').trim().toLowerCase();
   const live = (contracts || []).filter(c => !c.archived);
@@ -2167,6 +2184,7 @@ function fileMismatches(contracts, brands) {
                 noContractInfo: [], noFinanceInfo: [], noShareTerms: [] };
 
   for (const [k, b] of Object.entries(brands || {})) {
+    if (isInternalName(b.label)) continue;
     const c = byName.get(k);
     if (!c) { out.noContract.push({ label: b.label, branches: b.branches, units: b.units }); continue; }
 
@@ -2228,6 +2246,7 @@ function fileMismatches(contracts, brands) {
   // The reverse direction: in the app, absent from the latest file. Not a fault — a merchant can
   // leave a file for a week — which is why nothing here deletes anything.
   for (const c of live) if (!(brands || {})[key(c.merchantName)]) {
+    if (isInternalName(c.merchantName)) continue;
     out.notInFile.push({ c, label: c.merchantName, branches: c.branchCount ?? null });
   }
   return out;
@@ -6455,6 +6474,59 @@ function termText(rule) {
 //
 // Verified against all three rows of the template: ยอดรวม is the payout, the base is that
 // divided by 1.07 and the tax is the difference — i.e. THE PAYOUT IS TREATED AS VAT-INCLUSIVE.
+// How a `whole`-mode payout lands on each merchant.
+//
+// Apportioning the WHOLE payout by revenue is right for a revenue share and WRONG for a per-machine
+// fee. Siam Center is paid `Placement LL40 3,000 + Placement S8 3,000` across five merchants with
+// one machine each: every row should read 3,000, and instead they read 4,064.33 / 3,267.54 /
+// 2,441.52 / 3,267.54 / 1,959.07 — the fee reshuffled by how much each shop happened to rent. The
+// Grand Total was right, so nothing looked broken until you read a row (2026-10-01).
+//
+// The engine already records what each part paid, per model, so this reads its answer rather than
+// inventing one: a per-machine component goes to the machine that earned it, and only the parts
+// that genuinely belong to the brand as a whole — a revenue share, a lump sum — are apportioned
+// by revenue. A run from before components were recorded falls back to the old split.
+function splitWholePayout(result, merchants) {
+  const total = Number(result.payout) || 0;
+  const weights = merchants.map(m => Math.max(0, Number(m.revenue) || 0));
+  const components = result.engineResult?.byPartner?.components;
+  if (!Array.isArray(components) || !components.length) return apportion(total, weights);
+
+  const cents = merchants.map(() => 0);
+  let placed = 0;
+  for (const comp of components) {
+    const pay = Math.round((Number(comp.payout) || 0) * 100);
+    if (!pay) continue;
+    if (comp.leafType === 'flat_per_machine') {
+      // Each merchant earns its own model's amount. `modelRowsContributed` carries what the
+      // engine actually used, so a model the rule does not name contributes nothing.
+      const byModel = new Map((comp.modelRowsContributed || [])
+        .map(r => [String(r.model), Math.round((Number(r.amount) || 0) * 100)]));
+      let used = 0;
+      merchants.forEach((m, i) => {
+        const amt = byModel.get(String(m.model)) || 0;
+        cents[i] += amt; used += amt;
+      });
+      // If the component's own total disagrees — a model counted that no merchant row carries —
+      // the difference follows revenue rather than vanishing.
+      if (used !== pay) apportion((pay - used) / 100, weights).forEach((v, i) => { cents[i] += Math.round(v * 100); });
+      placed += pay;
+      continue;
+    }
+    // A revenue share, a tier, a lump: nothing ties it to one merchant, so revenue decides.
+    apportion(pay / 100, weights).forEach((v, i) => { cents[i] += Math.round(v * 100); });
+    placed += pay;
+  }
+
+  // The rows must add to the payout exactly, whatever the components said.
+  const drift = Math.round(total * 100) - cents.reduce((a, b) => a + b, 0);
+  if (drift && cents.length) {
+    const order = weights.map((w, i) => ({ i, w })).sort((a, b) => b.w - a.w);
+    cents[order[0].i] += drift;
+  }
+  return cents.map(c => c / 100);
+}
+
 function buildPartnerSheet(XLSXns, result, orders, kaByStore, ordersError, ruleSnapshot, gone) {
   const merchants = result.merchants || [];
   const eng = result.engineResult || {};
@@ -6468,7 +6540,7 @@ function buildPartnerSheet(XLSXns, result, orders, kaByStore, ordersError, ruleS
     eng.byStore.forEach(x => { byStore[x.storeId] = x.payout; });
     shares = merchants.map(m => byStore[m.merchantId] || 0);
   } else {
-    shares = apportion(result.payout || 0, merchants.map(m => Math.max(0, Number(m.revenue) || 0)));
+    shares = splitWholePayout(result, merchants);
   }
 
   // `(%)` is gone from this heading on purpose: the column states the agreed TERM, which is not
@@ -8044,7 +8116,17 @@ async function downloadRevshareZip(run) {
     // Excel caps a sheet name at 31 characters and rejects \ / ? * [ ] : — and the base may now
     // carry a folder, whose slash is exactly one of those.
     const sheetName = base.split('/').pop().replace(SHEET_SAFE, '-').slice(0, 31);
-    XLSX.utils.book_append_sheet(wb, buildPartnerSheet(XLSX, r, orders ? (ordersByContract.get(r.contractId) || []) : null, kaByStore), sheetName);
+    // EVERY argument. This call was four long while `statementWorkbook` passed seven, so the zip
+    // carried no contracted term, no "gone" marks and no reason when the rentals failed to load —
+    // the mail's attachment had all three. Two call sites, one updated (2026-10-01).
+    XLSX.utils.book_append_sheet(wb, buildPartnerSheet(
+      XLSX, r,
+      orders ? (ordersByContract.get(r.contractId) || []) : null,
+      kaByStore,
+      index.ordersError,
+      (index.ruleSnapshots || {})[r.contractId],
+      goneMerchants(r),
+    ), sheetName);
     return { name: `${base}.xlsx`, data: new Uint8Array(XLSX.write(wb, { bookType: 'xlsx', type: 'array' })) };
   });
 

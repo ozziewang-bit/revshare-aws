@@ -19,9 +19,10 @@ default (§1y).
 page is the file-vs-registry workbench with nine tabs (§1ab); three caller/callee bugs and the
 test that catches them (§1ac); **`L40` is retired** and two brands were being paid 0 (§1ad);
 the A-B-C spec is built (§1ae, §1ag) and either file can be uploaded alone (§1af);
-a machine type earns if anything pays for it (§1ah); a fix now leaves the table (§1ai).
+a machine type earns if anything pays for it (§1ah); a fix now leaves the table (§1ai);
+a per-machine fee lands on the machine that earned it, not on revenue (§1aj).
 A payment-schedule notice goes to every merchant with a share that month, in one send (§1z).
-Service-worker `CACHE_VERSION` is at `revshare-v275` (bump on every shell change).
+Service-worker `CACHE_VERSION` is at `revshare-v279` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
 end-to-end before touching anything. The codebase is the ultimate source of
@@ -1533,6 +1534,35 @@ was measured on the 1 Oct file, not estimated.
 **Every tab re-reads on demand** (`refreshMismatchData`, forced contract refetch) because the team
 edits the app while someone is looking at it, and **no merchant appears on two tabs**: the brand is
 fixed first, since registering a brand resolves every merchant under it.
+
+## 1aj. A TOTAL THAT RECONCILES PROVES NOTHING ABOUT THE ROWS (2026-10-01)
+
+Siam Center is paid `Placement LL40 3,000 + Placement S8 3,000` across five merchants with one
+machine each. Its statement read **4,064.33 / 3,267.54 / 2,441.52 / 3,267.54 / 1,959.07** — the
+whole payout apportioned BY REVENUE, which is right for a revenue share and meaningless for a fee
+per machine. The Grand Total was 15,000 either way, so every test passed and the user found it by
+reading a row. **17 of 159 paid brands were affected.**
+
+`splitWholePayout` now reads what the engine recorded rather than inventing a split:
+
+| component | basis |
+|---|---|
+| `flat_per_machine` (placement, MG) | **the merchant's own model amount** |
+| `percent`, `tiered_percent`, `flat_per_partner_total` | revenue |
+
+Mixed rules split each part on its own basis (`GP 10% + Placement 500` → 575 / 525). Rounding drift
+lands on the largest merchant so the rows always sum to the payout. A run from before the engine
+recorded `byPartner.components` falls back to the old split, so old files still build.
+
+**The lesson, and it has now bitten twice.** Tests asserted the grand total and nothing else; a
+merchant with NO revenue is where a per-machine fee and a revenue share differ most, and no fixture
+had one. Assert the ROWS against the engine's own component amounts. `scratchpad/verify.mjs`-style
+checks across every run are cheap: 359 paid brands, 6,213 merchant rows, 0 discrepancies.
+
+**Also removed: two naive `apportion` stand-ins in the test harness.** Both returned 0 where the
+real function splits evenly, and one of them produced a false report that a fixed fee with no
+revenue was being dropped. A test that fakes the function it is testing can invent a bug and hide
+a real one.
 
 ## 1ag. The rest of the spec, and what blocks a run (2026-10-01)
 

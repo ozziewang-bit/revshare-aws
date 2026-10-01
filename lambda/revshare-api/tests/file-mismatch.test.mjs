@@ -26,7 +26,7 @@ const constOf2 = (n, end) => app.slice(app.indexOf(`const ${n} =`),
                                        app.indexOf(end, app.indexOf(`const ${n} =`)) + end.length);
 const fileMismatches = new Function(
   constOf2('INCOMPLETE_FIELDS', '};') + grab('ruleHasAnyValue')
-  + grab('percentCoversAll') + grab('percentModelsOf')
+  + grab('percentCoversAll') + grab('percentModelsOf') + grab('isInternalName')
   + 'const entityName = c => c.counterParty || "";'
   + grab('termModelsOf') + grab('fileMismatches') + 'return fileMismatches;')();
 // Assertions must never match words inside a comment — the comments here describe the bugs they
@@ -215,7 +215,7 @@ const render = (contracts, brands, check = CHECK) =>
   const wireMismatchActions = () => {};
   ${constOf('UP_TABS', '];')}
   ${constOf('INCOMPLETE_FIELDS', '};')} ${constOf('INCOMPLETE_LABEL', '};')}
-  ${grab('ruleHasAnyValue')} ${grab('percentCoversAll')} ${grab('percentModelsOf')}
+  ${grab('ruleHasAnyValue')} ${grab('percentCoversAll')} ${grab('percentModelsOf')} ${grab('isInternalName')}
   const entityName = c => c.counterParty || '';
   ${grab('termModelsOf')} ${grab('fileMismatches')} ${grab('registryHtml')} ${grab('drawMismatchTab')}
   const m = fileMismatches(CONTRACTS, BRANDS);

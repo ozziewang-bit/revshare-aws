@@ -1336,3 +1336,9 @@ p.rc-warn {
   cursor: pointer; border-bottom: 1px dotted var(--ink-faint); text-align: left;
 }
 .run-brand:hover { color: var(--accent, #1864ab); border-bottom-style: solid; }
+
+/* Run detail → a brand's merchants (2026-10-01). The share column repeats the brand's own term on
+   every row, so letting it wrap turned each row into five lines; it stays on one and the table
+   scrolls sideways inside the dialog instead. */
+.up-mm-wrap td.rb-term { white-space: nowrap; color: var(--ink-soft); font-size: 12.5px; }
+.up-mm-wrap table.ts th, .up-mm-wrap table.ts td { padding-top: 8px; padding-bottom: 8px; }

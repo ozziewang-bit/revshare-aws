@@ -325,6 +325,22 @@ export async function rosterShopsRoute(event) {
   return resp(200, { at: meta?.at || null, brand, ...shopsOfBrand(doc, brand) });
 }
 
+// ── ChargeSpot's own machines are not a merchant (2026-10-01) ────────────────────────────────
+// "you can ignore any merchant name involves chargespot, they are all internal testing machines."
+// `CHARGESPOT-TH` alone holds 811 deployed machines — a third of the estate — and would sit at
+// the top of "a machine under no merchant" forever.
+//
+// Matched on the name with punctuation and spacing removed, because the real names are spelled
+// `CHARGESPOT-TH`, `ChargeSpot` and `CHARGESPOT TEST`. A merchant or BRAND whose name contains it
+// is skipped — the brand matters because `เครื่องทดสอบ Office Ops` is only identifiable as
+// internal through its brand, `CHARGESPOT TEST`.
+//
+// SKIPPED FROM THE COMPARISONS ONLY. Nothing here touches a run, a payout or a stored row: an
+// internal machine that somehow earns is still counted by the engine exactly as before.
+export function isInternalName(...names) {
+  return names.some(n => /chargespot/.test(String(n || '').toLowerCase().replace(/[^a-z0-9]/g, '')));
+}
+
 // ── A shop whose registry row points at the wrong merchant (2026-10-01) ──────────────────────
 // The store registry maps shop -> contract. It is how `Assign→` decides which merchant an order
 // belongs to, and it OUTLIVES the thing it points at: a brand split in two, a shop that changed
@@ -403,7 +419,7 @@ export function machineCheck(doc, cap = 400) {
   const key = s => String(s || '').toLowerCase().trim();
   const out = { notApprovedDeployed: [], approvedNoDeployed: [], deployedUnbound: [] };
   const counts = { notApprovedDeployed: 0, approvedNoDeployed: 0, deployedUnbound: 0,
-                   unboundMachines: 0, hasMachineFile: false };
+                   unboundMachines: 0, hasMachineFile: false, internal: 0 };
   if (!doc) return { ...out, counts, cap };
 
   const machines = new Map();
@@ -427,6 +443,7 @@ export function machineCheck(doc, cap = 400) {
     const k = key(r.name);
     if (!k || seen.has(k)) continue;
     seen.add(k);
+    if (isInternalName(r.name, r.partnerName)) { counts.internal++; continue; }
     const m = machines.get(k);
     if (!m || !(Number(m.deployed) > 0)) {
       counts.approvedNoDeployed++;
@@ -440,6 +457,7 @@ export function machineCheck(doc, cap = 400) {
     const k = key(r.name);
     if (!k || seen.has(k)) continue;
     seen.add(k);
+    if (isInternalName(r.name, r.label)) { counts.internal++; continue; }
     const m = machines.get(k);
     if (m && Number(m.deployed) > 0) {
       counts.notApprovedDeployed++;
@@ -452,6 +470,7 @@ export function machineCheck(doc, cap = 400) {
   for (const [k, m] of machines) {
     if (seen.has(k)) continue;
     if (!(Number(m.deployed) > 0)) continue;
+    if (isInternalName(m.store)) { counts.internal++; continue; }
     counts.deployedUnbound++;
     if (out.deployedUnbound.length < cap) {
       out.deployedUnbound.push({ name: m.store, deployed: Number(m.deployed) || 0,
@@ -537,7 +556,7 @@ export function registryCheck(doc, registry, contracts, cap = 400) {
   // brand tab, never in both. Same rule `uploadTableHtml` already applies to its own buckets.
   const out = { missing: [], wrongLink: [], noLink: [], notInFile: [], duplicated: [] };
   const counts = { missing: 0, missingNoMerchant: 0, wrongLink: 0, noLink: 0, notInFile: 0,
-                   duplicated: 0, duplicateRows: 0, onBrandTab: 0, notEligible: 0 };
+                   duplicated: 0, duplicateRows: 0, onBrandTab: 0, notEligible: 0, internal: 0 };
 
   // Brands the file names that are not registered, and registered brands the file has dropped —
   // both already have a tab of their own.
@@ -554,6 +573,7 @@ export function registryCheck(doc, registry, contracts, cap = 400) {
     (brand && unregistered.has(key(brand))) || (contractId && departed.has(contractId));
 
   for (const [k, f] of file) {
+    if (isInternalName(f.name, f.brand)) { counts.internal++; continue; }
     const want = byBrand.get(key(f.brand)) || null;
     const list = rows.get(k);
     if (!list) {
@@ -588,6 +608,7 @@ export function registryCheck(doc, registry, contracts, cap = 400) {
   for (const [k, list] of rows) {
     if (file.has(k)) continue;
     const r = pick(list);
+    if (isInternalName(r.name, (live.get(r.contractId) || {}).merchantName)) { counts.internal++; continue; }
     // Its whole brand has left the file; that tab says so once, for the brand.
     if (onBrandTab(null, r.contractId)) { counts.onBrandTab++; continue; }
     counts.notInFile++;

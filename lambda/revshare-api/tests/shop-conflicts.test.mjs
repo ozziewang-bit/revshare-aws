@@ -440,3 +440,52 @@ test('the section says the brand is already registered', () => {
   assert.match(fn, /whose brand is already registered/);
   assert.match(fn, /A brand with one merchant shares its name/);
 });
+
+// ── ChargeSpot's own machines are not a merchant (2026-10-01) ────────────────────────────────
+// "you can ignore any merchant name involves chargespot, they are all internal testing machines."
+// `CHARGESPOT-TH` alone holds 811 deployed machines — a third of the estate — and sat at the top
+// of "a machine under no merchant" permanently.
+const { isInternalName } = await import('../code/routes/contracts.mjs');
+
+test('it matches the spellings that are really in the data', () => {
+  for (const n of ['CHARGESPOT-TH', 'ChargeSpot', 'CHARGESPOT TEST', 'chargespot th', 'Charge Spot'])
+    assert.equal(isInternalName(n), true, n);
+});
+
+test('and nothing that merely looks similar', () => {
+  for (const n of ['7-Eleven', 'Charge Point', 'Spot Coffee', '', null, undefined])
+    assert.equal(isInternalName(n), false, String(n));
+});
+
+test('a merchant is internal if its BRAND is', () => {
+  // `เครื่องทดสอบ Office Ops` is only identifiable through its brand, CHARGESPOT TEST.
+  assert.equal(isInternalName('เครื่องทดสอบ Office Ops', 'CHARGESPOT TEST'), true);
+  assert.equal(isInternalName('Real Shop', 'GG Bistro'), false);
+});
+
+test('the frontend uses the same rule, not a second copy that could drift', () => {
+  const fe = readFileSync(new URL('../../../frontend/app.js', import.meta.url), 'utf8');
+  const be = readFileSync(new URL('../code/routes/contracts.mjs', import.meta.url), 'utf8');
+  const body = (src) => {
+    const i = src.indexOf('function isInternalName(');
+    return strip(src.slice(i, src.indexOf('\n}', i))).replace(/\s+/g, ' ').trim();
+  };
+  assert.equal(body(fe), body(be).replace('export ', ''), 'the two definitions must be identical');
+});
+
+test('skipping is counted, so it is visible rather than silent', () => {
+  const r = registryCheck(
+    { merchants: [{ name: 'CHARGESPOT-TH', partnerName: 'ChargeSpot' },
+                  { name: 'Real shop', partnerName: 'GG Bistro' }], excluded: [] },
+    [], [C('gg', 'GG Bistro')]);
+  assert.equal(r.counts.internal, 1);
+  assert.ok(!r.missing.some(x => /chargespot/i.test(x.name)));
+  const fe = readFileSync(new URL('../../../frontend/app.js', import.meta.url), 'utf8');
+  assert.match(fe, /ChargeSpot machine\(s\) are not listed/);
+  assert.match(fe, /nothing about a run changes/);
+});
+
+test('a run is untouched by this', () => {
+  const be = readFileSync(new URL('../code/routes/bulk-runs.mjs', import.meta.url), 'utf8');
+  assert.ok(!/isInternalName/.test(be), 'the payout path never reads it');
+});

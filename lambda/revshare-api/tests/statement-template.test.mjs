@@ -53,7 +53,7 @@ const XLSXns = { utils: { aoa_to_sheet: (aoa) => aoa } };
 // app had always been right. A test that fakes the function it is testing can invent a bug.
 const build = (region) => new Function('REGION', 'XLSXns', `
   const round2 = x => Math.round((Number(x) || 0) * 100) / 100;
-  ${grab('apportion')}
+  ${grab('apportion')} ${grab('splitWholePayout')}
   const modelCode = v => String(v ?? '').trim();
   ${constOf('TAX')}
   ${grab('splitTax')}
@@ -277,7 +277,7 @@ test('a failure is not softened into a fact about storage', () => {
   const rows = build('th')(PMCU, null, undefined);
   const withErr = new Function('XLSXns', `
     const round2 = x => Math.round((Number(x) || 0) * 100) / 100;
-    const apportion = (t, w) => { const s = w.reduce((a, b) => a + b, 0); return w.map(x => s ? t * x / s : 0); };
+    ${grab('apportion')} ${grab('splitWholePayout')}
     const REGION = 'th';
     const modelCode = v => String(v ?? '').trim();
     ${constOf('TAX')} ${grab('splitTax')} ${grab('modelLabel')} ${grab('termText')}
@@ -598,4 +598,175 @@ test('the Grand Total is unchanged by marking', () => {
   const marked = build('th')(PMCU, null, GP20, new Set(['อาคารวิทยกิตติ์']));
   const gt = (r) => r.find(x => String(x[0]).startsWith('Grand Total'));
   assert.deepEqual(gt(marked).slice(1), gt(plain).slice(1));
+});
+
+// ── Every caller builds the WHOLE statement (2026-10-01) ─────────────────────────────────────
+// "for every rev share I download, there's nothing in the rev share term column." The zip called
+// buildPartnerSheet with FOUR arguments while statementWorkbook passed seven, so every file in
+// the download had an empty share-terms column, no "gone" marks, and no reason when the rentals
+// could not be loaded — while the mail's attachment, built by the other caller, had all three.
+//
+// The same shape as the route-signature bug: two call sites, one updated. So this asserts the
+// SITES, not one of them.
+test('every buildPartnerSheet call passes the rule snapshot and the gone set', () => {
+  const src = readFileSync(new URL('../../../frontend/app.js', import.meta.url), 'utf8');
+  const sites = [...src.matchAll(/buildPartnerSheet\(\s*XLSX[^;]*?\)\s*[,)]/gs)].map(m => m[0]);
+  assert.ok(sites.length >= 2, `expected both callers, found ${sites.length}`);
+  for (const call of sites) {
+    assert.match(call, /ruleSnapshots/, 'the contracted term must reach the sheet');
+    assert.match(call, /goneMerchants\(/, 'and the merchants the file has dropped');
+    assert.match(call, /ordersError/, 'and the reason the rentals are missing, if they are');
+  }
+});
+
+test('the zip and the mail build the same file', () => {
+  const src = readFileSync(new URL('../../../frontend/app.js', import.meta.url), 'utf8');
+  const argsOf = (call) => call.replace(/\s+/g, ' ')
+    .replace(/.*buildPartnerSheet\(/, '').split(',').length;
+  const zip = src.slice(src.indexOf('async function downloadRevshareZip'));
+  const mail = src.slice(src.indexOf('function statementWorkbook'));
+  const first = (s) => s.slice(s.indexOf('buildPartnerSheet('), s.indexOf('),', s.indexOf('buildPartnerSheet(')));
+  assert.equal(argsOf(first(zip)), argsOf(first(mail)),
+    'the two callers must hand the builder the same things');
+});
+
+// ── A per-machine fee lands on the machine that earned it (2026-10-01) ───────────────────────
+// "this brand, the term is only placement, why does your calculation so weird" — Siam Center is
+// `Placement LL40 3,000 + Placement S8 3,000` over five merchants with one machine each. Every
+// row should read 3,000; they read 4,064.33 / 3,267.54 / 2,441.52 / 3,267.54 / 1,959.07, because
+// the whole payout was apportioned BY REVENUE. The Grand Total was right, so nothing looked wrong
+// until you read a row.
+//
+// The engine already records what each part paid, per model. This reads that answer.
+const perMachineResult = {
+  merchantName: 'Siam Center', revenue: 20520, payout: 15000,
+  merchants: [
+    { merchantId: '1', merchantName: 'Floor 1', model: 'LL40', rentals: 143, revenue: 5560 },
+    { merchantId: '2', merchantName: 'Floor G', model: 'LL40', rentals: 110, revenue: 4470 },
+    { merchantId: '3', merchantName: 'Main a', model: 'S8', rentals: 83, revenue: 3340 },
+    { merchantId: '4', merchantName: 'Main b', model: 'S8', rentals: 110, revenue: 4470 },
+    { merchantId: '5', merchantName: 'Floor 2', model: 'LL40', rentals: 66, revenue: 2680 },
+  ],
+  engineResult: { totalPayout: 15000, byPartner: { payout: 15000, components: [
+    { leafType: 'flat_per_machine', payout: 15000, modelRowsContributed: [
+      { model: 'LL40', count: 3, amount: 3000, payout: 9000 },
+      { model: 'S8', count: 2, amount: 3000, payout: 6000 }] }] } },
+};
+
+test('a placement fee is the same on every merchant, whatever they rented', () => {
+  const rows = build('th')(perMachineResult, null, null);
+  const shares = rows.slice(1, 6).map(r => r[7]);
+  assert.deepEqual(shares, [3000, 3000, 3000, 3000, 3000]);
+  assert.equal(rows[6][7], 15000, 'and the Grand Total is unchanged');
+});
+
+test('a guarantee that won goes to each merchant at ITS model rate', () => {
+  const rows = build('th')({
+    merchantName: 'MG brand', revenue: 120, payout: 350,
+    merchants: [{ merchantId: 'a', merchantName: 'A', model: 'S8', rentals: 2, revenue: 40 },
+                { merchantId: 'b', merchantName: 'B', model: 'S5', rentals: 4, revenue: 80 }],
+    engineResult: { byPartner: { components: [
+      { leafType: 'flat_per_machine', payout: 350, modelRowsContributed: [
+        { model: 'S8', count: 1, amount: 200, payout: 200 },
+        { model: 'S5', count: 1, amount: 150, payout: 150 }] }] } },
+  }, null, null);
+  assert.deepEqual(rows.slice(1, 3).map(r => r[7]), [200, 150],
+    'not 116.67 / 233.33, which is what revenue would have given');
+});
+
+test('a revenue share still follows revenue', () => {
+  const rows = build('th')({
+    merchantName: 'GP brand', revenue: 1000, payout: 200,
+    merchants: [{ merchantId: 'a', merchantName: 'A', model: 'S8', rentals: 1, revenue: 750 },
+                { merchantId: 'b', merchantName: 'B', model: 'S8', rentals: 1, revenue: 250 }],
+    engineResult: { byPartner: { components: [{ leafType: 'percent', payout: 200 }] } },
+  }, null, null);
+  assert.deepEqual(rows.slice(1, 3).map(r => r[7]), [150, 50]);
+});
+
+test('a mixed rule splits each part on its own basis', () => {
+  // GP 10% of 1,000 = 100 by revenue; placement 500 a machine, flat.
+  const rows = build('th')({
+    merchantName: 'Mixed', revenue: 1000, payout: 1100,
+    merchants: [{ merchantId: 'a', merchantName: 'A', model: 'S8', rentals: 1, revenue: 750 },
+                { merchantId: 'b', merchantName: 'B', model: 'S8', rentals: 1, revenue: 250 }],
+    engineResult: { byPartner: { components: [
+      { leafType: 'percent', payout: 100 },
+      { leafType: 'flat_per_machine', payout: 1000, modelRowsContributed: [
+        { model: 'S8', count: 2, amount: 500, payout: 1000 }] }] } },
+  }, null, null);
+  assert.deepEqual(rows.slice(1, 3).map(r => r[7]), [575, 525], '500 + 75, and 500 + 25');
+});
+
+test('a lump that belongs to no merchant still follows revenue', () => {
+  const rows = build('th')({
+    merchantName: 'Lump', revenue: 1000, payout: 300,
+    merchants: [{ merchantId: 'a', merchantName: 'A', model: 'S8', rentals: 1, revenue: 900 },
+                { merchantId: 'b', merchantName: 'B', model: 'S8', rentals: 1, revenue: 100 }],
+    engineResult: { byPartner: { components: [
+      { leafType: 'flat_per_partner_total', payout: 300 }] } },
+  }, null, null);
+  assert.deepEqual(rows.slice(1, 3).map(r => r[7]), [270, 30]);
+});
+
+// Runs computed before components were recorded must still produce a file.
+test('a run with no components falls back to the old split', () => {
+  const rows = build('th')({ ...perMachineResult, engineResult: {} }, null, null);
+  assert.equal(rows[6][7], 15000, 'the Grand Total is still the payout');
+  assert.ok(rows[1][7] !== 3000, 'and it is the revenue split, as those runs always were');
+});
+
+test('the rows always add up to the payout, whatever the components say', () => {
+  for (const payout of [15000, 1234.56, 0.03, 999999.99]) {
+    const rows = build('th')({ ...perMachineResult, payout,
+      engineResult: { byPartner: { components: [{ leafType: 'percent', payout }] } } }, null, null);
+    const gt = rows.find(r => r[0] === 'Grand Total');
+    const sum = rows.slice(1, rows.indexOf(gt)).reduce((a, r) => a + r[7], 0);
+    assert.equal(round(sum), round(payout), `rows must sum to ${payout}`);
+    assert.equal(gt[7], round(payout));
+  }
+});
+
+// ── The check that was missing (2026-10-01) ──────────────────────────────────────────────────
+// Every test here asserted the GRAND TOTAL, and the grand total was right whichever way the
+// payout was split. So five merchants were quoted 4,064.33 / 3,267.54 / 2,441.52 / 3,267.54 /
+// 1,959.07 against a contract that says 3,000 a machine, and the suite was green.
+//
+// A total that reconciles proves nothing about the rows beneath it. This asserts the ROWS against
+// what the engine says each part paid.
+test('a per-machine payout puts its own amount on every row, not a share of the total', () => {
+  const r = {
+    merchantName: 'B', revenue: 1000, payout: 900,
+    merchants: [
+      { merchantId: '1', merchantName: 'rich', model: 'S8', rentals: 9, revenue: 900 },
+      { merchantId: '2', merchantName: 'quiet', model: 'S8', rentals: 1, revenue: 100 },
+      { merchantId: '3', merchantName: 'empty', model: 'S8', rentals: 0, revenue: 0 },
+    ],
+    engineResult: { byPartner: { components: [
+      { leafType: 'flat_per_machine', payout: 900, modelRowsContributed: [
+        { model: 'S8', count: 3, amount: 300, payout: 900 }] }] } },
+  };
+  const rows = build('th')(r, null, null);
+  assert.deepEqual(rows.slice(1, 4).map(x => x[7]), [300, 300, 300]);
+  // The one that would have hidden it: a merchant with NO revenue must still be paid its machine.
+  assert.equal(rows[3][7], 300, 'a merchant that rented nothing still has a machine on site');
+});
+
+test('the rows are checked, not only the total they add to', () => {
+  // A revenue split and a per-machine split give the SAME grand total, which is exactly why the
+  // total could never have caught this.
+  const base = {
+    merchantName: 'B', revenue: 1000, payout: 900,
+    merchants: [{ merchantId: '1', merchantName: 'a', model: 'S8', rentals: 9, revenue: 900 },
+                { merchantId: '2', merchantName: 'b', model: 'S8', rentals: 1, revenue: 100 }],
+  };
+  const byRevenue = build('th')({ ...base, engineResult: {} }, null, null);
+  const byMachine = build('th')({ ...base, engineResult: { byPartner: { components: [
+    { leafType: 'flat_per_machine', payout: 900, modelRowsContributed: [
+      { model: 'S8', count: 2, amount: 450, payout: 900 }] }] } } }, null, null);
+  const gt = (rows) => rows.find(x => x[0] === 'Grand Total')[7];
+  assert.equal(gt(byRevenue), gt(byMachine), 'identical totals…');
+  assert.notDeepEqual(byRevenue.slice(1, 3).map(x => x[7]),
+                      byMachine.slice(1, 3).map(x => x[7]), '…and different rows');
+  assert.deepEqual(byMachine.slice(1, 3).map(x => x[7]), [450, 450]);
 });
