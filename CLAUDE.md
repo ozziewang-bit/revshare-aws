@@ -1,6 +1,8 @@
 # revshare-aws — handoff
 
-Last updated: 2026-10-01. (History: 2026-09-04: the Merchant view gained contract
+Last updated: 2026-10-02 (a run no longer reads a review state — §1ak; locking a month
+used to orphan its orders — §1al; the statement names which side of a comparison won — §1am).
+(History: 2026-09-04: the Merchant view gained contract
 details + finance contact, editable inline, in the download sheet, **both regions**; and the
 screen now opens with **every column group collapsed** — §1n. 2026-09-18: `Contract entity` is no
 longer read from the weekly file — a column is writable by a file or by hand, never both — §1l.
@@ -22,7 +24,7 @@ the A-B-C spec is built (§1ae, §1ag) and either file can be uploaded alone (§
 a machine type earns if anything pays for it (§1ah); a fix now leaves the table (§1ai);
 a per-machine fee lands on the machine that earned it, not on revenue (§1aj).
 A payment-schedule notice goes to every merchant with a share that month, in one send (§1z).
-Service-worker `CACHE_VERSION` is at `revshare-v279` (bump on every shell change).
+Service-worker `CACHE_VERSION` is at `revshare-v286` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
 end-to-end before touching anything. The codebase is the ultimate source of
@@ -1997,6 +1999,152 @@ REVSHARE_CLOUDFRONT_DIST_ID=EXXXXXX ./infra/deploy-frontend.sh
   that partner from the run with a warning rather than failing the whole run. No partner
   had this configuration as of the last check (verified against all 206 TH partners on
   2026-08-06).
+
+## 1aa2. THE A/B/C AUDIT (2026-10-02) — four defects, all between two correct halves
+
+*"you fucking do a total examine again on everything, don't complete part A and miss the linkage
+with B, or any stupid mistakes"*. Walked end to end against live data. Every one of these was two
+halves that were each right on their own:
+
+1. **Two definitions of "terms that pay nothing"** in `app.js`, 200 lines apart. The newer one
+   (`ruleHasAnyValue`, deleted) read a `tiered_percent` as `node.tiers`; the engine and the
+   backend read `node.rows[].tiers`. Every tiered term looked empty to the Upload page and to the
+   adopt picker. **There is now one: `ruleHasValue`, the mirror of `payout.mjs`.**
+2. **`needsTerms` omitted the `aggregationMode` clause** while its comment claimed it matched the
+   gate. A paying rule with no mode: the grid said ready, the run blocked, and no row named the
+   brand. Same gap caught 73 contracts on the backend in August (§1b).
+3. **"Brand not registered" offered Add for a brand that already existed, archived** — 3 of 7 live
+   rows, and `Bossotel` carried its terms. Adding makes a second brand of that name and leaves the
+   negotiated terms where no run can reach them: the `Central` failure. It now says
+   *already registered — archived, has terms* and offers **Unarchive**.
+4. **An entity letter mixed one brand's revenue with the entity's payout.** `{{payout}}` was the
+   group's; `{{revenue}}` and `{{sharePct}}` were still `results[0]`'s.
+
+Plus: `registryCheck` blamed **1,612** merchants on a brand fix when the honest number was **3**
+(the brand test ran before the eligibility test — rule A2 is about the merchant, so eligibility
+goes first); four `branch` strings and one `shop(s)` still on screen; and `recoveredFromArchive`
+was computed, stored and **never read**.
+
+**`tests/mirror-agreement.test.mjs`** is the general answer to 1 and 2: the three definitions of
+"this brand cannot be paid" are run differentially over ten rule SHAPES, because on today's 345
+contracts all three agree and the drift is invisible.
+
+**`tests/vocabulary.test.mjs`** is the answer to the wording. Three hand passes each missed
+something; a throwaway script is not a check. It reads string literals and template chunks **over
+the whole file in one pass** — a per-line scan cannot see a multi-line template, which is exactly
+how `shop(s) across` survived — and carries self-checks proving it still catches the five strings
+that got through, and does not flag identifiers, selectors or `class`/`data-*` values.
+
+**The near-miss worth remembering**: renaming the grid's `Branch` column to `Merchants` nearly
+stopped the weekly import writing merchant counts. That label is also the key `WEEKLY_FIELD_KEY`
+and the backend's `GRID_FIELDS` look it up by, and the posted header is that same string. A
+displayed label that is also a wire key must be changed in all three places; `tests/linkage.test.mjs`
+posts the header through the real backend parser to prove it.
+
+## 1ak. A RUN NEVER READS A REVIEW STATE (2026-10-02)
+
+*"RUN SHARE AND APPROVED STATUS ARE NOT RELATED."* · *"For registry: yes, always approved merchant
+with deployed machine binding. For run share: ALWAYS READ ONLY ORDER LIST FOR THE RENTAL MERCHANT
+COLUMN, and you do mapping with the brands to apply the rule."*
+
+The two halves of the weekly file were doing two jobs at once. `merchants` is the **Approved**
+half, and using it as the run's roster made approval a **payment gate**: a Disapproved branch with
+a live machine earned, matched no row, and its revenue landed in `unmatched`.
+
+`expandRunRoster` (`routes/bulk-runs.mjs`, called from `computeBulkRun` so the route and the CLI
+re-run cannot differ) assembles the run's merchant set from **what exists**:
+- every row of the stored roster, unchanged;
+- every merchant with a machine **deployed** against it, whatever its review state;
+- every merchant the period's orders name, where the file can say which brand it is.
+
+The brand mapping reads **both halves** — `excluded` is the only place a non-Approved merchant's
+`Merchant label` is recorded. A merchant with no label anywhere is **not** given one; it stays
+unmatched and is reported.
+
+**Why not the order list alone.** Measured through the engine on the August run: **−71,700 THB**
+(7-Eleven 59,950, LAWSON 10,500). 352 stations held a machine all month and took no rental. The
+older rule stands: *"even with no revenue, if there's any fixed fee, we still have to pay,
+including electricity."* A machine that exists earns its fee; the orders decide the revenue.
+
+**A STATION, not a cabinet** (§1h): a merchant added here contributes one row per machine MODEL,
+never one per cabinet — the machine file counts cabinets, and the Approved half beside it counts
+stations.
+
+**Verified payout-identical**, before vs after on identical inputs, both stored runs: 0 brands
+move, 0 merchant rows change. Unmatched revenue falls (260→60 Aug, 1,635→1,005 Jul) because
+held-back merchants now reach their brand. On the 1 Oct file it adds 22 rows and **+1,100 THB/mo**
+(six Disapproved 7-Eleven branches). `addedByMachine`/`addedByOrder` are stored AND shown on the
+run detail — storing a field nobody reads is the defect that already cost us once (§1al).
+
+**The registry is unchanged**: still Approved + deployed + bound (rule A2). Different screen,
+different question.
+
+### The recompute hazard this uncovered
+
+**Recompute REPLACES a run and reads TODAY's Device Types.** Delete a type and every stored roster
+row carrying it throws `unknown machine model: <code>` inside `evaluateRun`, which `payoutDecision`
+catches **per brand** — dropping the whole brand to `skipped`. Not the row. The brand.
+
+Measured live: recomputing the **July run would pay 143,869 against the 894,760 it is on record
+for — 750,891 THB**, because July carries `L40 ×156` from before the 2026-08-27 re-key (§1ad).
+7-Eleven, BTS and Siam Paragon all to zero, from one button.
+
+`deadRosterModels` now runs **before anything is computed, written or deleted**, and the 409 names
+the code, the row count and the brands at stake. Verified: July refused, August allowed.
+
+## 1al. LOCKING A MONTH USED TO ORPHAN ITS ORDERS (2026-10-02)
+
+*"give me a button to lock each month run, so we don't have to recompute history months"*
+
+The action already existed on the run detail, called **Archive** — a word that says nothing about
+what it prevents and collides with the **Archived** screen, which is about merchants whose
+contract ended. The screen now says **Lock**, and every month can be locked from the run list.
+The stored field is still `archived` and the routes are still `/archive` and `/unarchive`;
+renaming those is a migration for no gain.
+
+**THE BUG IT WOULD HAVE SHIPPED ON.** `putBulkRun` rebuilds the slim DynamoDB row from scratch on
+every write, and `inputsKey` is the **only** pointer to a run's stored orders. `archiveBulkRunRoute`
+calls it with no inputs, which set `inputsKey: null` and stranded a multi-MB object in S3 that
+nothing could find again. Locking July and August did exactly that: both runs' order detail went
+unreachable and their statement downloads would have returned to printing *"the individual rentals
+were not kept for this run"* — the sentence §1j exists because of.
+
+- **Cause**: fixed in `db.mjs` — no inputs passed means **leave the pointer alone**, not clear it.
+  **Hand-mirrored to SG**, which is where this class of incident always bites (§8).
+- **Repair**: `infra/repair-run-inputs-key.mjs`, dry-run by default. Writes one attribute, only
+  where it is absent or null, only when the object is actually in S3 (HeadObject first), under a
+  condition expression. The S3 objects were never deleted, which is the only reason it was
+  recoverable.
+- **Verified on the real routes** against live data: lock → pointer survives → recompute 409 and
+  delete 409 → unlock → pointer still there.
+
+Generally: **any field not listed in `putBulkRun`'s `item` is dropped on every re-put.** Adding one
+means adding it there too.
+
+## 1am. THE STATEMENT NAMES WHICH SIDE WON (2026-10-02)
+
+*"for brands that are using higher rev share terms, is it possible to show the report like this?"*
+
+For a `per_store` brand on a comparison rule, the share column states **which side won on that
+merchant** — `MG S8 200 wins`, `GP 50% wins` — instead of repeating the contracted term on every
+row. Live September 7-Eleven: 703 rows MG S8, 435 MG S5, 341 GP, 1 MG LL40 = 1,480.
+
+**Nothing is recomputed.** The engine keeps only the branch of a `max` that won (§1i) and
+`per_store` evaluates once per merchant, so `byStore[].components` was already the answer, frozen
+in the run. It works on existing runs.
+
+`rowTermText(rule, components)` in `app.js`. The rules it follows:
+- it names **the model that actually fired**, not every model the term lists;
+- a rule with **no comparison** keeps the plain term — nothing competes, so "wins" is noise;
+- **`whole` mode keeps the contracted term on every row**: the engine evaluates it once for the
+  brand, and claiming a per-merchant winner would invent a split the engine never made — the
+  Siam Center mistake (§1aj);
+- the **Grand Total** row keeps the full contracted term; a total has no one winner;
+- **electricity never competes** (§1b) — it is appended, never declared the winner.
+
+A test asserts the per-row label **changes no number**. The winning component is matched to its
+rule leaf by `leafType`; all 8 live `max`-root contracts have children of distinct types, so it is
+unambiguous, and the amounts disambiguate where it is not.
 
 ## 12. Starting fresh in a future session
 

@@ -59,8 +59,14 @@ const build = (region) => new Function('REGION', 'XLSXns', `
   ${grab('splitTax')}
   ${grab('modelLabel')}
   ${grab('termText')}
+  ${grab('comparisonLeaves')} ${grab('rowTermText')}
   ${grab('buildPartnerSheet')}
-  return (result, orders, rule, gone) => buildPartnerSheet(XLSXns, result, orders, new Map(), null, rule, gone);
+  // The callable stays the callable — every existing test calls build('th')(...) — and the
+  // helpers hang off it, so the per-row term is tested through the same extraction.
+  const fn = (result, orders, rule, gone) =>
+    buildPartnerSheet(XLSXns, result, orders, new Map(), null, rule, gone);
+  fn.rowTermText = rowTermText; fn.termText = termText;
+  return fn;
 `)(region, XLSXns);
 // The fixture's rule, chosen to reproduce the template's own 0.2 column. PMCU's LIVE rule is
 // `max( GP 20% , MG L40 800 + MG S8 250 )` — the template predates that, and the arithmetic
@@ -769,4 +775,96 @@ test('the rows are checked, not only the total they add to', () => {
   assert.notDeepEqual(byRevenue.slice(1, 3).map(x => x[7]),
                       byMachine.slice(1, 3).map(x => x[7]), '…and different rows');
   assert.deepEqual(byMachine.slice(1, 3).map(x => x[7]), [450, 450]);
+});
+
+// ── Which side of the comparison won, per merchant (2026-10-02) ──────────────────────────────
+// "for brands that are using higher rev share terms, is it possible to show the report like
+// this?" — the share column reading `MG S8 200 wins` on one row and `GP 50% wins` on the next,
+// instead of repeating `max( GP 50% , MG S5 150 + MG S8 200 + MG LL40 1,000 )` on all 1,480.
+//
+// Nothing is recomputed: `max` keeps only the branch that won, and `per_store` evaluates once per
+// merchant, so `byStore[i].components` is already the answer, frozen in the run. Checked against
+// the live September 7-Eleven: 703 rows MG S8, 435 MG S5, 341 GP, 1 MG LL40 — 1,480 exactly.
+const TH = build('th');
+const cmpRule = {
+  type: 'max', _method: 'higher',
+  children: [
+    { type: 'percent', rows: [{ model: 'ALL', percent: 50 }], _t: 'gp' },
+    { type: 'flat_per_machine', _t: 'mg',
+      rows: [{ model: 'S5', amount: 150 }, { model: 'S8', amount: 200 }, { model: 'LL40', amount: 1000 }] },
+  ],
+};
+const mgComp = (model, amount) => [{ leafType: 'flat_per_machine', payout: amount,
+  modelRowsContributed: [{ model, count: 1, amount, payout: amount }] }];
+const gpComp = (revenue, percent) => [{ leafType: 'percent', payout: revenue * percent / 100,
+  modelRowsContributed: [{ model: 'S8', revenue, percent, payout: revenue * percent / 100 }] }];
+
+test('the guarantee winning names the model that actually fired, not all three', () => {
+  assert.equal(TH.rowTermText(cmpRule, mgComp('S8', 200)), 'MG S8 200 wins');
+  assert.equal(TH.rowTermText(cmpRule, mgComp('S5', 150)), 'MG S5 150 wins');
+  assert.equal(TH.rowTermText(cmpRule, mgComp('LL40', 1000)), 'MG LL40 1,000 wins');
+});
+
+test('the percentage winning states the rate', () => {
+  assert.equal(TH.rowTermText(cmpRule, gpComp(935, 50)), 'GP 50% wins');
+});
+
+test('a rule with no comparison has no winner, so it says the term', () => {
+  // LAWSON is `Placement S8 500` — nothing competes, and "wins" would be noise.
+  const plain = { type: 'flat_per_machine', _t: 'placement', rows: [{ model: 'S8', amount: 500 }] };
+  const comps = [{ leafType: 'flat_per_machine', payout: 500,
+    modelRowsContributed: [{ model: 'S8', count: 1, amount: 500, payout: 500 }] }];
+  assert.equal(TH.rowTermText(plain, comps), 'Placement S8 500');
+});
+
+test('electricity never competes, so it is added rather than declared the winner', () => {
+  // §1b: compiled as sum( max(...) , elec ). The max is found inside the sum.
+  const withElec = { type: 'sum', children: [cmpRule,
+    { type: 'flat_per_partner_total', amount: 300, _t: 'elec' }] };
+  const comps = [...mgComp('S8', 200),
+    { leafType: 'flat_per_partner_total', payout: 300, modelRowsContributed: [] }];
+  const text = TH.rowTermText(withElec, comps);
+  assert.match(text, /MG S8 200 wins/);
+  assert.match(text, /Electricity/, 'it is still paid, and still stated');
+  assert.ok(!/Electricity \d+ wins/.test(text), 'but it never "wins" — it does not compete');
+});
+
+test('a row where the comparison paid nothing states the term, not a false winner', () => {
+  assert.equal(TH.rowTermText(cmpRule, []), TH.termText(cmpRule));
+  assert.equal(TH.rowTermText(cmpRule, [{ leafType: 'percent', payout: 0, modelRowsContributed: [] }]),
+    TH.termText(cmpRule));
+});
+
+test('a run too old to carry components still renders — it just states the term', () => {
+  assert.equal(TH.rowTermText(cmpRule, undefined), TH.termText(cmpRule));
+  assert.equal(TH.rowTermText(cmpRule, null), TH.termText(cmpRule));
+});
+
+test('WHOLE mode gets the contracted term on every row, because there is no per-row winner', () => {
+  // The engine evaluates a `whole` brand once for the brand. Claiming a winner per merchant
+  // would be inventing a split the engine never made — the same mistake as apportioning a
+  // per-machine fee by revenue.
+  const src = readFileSync(new URL('../../../frontend/app.js', import.meta.url), 'utf8');
+  const i = src.indexOf('function buildPartnerSheet');
+  const fn = src.slice(i, src.indexOf('\n}\n', i));
+  assert.match(fn, /const rowTerm = perStore \? rowTermText\(ruleSnapshot, compsByStore\[m\.merchantId\]\) : term;/);
+});
+
+test('the per-row term changes NO number on the sheet', () => {
+  // It is a label. If a total, a base or a tax moves because of it, something is wrong.
+  const result = {
+    merchantName: 'Cmp', payout: 350,
+    merchants: [{ merchantId: 'a', merchantName: 'A', model: 'S8', rentals: 1, revenue: 40 },
+                { merchantId: 'b', merchantName: 'B', model: 'S8', rentals: 7, revenue: 935 }],
+    engineResult: { byStore: [{ storeId: 'a', payout: 200, components: mgComp('S8', 200) },
+                              { storeId: 'b', payout: 467.5, components: gpComp(935, 50) }] },
+  };
+  const rows = TH(result, null, cmpRule);
+  assert.equal(rows[1][4], 'MG S8 200 wins');
+  assert.equal(rows[2][4], 'GP 50% wins');
+  assert.equal(rows[1][7], 200, 'the payout is the engine’s own per-store figure');
+  assert.equal(rows[2][7], 467.5);
+  const gt = rows.find(r => r[0] === 'Grand Total');
+  assert.equal(gt[7], 667.5, 'and the rows still sum to the total');
+  assert.equal(gt[4], TH.termText(cmpRule), 'the TOTAL row states the contracted term — no one winner');
 });

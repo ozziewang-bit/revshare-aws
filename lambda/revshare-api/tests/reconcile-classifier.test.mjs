@@ -339,7 +339,9 @@ test('archived AND no-payout never says "just unarchive it"', () => {
     'a two-fault row must not be handed a single step');
   assert.match(fix, /no revenue share/i, 'the second fault has to be stated');
   assert.match(fix, /still pay nothing/i, 'and what following the old advice would do');
-  assert.match(fix, /3 live branch rows/, 'and where the negotiated terms actually sit');
+  // "merchant rows", not "branch rows": one vocabulary — Brand is the file's `Merchant label`,
+  // Merchant is the shop. Renamed 2026-10-01 with the rest of the screen text.
+  assert.match(fix, /3 live merchant rows/, 'and where the negotiated terms actually sit');
   assert.match(fix, /No single fix/i);
 });
 

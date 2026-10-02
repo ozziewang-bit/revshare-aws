@@ -25,7 +25,7 @@ const grab = (n) => {
 const constOf2 = (n, end) => app.slice(app.indexOf(`const ${n} =`),
                                        app.indexOf(end, app.indexOf(`const ${n} =`)) + end.length);
 const fileMismatches = new Function(
-  constOf2('INCOMPLETE_FIELDS', '};') + grab('ruleHasAnyValue')
+  constOf2('INCOMPLETE_FIELDS', '};') + grab('ruleHasValue')
   + grab('percentCoversAll') + grab('percentModelsOf') + grab('isInternalName')
   + 'const entityName = c => c.counterParty || "";'
   + grab('termModelsOf') + grab('fileMismatches') + 'return fileMismatches;')();
@@ -215,7 +215,7 @@ const render = (contracts, brands, check = CHECK) =>
   const wireMismatchActions = () => {};
   ${constOf('UP_TABS', '];')}
   ${constOf('INCOMPLETE_FIELDS', '};')} ${constOf('INCOMPLETE_LABEL', '};')}
-  ${grab('ruleHasAnyValue')} ${grab('percentCoversAll')} ${grab('percentModelsOf')} ${grab('isInternalName')}
+  ${grab('ruleHasValue')} ${grab('percentCoversAll')} ${grab('percentModelsOf')} ${grab('isInternalName')}
   const entityName = c => c.counterParty || '';
   ${grab('termModelsOf')} ${grab('fileMismatches')} ${grab('registryHtml')} ${grab('drawMismatchTab')}
   const m = fileMismatches(CONTRACTS, BRANDS);
@@ -493,7 +493,9 @@ const editorSrc = (() => {
 })();
 
 test('the editor offers every other brand that has terms that pay', () => {
-  assert.match(editorSrc, /x\.contractId !== contractId && x\.rule && ruleHasAnyValue\(x\.rule\)/);
+  // `ruleHasValue`, the one mirror of payout.mjs — not the second copy this used to name. That
+  // copy read a tiered rule as empty, so the picker would have refused to offer a tiered donor.
+  assert.match(editorSrc, /x\.contractId !== contractId && x\.rule && ruleHasValue\(x\.rule\)/);
   assert.match(editorSrc, /d\.archived \? ' \(archived\)' : ''/, 'archived ones are offered, and marked');
   assert.match(editorSrc, /termText\(d\.rule\)/, 'labelled with what they actually pay');
 });

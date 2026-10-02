@@ -420,9 +420,105 @@ export function payoutDecision(contract, contractId, sampleMerchantName) {
 // a run can also be recomputed from its stored inputs by infra/rerun-bulk-run.mjs — without a
 // browser token and without re-uploading anything. The route below is now a thin wrapper, so
 // there is exactly one implementation of what a run means.
+
+// ── A RUN NEVER READS A REVIEW STATE (2026-10-02) ─────────────────────────────────────────────
+// "RUN SHARE AND APPROVED STATUS ARE NOT RELATED." · "For registry: yes, always approved merchant
+// with deployed machine binding. For run share: ALWAYS READ ONLY ORDER LIST FOR THE RENTAL
+// MERCHANT COLUMN, and you do mapping with the brands to apply the rule."
+//
+// The two halves of the file were doing two jobs at once. `merchants` is the APPROVED half, and
+// using it as the run's roster made approval a payment gate: a Disapproved branch with a live
+// machine earned, failed to match any row, and its revenue landed in `unmatched` — six 7-Eleven
+// branches are in exactly that state on the 1 Oct file, worth 1,100 THB a month in per-store
+// guarantee alone.
+//
+// So the run's merchant set is assembled from what EXISTS, never from what is approved:
+//   • every row of the stored roster, unchanged — the Approved half, still the bulk of it
+//   • every merchant with a machine DEPLOYED against it, whatever its review state
+//   • every merchant the period's orders name, if the file can say which brand it belongs to
+// and the brand mapping reads BOTH halves of the file, because `excluded` is the only place a
+// non-Approved merchant's `Merchant label` is recorded. That mapping is the whole job: a name in
+// the order report becomes a brand, and the brand's rule is what pays.
+//
+// WHAT THIS DELIBERATELY DOES NOT DO: take the order list as the ONLY input. Measured on the
+// August run through the engine, that pays 71,700 THB less — 7-Eleven 59,950 and LAWSON 10,500 —
+// because 352 stations held a machine all month and took no rental. The user's own rule is older
+// and still stands: "even with no revenue, if there's any fixed fee, we still have to pay,
+// including electricity." A machine that exists earns its fee; the orders decide the revenue.
+//
+// A ROSTER ROW IS A STATION (§1h), so a merchant added here contributes ONE row per machine
+// MODEL present, never one per cabinet — the machine file counts cabinets, and counting those
+// would pay a 4-cabinet station four placements while the Approved half beside it gets one.
+//
+// Verified payout-identical on both stored runs (July and August): 0 brands move.
+export function expandRunRoster({ merchants = [], excluded = [], machines = [], orders = [] }) {
+  const key = s => String(s || '').trim().toLowerCase();
+
+  // name -> Merchant label, from BOTH halves. The Approved half wins where they disagree.
+  const brandOf = new Map(), modelOf = new Map();
+  for (const m of merchants || []) {
+    const k = key(m.name);
+    if (!k) continue;
+    if (m.partnerName) brandOf.set(k, String(m.partnerName).trim());
+    if (m.model) modelOf.set(k, m.model);
+  }
+  for (const e of excluded || []) {
+    const k = key(e.name);
+    if (k && !brandOf.has(k) && e.label) brandOf.set(k, String(e.label).trim());
+  }
+
+  const out = new Map();
+  for (const m of merchants || []) { const k = key(m.name); if (k) out.set(k, m); }
+  const addedByMachine = [], addedByOrder = [];
+
+  const add = (k, display, brand, model, externalId, into, extra) => {
+    const row = { name: display, nameLower: k, partnerName: brand, model: model || null,
+                  externalId: externalId || null };
+    out.set(k, row);
+    into.push({ name: display, brand, ...extra });
+    return row;
+  };
+
+  // Machines deployed against a merchant the Approved half does not carry.
+  for (const mc of machines || []) {
+    const k = key(mc.store);
+    if (!k || out.has(k)) continue;
+    if (!(Number(mc.deployed) > 0)) continue;          // bound but not deployed pays for nothing
+    const brand = brandOf.get(k);
+    if (!brand) continue;                               // no label anywhere: nothing to apply
+    const models = Object.entries(mc.counts || {}).filter(([, n]) => Number(n) > 0).map(([m]) => m);
+    const list = models.length ? models : [modelOf.get(k) || null];
+    list.forEach((model, i) => {
+      // One row per model. The key has to stay unique or the second model overwrites the first.
+      const rk = i === 0 ? k : `${k}#${String(model).toLowerCase()}`;
+      const row = { name: mc.store, nameLower: k, partnerName: brand, model,
+                    externalId: mc.businessId || null };
+      out.set(rk, row);
+      if (i === 0) addedByMachine.push({ name: mc.store, brand, model, deployed: Number(mc.deployed) || 0 });
+    });
+  }
+
+  // Merchants the period's orders name that nothing above placed. Their machine is gone from
+  // today's file but it was there in the period — which is what the revenue proves.
+  const seen = new Set();
+  for (const o of orders || []) {
+    const k = key(o.merchantName);
+    if (!k || out.has(k) || seen.has(k)) continue;
+    seen.add(k);
+    const brand = brandOf.get(k);
+    if (!brand) continue;                               // stays unmatched, and is reported as such
+    add(k, String(o.merchantName).trim(), brand,
+        modelOf.get(k) || null, null, addedByOrder, {});
+  }
+
+  return { roster: [...out.values()], addedByMachine, addedByOrder };
+}
+
 export async function computeBulkRun({ runId, orders = [], merchants = [], machines = [], excluded = [], periodStart, periodEnd, persist = true }) {
+  // Who is in this run — assembled from what exists, never from a review state. See above.
+  const expanded = expandRunRoster({ merchants, excluded, machines, orders });
   // Re-apply roster (idempotent) so the registry is current and we have resolved ids.
-  const { roster, unassigned, aliasIndex } = await applyMerchantRoster(merchants, { persist });
+  const { roster, unassigned, aliasIndex } = await applyMerchantRoster(expanded.roster, { persist });
   const machineModelsList = await listMachineModels();
   const allowedModels = new Set(machineModelsList.map(m => m.code));
 
@@ -525,8 +621,16 @@ export async function computeBulkRun({ runId, orders = [], merchants = [], machi
     // orders do not survive the request.
     unmatchedDetail,
     // Of those, the ones the merchant list DOES know about but excluded for their review state.
+    // Expected to be 0 or near it since 2026-10-02: a run no longer reads a review state, so a
+    // held-back merchant with a machine is IN the run rather than stranded in unmatched. A name
+    // that still lands here is one the file gives no `Merchant label` at all.
     notApprovedCount: notApproved.length,
     notApprovedRevenue: notApproved.reduce((a2, u) => a2 + (Number(u.revenue) || 0), 0),
+    // Merchants the Approved half of the file does not carry but which are in this run anyway:
+    // a machine is deployed against them, or the period's orders name them. Named, not counted —
+    // the whole point is being able to see which merchant is being paid on what basis.
+    addedByMachine: expanded.addedByMachine,
+    addedByOrder: expanded.addedByOrder,
     // Stores whose order-report name no longer matches their merchant-list name, recovered by
     // machine number. Shown on the run so the underlying rename gets fixed at source.
     matchedByMachine,
@@ -617,7 +721,10 @@ export async function deleteBulkRunRoute(event) {
   const id = event.pathParameters?.runId;
   if (!id) return resp(400, { error: 'missing_runId' });
   const run = await getBulkRun(id);
-  if (run && run.archived) return resp(409, { error: 'archived', message: 'Unarchive before deleting.' });
+  // The message reaches the user verbatim, so it uses the word the screen uses: Lock, not
+  // Archive (2026-10-02). The stored field and the route names are unchanged.
+  if (run && run.archived) return resp(409, { error: 'archived',
+    message: 'This month is locked. An admin must unlock it before it can be deleted.' });
   await deleteBulkRun(id);
   return resp(200, { ok: true });
 }
@@ -694,6 +801,38 @@ export function pageOrders(orders, query) {
 // runs. The frozen-snapshot rule (CLAUDE.md §5) is preserved where it matters — the result is
 // still a self-consistent snapshot with its own ruleSnapshots, and an ARCHIVED run is refused
 // (409), so locking a payout you have acted on is the one click that makes it immutable.
+
+// ── A RECOMPUTE MUST NOT PAY LESS BECAUSE A DEVICE TYPE WAS DELETED (2026-10-02) ─────────────
+// Recompute REPLACES a run (§1e, the user's explicit choice), and it reads TODAY's Device Types.
+// Delete a type and every stored roster row carrying it becomes `unknown machine model: <code>`
+// inside `evaluateRun` — which `payoutDecision` catches per brand and drops THE WHOLE BRAND into
+// `skipped`. Not the row. The brand.
+//
+// Measured on the live July run, which carries `L40 x156` from before the 2026-08-27 LL40
+// re-key: recomputing it today pays 143,869 against the 894,760 it is on record for. 7-Eleven,
+// BTS and Siam Paragon all go to zero. One button, 750,891 THB, no warning — the run page would
+// simply show a smaller number afterwards and the original would be gone.
+//
+// So the models are checked against Device Types BEFORE anything is computed or written, and the
+// refusal names the code, how many rows carry it and which brands lose their payout. The fix is
+// a person's: re-key the data (`infra/rekey-models.mjs`) or put the type back.
+export function deadRosterModels(merchants, allowedModels) {
+  const allowed = allowedModels instanceof Set ? allowedModels : new Set(allowedModels || []);
+  const byModel = new Map();
+  for (const m of merchants || []) {
+    const model = String(m && m.model ? m.model : '').trim();
+    if (!model || allowed.has(model)) continue;      // a blank model is a separate, older case
+    if (!byModel.has(model)) byModel.set(model, { model, rows: 0, brands: new Set() });
+    const e = byModel.get(model);
+    e.rows++;
+    const b = String((m && m.partnerName) || '').trim();
+    if (b) e.brands.add(b);
+  }
+  return [...byModel.values()]
+    .sort((a, b) => b.rows - a.rows)
+    .map(e => ({ model: e.model, rows: e.rows, brands: [...e.brands].sort() }));
+}
+
 export async function recomputeBulkRunRoute(event) {
   // `routeBulkRun` in index.mjs calls every handler as `fn(event)`. This one declared `runId`, so
   // it received the whole event and looked up `BULKRUN#[object Object]` — a 404 for every run that
@@ -703,12 +842,29 @@ export async function recomputeBulkRunRoute(event) {
   if (!runId) return resp(400, { error: 'missing_run' });
   const old = await getBulkRun(runId);
   if (!old) return resp(404, { error: 'not_found' });
-  if (old.archived) return resp(409, { error: 'archived', message: 'This run is locked. Unarchive it first.' });
+  if (old.archived) return resp(409, { error: 'archived',
+    message: 'This month is locked, so its payouts are the record and cannot be recomputed. '
+      + 'An admin must unlock it first.' });
 
   const inputs = await getBulkRunInputs(runId);
   if (!inputs) {
     return resp(409, { error: 'no_stored_inputs',
       message: 'This run predates stored inputs (2026-08-24), so it cannot be recomputed. Re-run it from the wizard.' });
+  }
+
+  // Checked before a single number is computed, and before anything is written or deleted.
+  const dead = deadRosterModels(inputs.merchants, (await listMachineModels()).map(m => m.code));
+  if (dead.length) {
+    const affected = [...new Set(dead.flatMap(d => d.brands))];
+    return resp(409, {
+      error: 'retired_machine_model',
+      models: dead,
+      brandCount: affected.length,
+      message: `This run's merchant list uses ${dead.map(d => `${d.model} (${d.rows} row(s))`).join(', ')}`
+        + `, which ${dead.length === 1 ? 'is' : 'are'} no longer a machine type in Settings → Device types.`
+        + ` Recomputing would pay ${affected.length} brand(s) nothing instead of what they are on`
+        + ` record for. Re-key the data or restore the type first — the run has not been changed.`,
+    });
   }
 
   const fresh = await computeBulkRun({

@@ -195,9 +195,29 @@ export async function deleteContract(contractId) {
 // recomputed at all: the payload holds only aggregates, so answering "how would this run look
 // under corrected matching?" meant asking the user to re-upload files that only existed in
 // their Downloads folder and a browser tab.
+// ── A RE-PUT MUST NOT ORPHAN THE RUN'S INPUTS (2026-10-02) ──────────────────────────────────
+// The slim DynamoDB row is rebuilt from scratch on every write, so any field not listed below is
+// dropped — and `inputsKey` is how `getBulkRunInputs` finds the stored orders. Archiving a run
+// calls this with NO inputs, which set `inputsKey: null` and left a 5 MB object in S3 that
+// nothing could reach again. Locking July and August did exactly that, within a minute of each
+// other: both runs' order detail became unreachable and their statement downloads would have
+// gone back to printing "the individual rentals were not kept for this run" — the one sentence
+// this project has already spent a day on.
+//
+// So: no inputs passed means LEAVE THE POINTER ALONE, not clear it. The caller that has inputs
+// is the only one entitled to set it. The S3 objects were never deleted, which is the only
+// reason that incident was repairable (infra/repair-run-inputs-key.mjs).
 export async function putBulkRun(bulkRun, inputs) {
   const s3Key = `runs/${bulkRun.runId}.json`;
-  const inputsKey = inputs ? `runs/${bulkRun.runId}.inputs.json` : null;
+  let inputsKey = inputs ? `runs/${bulkRun.runId}.inputs.json` : null;
+  if (!inputs) {
+    // Keep whatever the row already points at. A missing row, or a run that genuinely never had
+    // inputs, both leave this null — which is what it already was.
+    const existing = await ddb.send(new GetCommand({
+      TableName: TABLE, Key: { pk: 'BULKRUN', sk: `BULKRUN#${bulkRun.runId}` },
+    })).catch(() => null);
+    inputsKey = existing?.Item?.inputsKey || null;
+  }
   if (inputs) {
     await s3.send(new PutObjectCommand({
       Bucket: RUNS_BUCKET,

@@ -230,8 +230,8 @@ const MERCHANT_LIST_COLUMNS = [
 
 function downloadMerchantListSample() {
   const example = MERCHANT_LIST_COLUMNS.map(col => {
-    if (col === 'merchant name.') return 'Example Store';
-    if (col === 'merchant name (English)') return 'Example Store';
+    if (col === 'merchant name.') return 'Example Merchant';
+    if (col === 'merchant name (English)') return 'Example Merchant';
     if (col === 'Merchant label') return 'Example Partner';
     if (col === 'device type.') return 'Advertising Player-S8';
     if (col === 'Merchant Review State') return 'Approved';
@@ -1683,9 +1683,19 @@ function drawMismatchTab(box, tab, m) {
                  title="Record that ${escape(r.uncovered.join(', '))} is deliberately not paid for this brand. It stops being raised; a machine type added later still will be."
                  >Intentional</button>` : ''}</td></tr>`).join(''));
   } else if (tab === 'noContract') {
-    html += t(['In your file', 'Merchants', 'Machines', ''],
-      rows.map(r => `<tr><td>${escape(r.label)}</td><td>${r.branches}</td><td>${escape(u(r.units))}</td>
-        <td>${act('Add to list', 'add', r.label)}</td></tr>`).join(''));
+    html += t(['In your file', 'Merchants', 'Machines', 'State', ''],
+      rows.map(r => {
+        const a = r.archivedContract;
+        return `<tr><td>${escape(r.label)}</td><td>${r.branches}</td><td>${escape(u(r.units))}</td>
+        <td>${a
+          ? `<span class="rc-warn" title="Adding it again would create a second brand of this name. ${
+              r.archivedHasTerms ? 'Its terms are on the archived brand and would be left behind.'
+                                 : 'It carries no terms.'}">already registered — archived${
+              a.archivedAt ? ' ' + escape(String(a.archivedAt).slice(0, 10)) : ''}${
+              r.archivedHasTerms ? ', <strong>has terms</strong>' : ', no terms'}</span>`
+          : '<span class="muted">new</span>'}</td>
+        <td>${a ? act('Unarchive', 'unarchive', a.contractId) : act('Add to list', 'add', r.label)}</td></tr>`;
+      }).join(''));
   } else if (tab === 'notInFile') {
     html += t(['In the registry', 'Merchants recorded', ''],
       rows.map(r => `<tr><td>${escape(r.label)}</td><td>${r.branches ?? '—'}</td>
@@ -1898,6 +1908,7 @@ function wireMismatchActions(box) {
     else if (b.dataset.kind === 'edit')    openContractEditor(id, after);
     else if (b.dataset.kind === 'add')     await openAddFromFile(id, b, after);
     else if (b.dataset.kind === 'archive') { await archiveFromUpload(id, b); await after(); }
+    else if (b.dataset.kind === 'unarchive') { await unarchiveFromUpload(id, b); await after(); }
     else if (b.dataset.kind === 'delete')  { await deleteFromUpload(id, b); await after(); }
     else if (b.dataset.kind === 'ackmodel') {
       const models = String(b.dataset.models || '').split(',').filter(Boolean);
@@ -2007,8 +2018,10 @@ function openRunBrandDetail(run, contractId) {
     </div>
     <p class="muted" style="margin:12px 0 8px;font-size:12.5px;">
       The summary block of this brand's download, merchant by merchant. A merchant your latest file
-      no longer carries is marked — it is still paid for what it earned this period. The share
-      column states the agreed term, which is the same on every row; it is in the heading above.</p>
+      no longer carries is marked — it is still paid for what it earned this period. Where the terms
+      are a comparison and each merchant is settled on its own, the share column states which side
+      <em>won on that merchant</em>; otherwise it states the agreed term, which is in the heading
+      above.</p>
     <div class="up-mm-wrap" style="max-height:56vh;overflow-y:auto;">
       <table class="ts"><thead><tr>
         <th>Rental Place</th><th>รุ่นเครื่อง</th><th>จำนวนการยืม</th><th>ยอดรายได้ทั้งหมด</th>
@@ -2156,15 +2169,16 @@ const INCOMPLETE_LABEL = {
 };
 
 // A rule that exists but pays nothing is as incomplete as no rule at all — it is how 39 brands
-// once reached a run and were paid zero with no warning (§1b).
-function ruleHasAnyValue(node) {
-  if (!node || typeof node !== 'object') return false;
-  if (node.type === 'percent') return (node.rows || []).some(r => Number(r.percent) > 0);
-  if (node.type === 'flat_per_machine') return (node.rows || []).some(r => Number(r.amount) > 0);
-  if (node.type === 'flat_per_partner_total') return Number(node.amount) > 0;
-  if (node.type === 'tiered_percent') return (node.tiers || []).length > 0;
-  return (node.children || []).some(ruleHasAnyValue);
-}
+// once reached a run and were paid zero with no warning (§1b). THE ONE DEFINITION IS
+// `ruleHasValue` below, which mirrors payout.mjs — the backend's copy is what actually locks
+// step 4 of a run, so a second opinion here can only ever disagree with the thing that decides.
+//
+// There was a second copy here (removed 2026-10-01). It read a `tiered_percent` leaf as
+// `node.tiers`, while the engine and the backend both read `node.rows[].tiers` — so every
+// tiered rule looked empty to it: the Upload page would have called a real tiered term "terms
+// that pay nothing", and the adopt picker would have refused to copy one. It also tested the
+// array's LENGTH rather than its percentages, so an all-zero tiered rule passed for the wrong
+// reason. No live contract is tiered today, which is the only reason nothing was on screen.
 
 // ChargeSpot's own machines are not a merchant (2026-10-01) — "they are all internal testing
 // machines". Matched with punctuation and spacing removed, because the real names are spelled
@@ -2180,13 +2194,28 @@ function fileMismatches(contracts, brands) {
   const key = s => String(s || '').trim().toLowerCase();
   const live = (contracts || []).filter(c => !c.archived);
   const byName = new Map(live.map(c => [key(c.merchantName), c]));
+  // ARCHIVED IS REGISTERED (2026-10-01). A brand your file still carries may already exist and
+  // simply be archived — three did on 1 Oct, and `Bossotel` CARRIED ITS TERMS. "Add to list" on
+  // one of those creates a SECOND brand of the same name with no terms, and the negotiated ones
+  // stay on the archived row where no run can reach them. That is exactly how `Central` was paid
+  // zero on 51,495 THB of revenue. So the row says which it is, and offers Unarchive instead.
+  const archived = new Map();
+  for (const c of contracts || []) {
+    if (c && c.archived) { const k = key(c.merchantName); if (k && !archived.has(k)) archived.set(k, c); }
+  }
   const out = { terms: [], noContract: [], notInFile: [], counts: [], noTerms: [], noFinance: [],
                 noContractInfo: [], noFinanceInfo: [], noShareTerms: [] };
 
   for (const [k, b] of Object.entries(brands || {})) {
     if (isInternalName(b.label)) continue;
     const c = byName.get(k);
-    if (!c) { out.noContract.push({ label: b.label, branches: b.branches, units: b.units }); continue; }
+    if (!c) {
+      const a = archived.get(k) || null;
+      out.noContract.push({ label: b.label, branches: b.branches, units: b.units,
+                            archivedContract: a,
+                            archivedHasTerms: !!(a && a.rule && ruleHasValue(a.rule)) });
+      continue;
+    }
 
     const fileModels = new Set(Object.keys(b.units || {}));
     const stored = c.units || {};
@@ -2213,7 +2242,7 @@ function fileMismatches(contracts, brands) {
     if (!c.noPayout) {
       const gaps = [];
       if (!c.rule) gaps.push('rule');
-      else if (!ruleHasAnyValue(c.rule)) gaps.push('rule pays nothing');
+      else if (!ruleHasValue(c.rule)) gaps.push('rule pays nothing');
       if (!['whole', 'per_store'].includes(c.aggregationMode)) gaps.push('aggregation');
       if (gaps.length) out.noShareTerms.push({ c, label: b.label, branches: b.branches, gaps });
     }
@@ -2376,10 +2405,17 @@ function ruleHasValue(node) {
   }
 }
 
-// A merchant needs terms when it is meant to be paid but nothing says how much. This is the
-// same condition the run's step-3 gate uses, so what is flagged here is exactly what will
-// block a run.
-const needsTerms = c => !c.archived && !c.noPayout && !ruleHasValue(c.rule);
+// A merchant needs terms when it is meant to be paid but nothing says how much, OR nothing says
+// how to aggregate it. Both halves, because this is the grid's ◆ badge and filter and it has to
+// mean what `contractNeedsTerms` means — that is what actually locks step 4 of a run.
+//
+// The aggregation half was missing until 2026-10-01: a paying rule with no `aggregationMode`
+// read as complete here and blocked the run, with no row anywhere saying which brand. The same
+// gap on the backend let 73 contracts clear step 3 in August and then get skipped at run time
+// (§1b). One line, one direction: `payoutDecision` is the authority, `contractNeedsTerms`
+// mirrors it, and this mirrors that.
+const needsTerms = c => !c.archived && !c.noPayout
+  && (!ruleHasValue(c.rule) || !['whole', 'per_store'].includes(c.aggregationMode));
 
 // The merchant-view row owns its terms directly — no partner lookup involved.
 function termCellHtml(c, col) {
@@ -2871,7 +2907,7 @@ async function openTermsEditor(contractId, onSaved) {
   // brand had which deal.
   const adopt = card.querySelector('#ct-pe-adopt');
   const donors = (CONTRACTS || [])
-    .filter(x => x.contractId !== contractId && x.rule && ruleHasAnyValue(x.rule))
+    .filter(x => x.contractId !== contractId && x.rule && ruleHasValue(x.rule))
     .sort((a, b) => String(a.merchantName || '').localeCompare(String(b.merchantName || '')));
   for (const d of donors) {
     const o = document.createElement('option');
@@ -3384,7 +3420,7 @@ function reconcileFix(item) {
       if (item.noPayout)
         faults.push('it is also marked “no revenue share”, so unarchiving alone would still pay nothing');
       if (item.branchCount)
-        faults.push(`${item.branchCount} live branch rows start with this name`
+        faults.push(`${item.branchCount} live merchant rows start with this name`
           + (item.sameTerms === false
               ? `, holding ${item.termSetCount} different term sets — the roster labels their machines with this tag, so only one set could ever be paid`
               : ', and the roster labels their machines with this tag, so a run never reaches them'));
@@ -4012,7 +4048,7 @@ function uploadSummaryHtml(parsed, machines, misses, roster) {
   if (roster && machines) {
     const j = joinUploadFiles(roster, machines);
     bits.push(`<div class="up-sum-row"><strong>Your two files together:</strong>
-      ${j.stores.size.toLocaleString('en-US')} shop(s) across ${j.brands.size.toLocaleString('en-US')} brand(s)
+      ${j.stores.size.toLocaleString('en-US')} merchant(s) across ${j.brands.size.toLocaleString('en-US')} brand(s)
       ${j.notApproved?.length ? `<span class="rc-warn">· ${j.notApproved.length} merchant(s) in the file but not Approved</span>` : ''}
       ${j.onlyInMachineFile.length ? `<span class="rc-warn">· ${j.onlyInMachineFile.length} merchant(s) with machines but no brand</span>` : ''}
       ${j.onlyInMerchantFile.length ? `<span class="muted">· ${j.onlyInMerchantFile.length} merchant(s) with no machines</span>` : ''}</div>`);
@@ -4224,7 +4260,7 @@ async function applyShopsForBrand(brand, contractId) {
   if (!shops.length) return { shops: 0, machines: 0 };
 
   try { await api('/registry', { method: 'POST', body: JSON.stringify({ shops }) }); }
-  catch (e) { console.warn('store index not updated for', brand, e); }
+  catch (e) { console.warn('registry not updated for', brand, e); }
 
   // Machine counts, summed over this merchant's own merchants — merchant INFORMATION, owned by the
   // file, so it follows the file rather than needing a decision of its own.
@@ -4458,7 +4494,7 @@ async function openAddFromFile(name, btn, onSaved) {
     <h4 class="ct-ed-h">From your file — not editable</h4>
     <div class="up-sum" style="margin:0 0 4px;">
       <div class="up-sum-row"><strong>${escape(name)}</strong>${branchCount != null
-        ? ` <span class="muted">· ${branchCount} branch${branchCount === 1 ? '' : 'es'}</span>` : ''}</div>
+        ? ` <span class="muted">· ${branchCount} merchant${branchCount === 1 ? '' : 's'}</span>` : ''}</div>
       ${facts.length ? facts.map(([k, v]) =>
         `<div class="up-sum-row muted">${escape(k)}: ${escape(v)}</div>`).join('')
         : '<div class="up-sum-row muted">No other details in the file.</div>'}
@@ -4632,7 +4668,7 @@ function uploadMissingWhy(m) {
   const bits = ['Nothing has been deleted — an import never removes a merchant.'];
   if (!ruleIsAbsent(m.rule) || m.noPayout) bits.push('It has revenue-share terms set.');
   if (m.endDate) bits.push(`Contract end: <strong>${escape(m.endDate)}</strong>.`);
-  if (m.branchCount) bits.push(`${m.branchCount} branch${m.branchCount === 1 ? '' : 'es'} recorded.`);
+  if (m.branchCount) bits.push(`${m.branchCount} merchant${m.branchCount === 1 ? '' : 's'} recorded.`);
   return bits.join(' ');
 }
 
@@ -4656,6 +4692,32 @@ async function archiveFromUpload(contractId, btn) {
   } catch (e) {
     btn.disabled = false; btn.textContent = was;
     alert('Could not archive: ' + e.message);
+  }
+}
+
+// Unarchive — the brand already exists, so this brings it back rather than creating a second one.
+// It says whether terms come back with it, because that is the whole reason not to re-add it.
+async function unarchiveFromUpload(contractId, btn) {
+  const c = CONTRACTS.find(x => x.contractId === contractId);
+  if (!c) { alert('That brand is no longer in your list.'); return; }
+  if (!can('manageMerchants')) { alert('You do not have permission to change merchants.'); return; }
+  const hasTerms = !!(c.rule && ruleHasValue(c.rule));
+  if (!confirm(`Unarchive "${c.merchantName}"?\n\n`
+    + `It is paid again from the next run. ${hasTerms
+        ? 'Its existing share terms come back with it.'
+        : 'It carries no share terms, so set them before the next run.'}`
+    + `${c.noPayout ? '\n\nIt is also marked "no revenue share", so it still would not be paid '
+        + 'until you clear that in Edit terms.' : ''}`)) return;
+  const was = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Unarchiving…';
+  try {
+    const saved = await api('/contracts/' + encodeURIComponent(contractId), {
+      method: 'PUT', body: JSON.stringify({ archived: false }) });
+    Object.assign(c, saved || { archived: false });
+    delete c.archivedAt;
+  } catch (e) {
+    btn.disabled = false; btn.textContent = was;
+    alert('Could not unarchive: ' + e.message);
   }
 }
 
@@ -5080,10 +5142,22 @@ async function parseWeeklyMerchantFile(file) {
 // Only the columns the file carries are compared, and a BLANK cell counts as "not stated" —
 // never as "clear this". That matches how the importer merges, so the preview cannot promise
 // something different from what the import does.
+// THIS MAP IS A LOOKUP KEY, NOT A LABEL (2026-10-01). `diffWeeklyRows` puts a field's name on
+// each change, the preview PRINTS that name, and both the apply path and the backend importer
+// read that same string back to decide which contract field to write. So the displayed wording
+// IS the key: renaming the display alone makes `WEEKLY_FIELD_KEY[d.field]` undefined and the
+// backend's `GRID_FIELDS` miss it — the row still appears in the preview and is then silently
+// skipped by the write. Caught while renaming this column out of "Branch"; the new spelling is
+// in all three places (here, the posted header, and GRID_FIELDS in code/contracts.mjs).
+//
+// `Merchants` is the one synthetic field, appended from `parsed.branchCounts` rather than read
+// from a column — every other key here is a `WEEKLY_ALIASES` field name, which is what
+// weekly-upload-ownership.test.mjs pins. An entry no alias can produce is dead weight that
+// reads like a supported column.
 const WEEKLY_FIELD_KEY = {
   'Merchant/Brand': 'merchantName', 'Type': 'merchantType',
   'Sales person': 'salesPerson', 'Contact': 'contactName', 'Phone': 'contactPhone', 'Email': 'contactEmail',
-  'Branch': 'branchCount',
+  'Merchants': 'branchCount',
 };
 
 function diffWeeklyRows(parsed, contracts) {
@@ -5104,7 +5178,7 @@ function diffWeeklyRows(parsed, contracts) {
     const diffs = [];
     const branches = parsed.branchCounts?.[parsed.rows.indexOf(row)];
     if (branches != null && Number(existing.branchCount || 0) !== branches) {
-      diffs.push({ field: 'Branch', from: String(existing.branchCount ?? ''), to: String(branches) });
+      diffs.push({ field: 'Merchants', from: String(existing.branchCount ?? ''), to: String(branches) });
     }
     parsed.fields.forEach((f, i) => {
       const key = WEEKLY_FIELD_KEY[f];
@@ -5318,7 +5392,7 @@ async function openAddMerchants() {
         if (parsed) {
           // Sent in the grid shape so the existing importer handles it: header names it already
           // knows, and no contract or terms columns at all, so those stay untouched.
-          const fields = [...parsed.fields, 'Branch'];
+          const fields = [...parsed.fields, 'Merchants'];
           const groups = fields.map(f => ['Contact', 'Phone', 'Email', 'Sales person'].includes(f) ? 'Contact' : 'Merchant');
           const rows = parsed.rows.map((r, i) => [...r, parsed.branchCounts[i]]);
           const res = await api('/contracts/import', { method: 'POST',
@@ -5813,7 +5887,7 @@ async function renderBulkRunsList() {
     <tbody>${runs.map(r => {
       const rev = matchedRevenue(r);
       return `<tr data-id="${r.runId}" style="cursor:pointer;">
-      <td>${escape(periodMonth(r.periodStart))}${r.archived ? ' <span class="badge badge-neutral" title="Archived — cannot be deleted without unarchiving">🔒 Locked</span>' : ''}</td>
+      <td>${escape(periodMonth(r.periodStart))}${r.archived ? ' <span class="badge badge-neutral" title="Locked — this month cannot be recomputed or deleted. Its statements and order detail are unaffected.">🔒 Locked</span>' : ''}</td>
       <td>${escape(r.uploadedAt?.split('T')[0] || '')}</td>
       <td style="text-align:right;" title="Revenue that reached a paid merchant">${rev == null ? '<span class="muted">—</span>' : fmt2(rev)}</td>
       <td style="text-align:right;"><strong>${fmt2(r.totalPayout || 0)}</strong></td>
@@ -5821,11 +5895,49 @@ async function renderBulkRunsList() {
       <td style="text-align:right;">${Number(r.unmatchedCount || 0) > 0
         ? `<span style="color:#f03e3e;">${Number(r.unmatchedCount)}</span>`
         : '0'}</td>
-      <td style="text-align:right;">${(!r.archived && can('deleteRuns')) ? `<button class="btn-ghost del-run" data-id="${r.runId}" style="color:var(--loss);">Delete</button>` : ''}</td>
-    </tr>`; }).join('')}</tbody></table>`;
+      <td style="text-align:right;white-space:nowrap;">${r.archived
+        ? (can('admin') ? `<button class="btn-ghost unlock-run" data-id="${r.runId}"
+             title="Unlock this month so it can be recomputed or deleted again">Unlock</button>` : '')
+        : `${can('runCalcs') ? `<button class="btn-ghost lock-run" data-id="${r.runId}"
+             title="Lock this month: it can no longer be recomputed or deleted. The statements and the stored order detail stay.">🔒 Lock</button>` : ''}${
+           can('deleteRuns') ? `<button class="btn-ghost del-run" data-id="${r.runId}" style="color:var(--loss);">Delete</button>` : ''}`}</td>
+    </tr>`; }).join('')}</tbody></table>
+    <p class="muted" style="margin:10px 0 0;font-size:12.5px;max-width:860px;">
+      <strong>Lock</strong> a month once you have acted on it. A locked month cannot be
+      recomputed or deleted — its payouts are the record. Everything else still works: the
+      statements, the download and the mailing all read a locked run exactly as before.
+      Only an admin can unlock.</p>`;
   out.querySelectorAll('tr[data-id]').forEach(tr => {
     tr.addEventListener('click', () => renderBulkRunDetail(tr.dataset.id));
   });
+  // LOCK FROM THE LIST (2026-10-02): "give me a button to lock each month run, so we don't have
+  // to recompute history months". The action already existed on the run detail under the name
+  // Archive — which said nothing about what it prevents, and collided with the Archived screen
+  // for merchants, which is a different thing entirely. Same route, honest name, and reachable
+  // for every month from the one screen where you can see them all.
+  const setLock = async (btn, locked) => {
+    const id = btn.dataset.id;
+    if (!confirm(locked
+      ? 'Lock this month?\n\nIt can no longer be recomputed or deleted — the payouts on it '
+        + 'become the record. The statements, the download and the mailing are unaffected.\n\n'
+        + 'Only an admin can unlock it.'
+      : 'Unlock this month?\n\nIt becomes recomputable and deletable again. A recompute reads '
+        + 'today\u2019s terms, so the payouts can change.')) return;
+    const was = btn.textContent;
+    btn.disabled = true; btn.textContent = locked ? 'Locking…' : 'Unlocking…';
+    try {
+      await api(`/bulk-runs/${encodeURIComponent(id)}/${locked ? 'archive' : 'unarchive'}`, { method: 'POST' });
+      renderBulkRunsList();
+    } catch (e) {
+      btn.disabled = false; btn.textContent = was;
+      alert((locked ? 'Could not lock: ' : 'Could not unlock: ') + e.message);
+    }
+  };
+  out.querySelectorAll('.lock-run').forEach(btn =>
+    btn.addEventListener('click', ev => { ev.stopPropagation(); setLock(btn, true); }));
+  out.querySelectorAll('.unlock-run').forEach(btn =>
+    btn.addEventListener('click', ev => { ev.stopPropagation(); setLock(btn, false); }));
+
   out.querySelectorAll('.del-run').forEach(btn => {
     btn.addEventListener('click', async (ev) => {
       ev.stopPropagation();
@@ -5836,7 +5948,7 @@ async function renderBulkRunsList() {
         renderBulkRunsList();
       } catch (e) {
         if (e.message && e.message.includes('409')) {
-          alert('Unarchive first before deleting this run.');
+          alert('This month is locked. Unlock it first (admin only) before deleting.');
         } else {
           alert('Delete failed: ' + e.message);
         }
@@ -6031,10 +6143,10 @@ function renderNewBulkRunForm() {
       document.getElementById('wiz-ord-sample')?.addEventListener('click', () => {
         const ws = XLSX.utils.aoa_to_sheet([
           ['Order No', 'Rental Merchant', 'Discount Amount', 'Payment Amount', 'Net Amount', 'Payment Status'],
-          ['1001', 'Example Store 1', 0, 40, 40, 'Paid'],
-          ['1002', 'Example Store 2', 0, 20, 20, 'Paid'],
-          ['1003', 'Example Store 3', 0, 30, 30, 'Paid'],
-          ['1004', 'Example Store 4', 5, 45, 40, 'Paid'],
+          ['1001', 'Example Merchant 1', 0, 40, 40, 'Paid'],
+          ['1002', 'Example Merchant 2', 0, 20, 20, 'Paid'],
+          ['1003', 'Example Merchant 3', 0, 30, 30, 'Paid'],
+          ['1004', 'Example Merchant 4', 5, 45, 40, 'Paid'],
         ]);
         const wb = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(wb, ws, 'ORDER REPORT');
@@ -6461,6 +6573,86 @@ function termText(rule) {
   return walk(rule) || '';
 }
 
+// ── WHICH SIDE OF THE COMPARISON WON, PER MERCHANT (2026-10-02) ──────────────────────────────
+// "for brands that are using higher rev share terms, is it possible to show the report like
+// this?" — with the share column reading `MG S8 200 wins` on one row and `GP 50% wins` on the
+// next, instead of repeating the whole contracted term on all 1,480 of them.
+//
+// It is possible because THE ENGINE ALREADY RECORDS IT. `max` keeps only the branch that won
+// (§1i), and in `per_store` mode it evaluates once per merchant — so `byStore[i].components` IS
+// the answer for that row, frozen in the run. Nothing is recomputed and no rule is re-read:
+// September's 7-Eleven says 1,139 merchants paid on the guarantee and 341 on the percentage,
+// and the GP row is the one earning 935.
+//
+// Only for a COMPARISON, and only `per_store`:
+//   • a `whole` brand is evaluated once for the whole brand, so there is no per-merchant winner
+//     to report — the column keeps stating the contracted term, which is the truth for it.
+//   • a rule that only ever sums has no loser, so "wins" would be noise.
+// Either way it falls back to `termText`, which is what every row says today.
+//
+// The winning component is matched to its rule leaf by `leafType`. Measured on all 8 live
+// contracts with a `max` root: no two children of one comparison share a leaf type, so this is
+// unambiguous — and where it ever is ambiguous, the amounts decide.
+function comparisonLeaves(rule) {
+  // The `max` may be the root, or sit inside a root `sum` next to electricity, which never
+  // competes (2026-08-06). Anything outside it is added on top and is not part of the contest.
+  if (!rule || typeof rule !== 'object') return null;
+  if (rule.type === 'max' || rule.type === 'min') return rule;
+  if (rule.type === 'sum') {
+    for (const c of rule.children || []) {
+      const hit = comparisonLeaves(c);
+      if (hit) return hit;
+    }
+  }
+  return null;
+}
+
+function rowTermText(rule, components) {
+  const cmp = comparisonLeaves(rule);
+  if (!cmp || !Array.isArray(components) || !components.length) return termText(rule);
+
+  const money = n => Number(n).toLocaleString('en-US', { maximumFractionDigits: 2 });
+  const children = cmp.children || [];
+  // A leaf of the comparison, labelled by what the component actually PAID on this row — the
+  // model that fired, not every model the term lists. That is the difference between
+  // "MG S5 150 + MG S8 200 + MG LL40 1,000" and "MG S8 200".
+  const label = (comp) => {
+    const leaf = children.find(c => c.type === comp.leafType) || null;
+    const paid = (comp.modelRowsContributed || []).filter(r => Number(r.payout) > 0);
+    switch (comp.leafType) {
+      case 'percent':
+        return paid.length
+          ? [...new Set(paid.map(r => `GP ${money(r.percent)}%`))].join(' + ')
+          : (termText(leaf) || 'GP');
+      case 'flat_per_machine': {
+        const name = leaf && leaf._t === 'mg' ? 'MG'
+                   : leaf && leaf._t === 'placement' ? 'Placement' : 'Per machine';
+        return paid.length
+          ? paid.map(r => `${name} ${modelCode(r.model)} ${money(r.amount)}`).join(' + ')
+          : (termText(leaf) || name);
+      }
+      default:
+        return termText(leaf) || '';
+    }
+  };
+
+  // Did this component come from inside the comparison, or from beside it?
+  const inContest = (comp) => children.some(c => c.type === comp.leafType);
+  const won = components.filter(c => inContest(c) && Number(c.payout) > 0);
+  const beside = components.filter(c => !inContest(c) && Number(c.payout) > 0);
+
+  // Nothing inside the comparison paid: the row earned nothing from it, so state the term
+  // rather than claiming a winner.
+  if (!won.length) return termText(rule);
+
+  const head = [...new Set(won.map(label).filter(Boolean))].join(' + ') + ' wins';
+  const tail = beside.map(c => termText(c.leafType === 'flat_per_partner_total'
+    ? { type: 'flat_per_partner_total', amount: c.payout, _t: (rule.children || [])
+        .filter(x => x.type === 'flat_per_partner_total').map(x => x._t)[0] }
+    : null)).filter(Boolean);
+  return [head, ...tail].join(' + ');
+}
+
 // THE STATEMENT, in the shape finance already reconciles against (Template_Revenue Share.xlsx,
 // read 2026-09-30). One merchant per file, two blocks.
 //
@@ -6535,9 +6727,12 @@ function buildPartnerSheet(XLSXns, result, orders, kaByStore, ordersError, ruleS
   // Per-store share: the engine's own figure in per_store mode; apportioned by revenue in whole
   // mode, where it computes one number for the merchant and no split exists.
   let shares;
+  // The same byStore pass now yields the per-row COMPONENTS too, which is what lets the share
+  // column say which side of a comparison won on this merchant (see rowTermText).
+  const compsByStore = {};
   if (perStore) {
     const byStore = {};
-    eng.byStore.forEach(x => { byStore[x.storeId] = x.payout; });
+    eng.byStore.forEach(x => { byStore[x.storeId] = x.payout; compsByStore[x.storeId] = x.components; });
     shares = merchants.map(m => byStore[m.merchantId] || 0);
   } else {
     shares = splitWholePayout(result, merchants);
@@ -6559,8 +6754,10 @@ function buildPartnerSheet(XLSXns, result, orders, kaByStore, ordersError, ruleS
     // period — and the mark is what stops the line being read as a mistake.
     const label = gone && gone.has(String(m.merchantName || '').toLowerCase().trim())
       ? `${m.merchantName} (no longer in our list)` : m.merchantName;
+    // Per row where the run froze a per-merchant evaluation; the contracted term otherwise.
+    const rowTerm = perStore ? rowTermText(ruleSnapshot, compsByStore[m.merchantId]) : term;
     aoa.push([label, modelLabel(m.model), m.rentals, round2(m.revenue),
-              term, base, tax, round2(total)]);
+              rowTerm, base, tax, round2(total)]);
   });
   if (perStore && eng.topLevel && eng.topLevel.payout) {
     const lump = eng.topLevel.payout;
@@ -7668,9 +7865,19 @@ function mailSendDialog(group, run, sentAlready, template) {
   const recipients = assign ? MAIL_ASSIGNED : group.to;
   const statementCc = mailCc(template);
   const { card, close } = ctModal(720);
+  // EVERY TOTAL IN THIS LETTER IS THE ENTITY'S (2026-10-01). `mailVarsFor` answers for ONE brand,
+  // and this letter covers the whole entity — so each figure that spans brands is recomputed over
+  // the group. `payout` was already; `revenue` and `sharePct` were not, so an entity holding eight
+  // brands would have stated the entity's payout against the FIRST brand's revenue, and the share
+  // percentage of a letter that is not about one brand. No live template reads those two, which is
+  // the only reason nothing went out wrong. Same shape as the statement bug of this morning: a
+  // total that reconciles over one part and nothing else.
+  const groupRevenue = group.results.reduce((a, r) => a + (Number(r.revenue) || 0), 0);
   const vars = { ...mailVarsFor(result, run),
                  merchant: group.brands.join(', '),
                  entity: group.entity || result.merchantName,
+                 revenue: fmt2(groupRevenue),
+                 sharePct: groupRevenue > 0 ? (group.payout / groupRevenue * 100).toFixed(1) + '%' : '—',
                  payout: fmt2(group.payout) };
 
   if (!MAIL_TEMPLATES.length) {
@@ -8277,18 +8484,25 @@ async function renderBulkRunDetail(runId) {
   const titleEl = document.getElementById('br-title');
   if (titleEl) titleEl.textContent = `Run share · ${periodMonth(run.periodStart)}`;
 
-  // Archive / Unarchive / Delete — rendered into the header, opposite the title.
+  // Lock / Unlock / Delete — rendered into the header, opposite the title.
+  //
+  // "Lock", not "Archive" (2026-10-02). The stored field is still `archived` and the routes are
+  // still /archive and /unarchive — renaming those would be a migration for no gain — but the
+  // word on screen now matches what the thing does, and stops colliding with the Archived screen
+  // for merchants, which means something else.
   const archiveBar = (() => {
     const parts = [];
     if (isArchived) {
-      parts.push(`<span class="badge badge-neutral" style="font-size:13px;">🔒 Locked (archived)</span>`);
+      parts.push(`<span class="badge badge-neutral" style="font-size:13px;"
+        title="This month cannot be recomputed or deleted. Its statements and stored order detail are unaffected.">🔒 Locked</span>`);
       if (can('admin')) {
-        parts.push(`<button id="br-unarchive" class="btn-ghost" style="margin-left:10px;">Unarchive</button>`);
+        parts.push(`<button id="br-unarchive" class="btn-ghost" style="margin-left:10px;">Unlock</button>`);
       }
-      // Delete is hidden/disabled when archived
+      // Delete is hidden/disabled when locked
     } else {
       if (can('runCalcs')) {
-        parts.push(`<button id="br-archive" class="btn-ghost">Archive</button>`);
+        parts.push(`<button id="br-archive" class="btn-ghost"
+          title="Lock this month: it can no longer be recomputed or deleted">🔒 Lock</button>`);
       }
       if (can('deleteRuns')) {
         parts.push(`<button id="br-delete" class="btn-ghost" style="color:var(--loss);">Delete</button>`);
@@ -8369,8 +8583,45 @@ async function renderBulkRunDetail(runId) {
     </tr>
     <tr id="np-${key}" hidden><td colspan="3" style="background:var(--bg-soft);padding:12px 14px;">${body}</td></tr>`;
 
+  // C5, the half that was computed and never shown (2026-10-01): a merchant whose rentals the
+  // period's orders name but which TODAY'S file no longer carries is looked up in the earlier
+  // uploads, so its revenue reaches its brand instead of scattering into unmatched. The run has
+  // recorded that all along in `recoveredFromArchive` and nothing read it — so the one thing it
+  // explains, "where did this row come from if my file has no such merchant", went unsaid.
+  // The merchant itself is marked `gone` in the table, the expanded view and the download.
+  // A merchant in this run that your APPROVED list does not carry: a machine is deployed against
+  // it, or the period's orders name it. A run does not read a review state (2026-10-02), so this
+  // is where you see which merchants that brought in — and under which brand they were paid.
+  const added = [...(run.addedByMachine || []), ...(run.addedByOrder || [])];
+  const addedNote = !added.length ? '' : `
+    <p class="muted" style="margin:0 0 10px;font-size:12.5px;max-width:900px;">
+      ${added.length} merchant${added.length === 1 ? '' : 's'} in this run
+      ${added.length === 1 ? 'is' : 'are'} not on the Approved list — a machine is deployed
+      against ${added.length === 1 ? 'it' : 'them'}, or this period's orders name
+      ${added.length === 1 ? 'it' : 'them'}. A run does not read a review state, so
+      ${added.length === 1 ? 'it is' : 'they are'} paid under
+      ${added.length === 1 ? 'its' : 'their'} brand like any other:
+      ${added.slice(0, 10).map(a => `<strong>${escape(a.name)}</strong>${
+        a.brand ? ` <span class="muted">(${escape(a.brand)})</span>` : ''}`).join(', ')}${
+        added.length > 10 ? ` and ${added.length - 10} more` : ''}.</p>`;
+
+  const recovered = run.recoveredFromArchive || [];
+  const recoveredNote = !recovered.length ? '' : `
+    <p class="muted" style="margin:0 0 10px;font-size:12.5px;max-width:900px;">
+      ${recovered.length} merchant${recovered.length === 1 ? '' : 's'} earned in this period but
+      ${recovered.length === 1 ? 'is' : 'are'} no longer in your latest file, so
+      ${recovered.length === 1 ? 'it was' : 'they were'} read from an earlier upload and
+      ${recovered.length === 1 ? 'its' : 'their'} revenue still reaches
+      ${recovered.length === 1 ? 'its' : 'their'} brand:
+      ${recovered.slice(0, 12).map(r => `<strong>${escape(r.name)}</strong>${
+        r.brand ? ` <span class="muted">(${escape(r.brand)})</span>` : ''}`).join(', ')}${
+        recovered.length > 12 ? ` and ${recovered.length - 12} more` : ''}.
+      ${recovered.length === 1 ? 'It is' : 'They are'} marked <span class="rc-warn">gone</span> below.</p>`;
+
   el.innerHTML = `
     ${(run.results?.length) ? `<p><a href="#" id="dl-revshare-zip" class="zip-link">↓ ${escape(periodTag(run.periodStart))}_revshare</a></p>` : ''}
+    ${addedNote}
+    ${recoveredNote}
 
     <table class="ts"><thead><tr>
       <th title="The company a payout is settled with, read from the brand record as it is today — a run does not store it">Contract entity</th>
@@ -8481,28 +8732,31 @@ async function renderBulkRunDetail(runId) {
   bindUnmatchedActions(el, run);
 
   main.querySelector('#br-archive')?.addEventListener('click', async () => {
-    if (!confirm('Archive this run? It will be locked and cannot be deleted until unarchived.')) return;
+    if (!confirm('Lock this month?\n\nIt can no longer be recomputed or deleted — the payouts on '
+      + 'it become the record. The statements, the download and the mailing are unaffected.\n\n'
+      + 'Only an admin can unlock it.')) return;
     const btn = main.querySelector('#br-archive');
-    btn.disabled = true; btn.textContent = 'Archiving…';
+    btn.disabled = true; btn.textContent = 'Locking…';
     try {
       await api('/bulk-runs/' + runId + '/archive', { method: 'POST' });
       renderBulkRunDetail(runId);
     } catch (e) {
-      alert('Archive failed: ' + e.message);
-      btn.disabled = false; btn.textContent = 'Archive';
+      alert('Could not lock: ' + e.message);
+      btn.disabled = false; btn.textContent = '🔒 Lock';
     }
   });
 
   main.querySelector('#br-unarchive')?.addEventListener('click', async () => {
-    if (!confirm('Unarchive this run? It will no longer be locked.')) return;
+    if (!confirm('Unlock this month?\n\nIt becomes recomputable and deletable again. A recompute '
+      + 'reads today\u2019s terms, so the payouts can change.')) return;
     const btn = main.querySelector('#br-unarchive');
-    btn.disabled = true; btn.textContent = 'Unarchiving…';
+    btn.disabled = true; btn.textContent = 'Unlocking…';
     try {
       await api('/bulk-runs/' + runId + '/unarchive', { method: 'POST' });
       renderBulkRunDetail(runId);
     } catch (e) {
-      alert('Unarchive failed: ' + e.message);
-      btn.disabled = false; btn.textContent = 'Unarchive';
+      alert('Could not unlock: ' + e.message);
+      btn.disabled = false; btn.textContent = 'Unlock';
     }
   });
 
@@ -8515,7 +8769,7 @@ async function renderBulkRunDetail(runId) {
       renderBulkRunsList();
     } catch (e) {
       if (e.message && e.message.includes('409')) {
-        alert('Unarchive first before deleting this run.');
+        alert('This month is locked. An admin must unlock it first.');
       } else {
         alert('Delete failed: ' + e.message);
       }

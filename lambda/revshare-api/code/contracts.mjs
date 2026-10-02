@@ -97,7 +97,12 @@ const GRID_FIELDS = {
   'type': 'merchantType', 'merchant type': 'merchantType',
   'counter party': 'counterParty', 'contract entity': 'counterParty',
   'contact': 'contactName', 'phone': 'contactPhone', 'email': 'contactEmail',
-  'sales person': 'salesPerson', 'salesperson': 'salesPerson', 'branch': 'branchCount',
+  'sales person': 'salesPerson', 'salesperson': 'salesPerson',
+  // `branch` is the pre-2026-10-01 wording and stays for sheets exported before the rename;
+  // `merchants` is what the grid and the weekly batch send now. The weekly batch posts this
+  // header verbatim, so a spelling missing here does not fail — it silently stops writing
+  // the count while the preview still shows the change.
+  'branch': 'branchCount', 'merchants': 'branchCount',
   'units': 'installedUnits', 'start': 'startDate', 'end': 'endDate',
   'notice': 'terminationNoticeDays', 'auto-renewal': 'autoRenewal', 'contract': 'contractLink',
   // Finance Information (2026-09-04). The keys are the grid's own column labels lowercased,

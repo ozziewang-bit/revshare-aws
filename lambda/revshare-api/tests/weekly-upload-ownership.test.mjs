@@ -67,7 +67,11 @@ test('contract entity belongs to the app, so no weekly alias claims it', () => {
 test('every field the weekly diff can report is one the parser can actually produce', () => {
   // WEEKLY_FIELD_KEY is keyed by parsed field NAME. A name no alias yields is dead weight that
   // reads like a supported column — which is exactly how the overlap above survived review.
-  const produced = new Set(WEEKLY_ALIASES.map(a => a.field).concat('Branch'));
+  // `Merchants` is the synthetic column the weekly batch appends from `parsed.branchCounts`;
+  // it has no alias because it is not read from the file. Renamed from `Branch` on 2026-10-01 —
+  // and this allow-list is one of the three places that had to follow, the others being the
+  // posted header and GRID_FIELDS in code/contracts.mjs.
+  const produced = new Set(WEEKLY_ALIASES.map(a => a.field).concat('Merchants'));
   for (const field of Object.keys(WEEKLY_FIELD_KEY)) {
     assert.ok(produced.has(field), `${field} is in WEEKLY_FIELD_KEY but no alias produces it`);
   }

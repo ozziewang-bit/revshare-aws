@@ -577,10 +577,16 @@ export function registryCheck(doc, registry, contracts, cap = 400) {
     const want = byBrand.get(key(f.brand)) || null;
     const list = rows.get(k);
     if (!list) {
-      // No row at all. Actionable only when the brand is registered AND the merchant qualifies
-      // under rule A2 — otherwise adding it is not something anyone should be offered.
-      if (!want) { counts.missingNoMerchant++; continue; }
+      // No row at all. Actionable only when the merchant qualifies under rule A2 AND its brand is
+      // registered — otherwise adding it is not something anyone should be offered.
+      //
+      // ELIGIBILITY IS TESTED FIRST, and the order is the whole point (2026-10-01). It used to ask
+      // about the brand first, so a merchant that is simply not Approved was reported as "waiting
+      // on a brand fix" and the footer sent you to two tabs that could not account for it.
+      // Measured on the 1 Oct file: 1,612 merchants attributed to the brand tabs, of which
+      // 1,559 were merely not Approved or had no machine deployed. The honest number was 3.
       if (!qualifies(f)) { counts.notEligible++; continue; }
+      if (!want) { counts.missingNoMerchant++; continue; }
       counts.missing++;
       if (out.missing.length < cap) out.missing.push({ ...f, contractId: want });
       continue;
