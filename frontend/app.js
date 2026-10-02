@@ -7890,6 +7890,24 @@ function mailSendDialog(group, run, sentAlready, template) {
     return;
   }
 
+  // AN EMPTY FORM IS NOT A LETTER (2026-10-02). The dialog renders its subject and body from the
+  // template; with no template it rendered two empty boxes and a live Send button, and the only
+  // thing that said anything was wrong was that they were blank. One caller — the redraw after a
+  // successful send — had been passing none, so the FIRST letter went out correct and every one
+  // after it offered to go out empty.
+  //
+  // Refused here rather than papered over, because a blank subject reaching a merchant is worse
+  // than a dialog that will not open.
+  if (!template || !(String(template.subject || '').trim() || String(template.body || '').trim())) {
+    card.innerHTML = `<h3 style="margin:0 0 8px;">The template did not load</h3>
+      <p class="muted" style="font-size:13px;max-width:560px;">This letter would go out with no
+      subject and no message. Close this and pick the template again at the top of the screen —
+      nothing has been sent.</p>
+      <div style="text-align:right;margin-top:14px;"><button id="ms-close" class="btn">Close</button></div>`;
+    card.querySelector('#ms-close').addEventListener('click', close);
+    return;
+  }
+
 
   card.innerHTML = `
     <h3 style="margin:0 0 4px;">Send statement — ${escape(group.entity || result.merchantName)}</h3>
@@ -7923,7 +7941,9 @@ function mailSendDialog(group, run, sentAlready, template) {
   $('#ms-meta').textContent =
     `From ${mailFromAlias(template) || '(no sender address on this template)'}`
     + (statementCc ? ` · cc ${statementCc}` : '')
-    + ` · attaching ${result.merchantName}.xlsx`;
+    // EVERY file, not `results[0]` — the send attaches one per brand, and this line promising a
+    // single statement under an entity holding two was simply wrong about what was going out.
+    + ` · attaching ${results.map(r => `${sanitizeFilename(r.merchantName)}.xlsx`).join(', ')}`;
 
   $('#ms-cancel').addEventListener('click', close);
 
@@ -7960,6 +7980,10 @@ function mailSendDialog(group, run, sentAlready, template) {
         blockers.push(`The rentals could not be loaded for this run (${index.ordersError}),`
           + ` so the file would go out with no rental detail.`);
       }
+      // Typed-away wording is as unsendable as a template that never loaded. Checked against
+      // the boxes as they are NOW, not against the template they were filled from.
+      if (!$('#ms-subject').value.trim()) blockers.push('The subject is empty.');
+      if (!$('#ms-body').value.trim()) blockers.push('The message is empty.');
       if (blockers.length) return fail('Not sent — ' + blockers.join(' '));
 
       const rows = index.orders
@@ -8004,7 +8028,9 @@ function mailSendDialog(group, run, sentAlready, template) {
                                attachmentRows: rows, assigned: !!assign }),
       });
       close();
-      drawMailSendList(run.runId);
+      // WITH THE TEMPLATE (2026-10-02). Without it every dialog opened after the first send had
+      // an empty subject and an empty message — and nothing stopped you sending one.
+      drawMailSendList(run.runId, template);
     } catch (e) {
       fail(e.message);
     }

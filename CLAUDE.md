@@ -1,7 +1,8 @@
 # revshare-aws — handoff
 
 Last updated: 2026-10-02 (a run no longer reads a review state — §1ak; locking a month
-used to orphan its orders — §1al; the statement names which side of a comparison won — §1am).
+used to orphan its orders — §1al; the statement names which side of a comparison won — §1am;
+a letter can no longer be sent blank — §1an).
 (History: 2026-09-04: the Merchant view gained contract
 details + finance contact, editable inline, in the download sheet, **both regions**; and the
 screen now opens with **every column group collapsed** — §1n. 2026-09-18: `Contract entity` is no
@@ -24,7 +25,7 @@ the A-B-C spec is built (§1ae, §1ag) and either file can be uploaded alone (§
 a machine type earns if anything pays for it (§1ah); a fix now leaves the table (§1ai);
 a per-machine fee lands on the machine that earned it, not on revenue (§1aj).
 A payment-schedule notice goes to every merchant with a share that month, in one send (§1z).
-Service-worker `CACHE_VERSION` is at `revshare-v286` (bump on every shell change).
+Service-worker `CACHE_VERSION` is at `revshare-v287` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
 end-to-end before touching anything. The codebase is the ultimate source of
@@ -2145,6 +2146,36 @@ in the run. It works on existing runs.
 A test asserts the per-row label **changes no number**. The winning component is matched to its
 rule leaf by `leafType`; all 8 live `max`-root contracts have children of distinct types, so it is
 unambiguous, and the amounts disambiguate where it is not.
+
+## 1an. A LETTER IS NEVER SENT BLANK (2026-10-02)
+
+*"want to send mail and this happened"* — the Send dialog open on `Siam Piwat Co., Ltd.` with an
+empty **subject** and an empty **message**, and a live Send button.
+
+**Cause, one line.** The dialog fills both from the template picked at the top of the screen. The
+redraw that runs after a SUCCESSFUL send called `drawMailSendList(run.runId)` **without it**. So
+the first letter of a session was correct and every dialog opened after a send came up empty. The
+live log shows exactly that: six September letters correct from 06:19 to 06:54, then blank.
+**Nothing blank was sent** — it was caught before pressing Send.
+
+Three fixes, because the dropped argument was only the trigger:
+1. the redraw passes the template;
+2. **the dialog refuses to open** on a template it does not have — *"The template did not load…
+   nothing has been sent"* — instead of rendering two empty boxes beside a live Send;
+3. **the send refuses an empty subject or message**, checked against the boxes as they are at that
+   moment, next to the Gmail call. That covers wording typed away by hand, not just a missing
+   template.
+
+**Also fixed, spotted in the same screenshot:** the meta line read *"2 statements, one letter"* and
+then *"attaching Siam Center.xlsx"*. The send has always attached one file per brand
+(`results.map`), so nothing was ever missing from an envelope — only the PREVIEW line was wrong,
+reading `results[0]`. It now names every file, built from the same expression as the files
+themselves so the two cannot drift.
+
+A test asserts **every** caller of `drawMailSendList` passes the template, parsing the call with
+BALANCED parentheses — the first version used a lazy regex that stopped inside
+`getElementById('msend-run')` and reported the good caller as broken. The test was then verified
+by putting the bug back and watching it fail; a check nobody has seen fail is not yet a check.
 
 ## 12. Starting fresh in a future session
 

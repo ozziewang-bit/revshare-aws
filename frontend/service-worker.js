@@ -1,4 +1,4 @@
-const CACHE_VERSION = 'revshare-v286';
+const CACHE_VERSION = 'revshare-v287';
 const SHELL = [
   '/', '/index.html', '/style.css', '/app.js', '/manifest.json', '/logo.png',
   '/lib/html2canvas.min.js', '/lib/jspdf.umd.min.js', '/lib/zip.js',
