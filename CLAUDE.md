@@ -2,7 +2,8 @@
 
 Last updated: 2026-10-02 (a run no longer reads a review state — §1ak; locking a month
 used to orphan its orders — §1al; the statement names which side of a comparison won — §1am;
-a letter can no longer be sent blank — §1an).
+a letter can no longer be sent blank — §1an;
+Send all, and the two things it would have lost — §1ao).
 (History: 2026-09-04: the Merchant view gained contract
 details + finance contact, editable inline, in the download sheet, **both regions**; and the
 screen now opens with **every column group collapsed** — §1n. 2026-09-18: `Contract entity` is no
@@ -25,7 +26,7 @@ the A-B-C spec is built (§1ae, §1ag) and either file can be uploaded alone (§
 a machine type earns if anything pays for it (§1ah); a fix now leaves the table (§1ai);
 a per-machine fee lands on the machine that earned it, not on revenue (§1aj).
 A payment-schedule notice goes to every merchant with a share that month, in one send (§1z).
-Service-worker `CACHE_VERSION` is at `revshare-v287` (bump on every shell change).
+Service-worker `CACHE_VERSION` is at `revshare-v289` (bump on every shell change).
 
 This document is the authoritative starting point for the next session. Read it
 end-to-end before touching anything. The codebase is the ultimate source of
@@ -2176,6 +2177,54 @@ A test asserts **every** caller of `drawMailSendList` passes the template, parsi
 BALANCED parentheses — the first version used a lazy regex that stopped inside
 `getElementById('msend-run')` and reported the good caller as broken. The test was then verified
 by putting the bug back and watching it fail; a check nobody has seen fail is not yet a check.
+
+## 1ao. SEND ALL, AND THE TWO THINGS IT WOULD HAVE LOST (2026-10-02)
+
+*"please add a button to send to all in ready to send section"* then *"please examine again that
+the all send will not miss out anything since we are not able to look through one by one."*
+
+**Send all is not a second sender.** The send was pulled out of the dialog into one pair —
+`prepareStatementLetter` works out what WOULD go and why it might not, `deliverStatementLetter`
+sends exactly that and records it — and both the per-entity dialog and Send all go through them.
+A bulk path with its own copy of this logic would drift, and the drift would only be visible in a
+merchant's inbox.
+
+What Send all does differently, on purpose: one confirmation up front (before the Google
+permission window); the Gmail token taken on the CLICK, before any await; the order index fetched
+ONCE for the batch (it is several MB); letters sent one at a time with live progress; a BLOCKED
+letter skipped and named while the batch continues; a FAILED delivery stops the batch and says how
+far it got. It is handed `ready`, which already excludes everything in the mail log.
+
+### The two defects the examination found — neither visible by reading
+
+**1. An entity letter blocked itself.** `statementSendBlockers` checks that every recipient is a
+finance address of the merchant being sent to. Entity grouping (§C6, 2026-10-01) made the
+recipients the UNION across the brands under one entity, and the check was never widened — so any
+entity whose brands do not list identical addresses refused its own letter. One did on the live
+September run (`บริษัท เอ็มแอนด์ เอ็ม 2007 จำกัด` — Song Wat Coffee + Someday in Copenhagen).
+Under Send all that is a single line in the closing summary, which is precisely what nobody can
+catch in a batch of 66. `prepareStatementLetter` now passes the letter's own allowed set.
+**The protection it exists for is intact** — an address belonging to a different entity is still
+refused, asserted against live data by injecting one.
+
+**2. A sent letter could be reported as unsent.** Gmail has accepted the message before the log is
+written. If recording it then failed, the old code THREW: the group came back under "Ready to
+send", and a retry delivered a **second copy to a real merchant**. Over a batch of 66 one
+transient API error was enough. The log write now retries three times and, if it still fails,
+**returns** the fact instead of raising it; both senders say *"WAS SENT but could not be
+recorded… do not send it again"*, and Send all says that BEFORE the ordinary skipped summary —
+two different messages, and this is the one that costs a duplicate.
+
+### What was checked, against the live September run
+
+Using the app's own `groupResultsForMail` and `statementSendBlockers`, not a re-implementation:
+the partition is TOTAL (202 paid brands → 202 across all groups → 202 across all sections, 0 in
+two groups, **0 in none**); every ready letter now passes its own blockers (0 skipped); one
+attachment per brand with no filename collisions; every loop iteration either skips or delivers,
+and `done++` only follows a successful delivery.
+
+Noted, not a defect: **4 ready letters carry a 0.00 payout** — brands with machines and no revenue.
+They are real statements and go out.
 
 ## 12. Starting fresh in a future session
 

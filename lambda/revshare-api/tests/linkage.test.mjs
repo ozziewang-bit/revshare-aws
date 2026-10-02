@@ -122,13 +122,15 @@ test('eligibility is tested before the brand, in that order', () => {
 // `{{sharePct}}` were still the FIRST brand's, so a letter could state the entity's payout
 // against one brand's revenue. Same shape as the statement bug of 2026-10-01.
 test('the entity letter recomputes revenue and share, not only payout', () => {
-  const fn = grab('mailSendDialog');
-  const i = fn.indexOf('const vars = {');
-  const vars = fn.slice(i, fn.indexOf('};', i));
+  // The vars moved into mailVarsForGroup — one definition, used by both senders.
+  const fn = grab('mailVarsForGroup');
+  const vars = fn;
   for (const k of ['revenue', 'sharePct', 'payout']) {
     assert.match(vars, new RegExp(`\\b${k}:`), `${k} must be the group's, not results[0]'s`);
   }
   assert.match(fn, /group\.results\.reduce\(\(a, r\) => a \+ \(Number\(r\.revenue\) \|\| 0\), 0\)/);
+  assert.match(grab('mailSendDialog'), /const vars = mailVarsForGroup\(group, run\)/,
+    'and the dialog reads that one definition rather than its own copy');
   assert.match(vars, /group\.payout \/ groupRevenue/, 'and the percentage divides the two group figures');
 });
 

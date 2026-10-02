@@ -10,10 +10,17 @@ const app = readFileSync(new URL('../../../frontend/app.js', import.meta.url), '
 const grab = (n) => {
   const i = app.indexOf(`function ${n}(`);
   if (i < 0) throw new Error('missing ' + n);
-  let d = 0;
-  for (let k = app.indexOf('{', i); k < app.length; k++) {
-    if (app[k] === '{') d++; else if (app[k] === '}') { d--; if (!d) return app.slice(i, k + 1); }
+  // SKIP THE PARAMETER LIST FIRST. Counting braces from the first `{` after the name used to
+  // work only because no function here took a destructured argument; the moment one did
+  // (`prepareStatementLetter({ group, run, … })`) this returned the SIGNATURE and every
+  // assertion against the body failed for a reason that had nothing to do with the code.
+  let d = 0, k = app.indexOf('(', i);
+  for (; k < app.length; k++) { if (app[k] === '(') d++; else if (app[k] === ')') { d--; if (!d) break; } }
+  d = 0;
+  for (let j = app.indexOf('{', k); j < app.length; j++) {
+    if (app[j] === '{') d++; else if (app[j] === '}') { d--; if (!d) return app.slice(i, j + 1); }
   }
+  throw new Error('unterminated ' + n);
 };
 // splitAddresses now leans on a shared VALID_ADDRESS constant, so every helper that extracts
 // it needs the constant too — an address with a space is not an address, and that rule lives in
@@ -312,9 +319,10 @@ test('the dialog only accepts a stranger address when it was assigned deliberate
 test('an assigned send is recorded as assigned', () => {
   // Otherwise the Sent log cannot tell a statement that went to its merchant from one that
   // went somewhere else, which is the first question anyone would ask of it.
-  const src = grab('mailSendDialog');
-  assert.match(src, /assigned: !!assign/);
-  assert.match(src, /ASSIGNED address/, 'and the confirmation says so before it goes');
+  assert.match(grab('deliverStatementLetter'), /assigned: !!assign/, 'the log records it');
+  // And BOTH senders say so before anything goes.
+  assert.match(grab('mailSendDialog'), /ASSIGNED address/);
+  assert.match(grab('sendAllReady'), /ASSIGNED address/);
 });
 
 test('the list says where an assigned batch is going', () => {
@@ -464,12 +472,17 @@ test('every row that has a mail offers a preview of it', () => {
 // own wording promised "every rental in the period". A merchant comparing the file with the
 // letter would have found the letter wrong. Both paths now go through one builder.
 test('mail and download build the statement from the same function', () => {
-  const send = grab('mailSendDialog');
-  assert.match(send, /statementWorkbook\(r, index\)/, 'the mail builds the shared workbook');
-  assert.match(send, /results\.map\(r => \(\{/, 'one file per brand under the entity');
-  assert.match(send, /await runOrderIndex\(run\)/, 'from the run\u2019s own order index');
-  assert.ok(!/buildPartnerSheet\(XLSX, result, null/.test(send),
+  // Asserted on the SHARED pair (2026-10-02): both the per-entity dialog and "Send all"
+  // go through prepareStatementLetter/deliverStatementLetter, so one assertion covers both.
+  const prep = grab('prepareStatementLetter');
+  assert.match(prep, /statementWorkbook\(r, index\)/, 'the mail builds the shared workbook');
+  assert.match(prep, /results\.map\(r => \(\{/, 'one file per brand under the entity');
+  assert.ok(!/buildPartnerSheet\(XLSX, result, null/.test(prep),
     'and never passes null orders, which is what dropped the rental rows');
+  for (const sender of ['mailSendDialog', 'sendAllReady']) {
+    assert.match(grab(sender), /await runOrderIndex\(run\)/,
+      `${sender} must fetch the run\u2019s own order index`);
+  }
 });
 
 test('the order index is fetched once per run, not per merchant', () => {
@@ -554,8 +567,9 @@ test('the send restates entity, brands, period, payout and recipient before it g
 test('one letter per entity, but one log row per brand', () => {
   // "Already sent" is answered per brand: a group whose membership changes next month must not
   // hide a brand that was never written to.
-  const src = grab('mailSendDialog');
-  assert.match(src, /for \(const r of results\) await api\(`\/bulk-runs/);
+  const src = grab('deliverStatementLetter');
+  assert.match(src, /for \(const r of group\.results\) \{/);
+  assert.match(src, /await api\(`\/bulk-runs\/\$\{encodeURIComponent\(run\.runId\)\}\/mail-log`/);
   assert.match(src, /contractId: r\.contractId, merchantName: r\.merchantName/);
   assert.match(src, /entity: group\.entity \|\| null/);
 });
@@ -569,7 +583,7 @@ test('a brand with no entity is a group of one, never merged on a blank', () => 
 });
 
 test('every statement is attached with its own filename and spreadsheet type', () => {
-  const src = grab('mailSendDialog');
+  const src = grab('deliverStatementLetter');
   assert.match(src, /filename: f\.filename, bytes: f\.bytes/);
   assert.match(src, /spreadsheetml\.sheet/,
     'buildMimeMessage reads `filename` and `type`; `name` would send an unopenable attachment');
@@ -577,7 +591,7 @@ test('every statement is attached with its own filename and spreadsheet type', (
 
 test('the log records enough to check that the RIGHT one was sent', () => {
   // "We sent it" is not the same claim as "we sent the right one".
-  const src = grab('mailSendDialog');
+  const src = grab('deliverStatementLetter');
   for (const field of ['period:', 'payout:', 'attachmentRows:']) {
     assert.ok(src.includes(field), `the mail log must record ${field}`);
   }

@@ -7561,10 +7561,10 @@ async function drawMailSendList(runId, template) {
     </p>`;
   }
 
-  const section = (title, rows, tone, body) => rows.length ? `
+  const section = (title, rows, tone, body, action = '') => rows.length ? `
     <section style="margin-top:18px;">
       <h3 style="display:flex;align-items:baseline;gap:10px;margin:0 0 6px;font-size:14px;">
-        ${escape(title)} <span class="rc-count">${rows.length}</span></h3>
+        ${escape(title)} <span class="rc-count">${rows.length}</span>${action}</h3>
       <table class="ts msend-table"><thead><tr>
         <th>Contract entity</th><th>Brands</th><th class="rc-c-money">Payout</th>
         <th>${escape(tone)}</th><th></th>
@@ -7575,7 +7575,9 @@ async function drawMailSendList(runId, template) {
     section('Ready to send', ready, 'To', ready.map(g => row(g,
       escape(g.to.join(', ')),
       `<button class="btn-ghost mprev-btn" data-cids="${escape(groupKey(g))}">Preview</button>
-       <button class="btn-ghost msend-btn" data-cids="${escape(groupKey(g))}">Send…</button>`)).join(''))
+       <button class="btn-ghost msend-btn" data-cids="${escape(groupKey(g))}">Send…</button>`)).join(''),
+      `<button id="msend-all" class="btn-primary" style="margin-left:auto;font-size:13px;"
+         title="Send every letter in this section, one after another. Each one is checked exactly as a single send is.">Send all…</button>`)
     + section('Already sent', done, 'Sent', done.map(g => {
         const m = sent.get(g.results[0].contractId) || {};
         return row(g,
@@ -7608,6 +7610,10 @@ async function drawMailSendList(runId, template) {
     return grouped.find(g => g.results.length === ids.length
                           && g.results.every(r => ids.includes(r.contractId)));
   };
+  const sendAllBtn = box.querySelector('#msend-all');
+  if (sendAllBtn) sendAllBtn.addEventListener('click', () => sendAllReady(
+    ready, run, template, () => drawMailSendList(runId, template)));
+
   box.querySelectorAll('.msend-btn').forEach(b => b.addEventListener('click', () => {
     const g = groupOf(b);
     if (g) mailSendDialog(g, run, g.sentAt, template);
@@ -7717,7 +7723,16 @@ function statementWorkbook(result, index) {
 // used — not against what the screen showed a minute ago.
 //
 // Returns a list of reasons this send must NOT happen. Empty means go.
-function statementSendBlockers(result, run, recipients, attachmentFor, assigned) {
+// `allowed` is every address this LETTER may legitimately go to. For a single brand that is its
+// own finance addresses; for an entity letter it is the union across the brands under it —
+// `บริษัท เอ็มแอนด์ เอ็ม 2007 จำกัด` covers Song Wat Coffee and Someday in Copenhagen, and the
+// address on file for one of them is the right address for the letter that carries both.
+//
+// It was NOT passed when entity grouping landed (2026-10-01), so each brand was checked against
+// its own addresses while the recipients were the union — and any entity whose brands did not
+// list identical addresses blocked itself. One did on the live September run, and under Send all
+// it would have been skipped with only a line in the closing summary to say so.
+function statementSendBlockers(result, run, recipients, attachmentFor, assigned, allowed) {
   const problems = [];
 
   // 1. The file must belong to the merchant named in the letter. Both come from `result`, so
@@ -7732,10 +7747,11 @@ function statementSendBlockers(result, run, recipients, attachmentFor, assigned)
   //    thing this screen could do, so the addresses are compared here rather than trusted from
   //    the row that was clicked.
   if (!assigned) {
-    const own = new Set(mailRecipients(result.contractId).map(a => a.toLowerCase()));
+    const own = new Set((allowed || mailRecipients(result.contractId)).map(a => a.toLowerCase()));
     const strangers = recipients.filter(a => !own.has(a.toLowerCase()));
     if (strangers.length) {
-      problems.push(`${strangers.join(', ')} is not a finance address for ${result.merchantName}.`);
+      problems.push(`${strangers.join(', ')} is not a finance address for `
+        + `${allowed ? 'this letter' : result.merchantName}.`);
     }
   }
 
@@ -7854,6 +7870,215 @@ function mailCc(t) {
 //
 // A brand with no entity arrives here as a group of one, so the single-brand case is not a
 // separate path that could drift from this one.
+// ── SEND ALL (2026-10-02) ────────────────────────────────────────────────────────────────────
+// "please add a button to send to all in ready to send section."
+//
+// The dangerous button on this screen. Every rule the single send follows is followed here, by
+// going through the SAME prepare/deliver pair — one definition of what a letter is, so this
+// cannot quietly send something the dialog would have refused.
+//
+// What it does differently, and on purpose:
+//   • ONE confirmation up front, naming the count, the total payout and the period. Asking per
+//     letter would defeat the button; asking nothing would be reckless.
+//   • The Gmail token is taken on the CLICK, before any await — a browser only allows Google's
+//     permission window while the gesture is live.
+//   • The order index is fetched ONCE for the batch. It is several MB; per letter it would be
+//     a hundred downloads.
+//   • Sent one at a time, not in parallel: the progress line has to mean something, and a
+//     failure must stop the rest rather than race them.
+//   • A letter that is BLOCKED is skipped and named — the batch carries on. One merchant with
+//     no finance email must not strand the other ninety.
+//   • It stops on the first DELIVERY failure. A blocked letter is a known state; a failed send
+//     is not, and continuing past it would make "how far did it get" unanswerable.
+// Nothing is re-sent: the list it works from is `ready`, which already excludes everything in
+// the mail log.
+async function sendAllReady(ready, run, template, redraw) {
+  // Read AT CLICK TIME, exactly as the dialog reads it when it opens — not captured when the
+  // list was drawn. The list does redraw when the assigned address changes, so this is not a
+  // live bug; it is one that a future refactor of that redraw would quietly create.
+  const assign = MAIL_ASSIGNED.length > 0;
+  const progress = document.getElementById('msend-progress');
+  const btn = document.getElementById('msend-all');
+  if (!ready.length) return;
+
+  const total = ready.reduce((a, g) => a + (Number(g.payout) || 0), 0);
+  const letters = ready.length;
+  const brands = ready.reduce((a, g) => a + g.brands.length, 0);
+  const ok = confirm(
+    (assign ? `Send ALL ${letters} statements to an ASSIGNED address?\n`
+            + `(not to the merchants themselves)\n\n`
+            : `Send all ${letters} statements?\n\n`)
+    + `Period:     ${periodTag(run.periodStart)}\n`
+    + `Letters:    ${letters} (one per contract entity)\n`
+    + `Brands:     ${brands}\n`
+    + `Payout:     ${fmt2(total)} in total\n`
+    + `To:         ${assign ? MAIL_ASSIGNED.join(', ') : 'each merchant\u2019s own finance address'}\n\n`
+    + `They go out one after another and CANNOT BE UNSENT.`);
+  if (!ok) return;
+
+  // Before any await, while the click is still live.
+  const tokenReady = gmailToken();
+  if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
+  const say = (html) => { if (progress) progress.innerHTML = `<p class="msend-progress">${html}</p>`; };
+
+  const skipped = [], unlogged = [];
+  let done = 0;
+  try {
+    await tokenReady;
+    const index = await runOrderIndex(run);
+    for (const g of ready) {
+      const who = escape(g.entity || g.brands[0]);
+      say(`Sending <strong>${done + 1} of ${letters}</strong> — ${who}…`);
+      const recipients = assign ? MAIL_ASSIGNED : g.to;
+      const vars = mailVarsForGroup(g, run);
+      const subject = renderTemplate(template.subject, vars);
+      const body = renderTemplate(template.body, vars);
+      const letter = prepareStatementLetter({ group: g, run, template, index,
+                                              subject, body, recipients, assign });
+      if (letter.blockers.length) {
+        skipped.push(`${g.entity || g.brands[0]} — ${letter.blockers.join(' ')}`);
+        continue;
+      }
+      const out = await deliverStatementLetter({ group: g, run, template, letter,
+                                                 subject, body, recipients, assign });
+      if (out.unlogged.length) unlogged.push(...out.unlogged);
+      done++;
+    }
+  } catch (e) {
+    // Stop here, and say exactly how far it got — the rest have NOT gone out.
+    say(`<span class="rc-warn">Stopped after ${done} of ${letters}</span> — ${escape(e.message)}.
+         The remaining ${letters - done - skipped.length} have not been sent.`);
+    alert(`Sending stopped after ${done} of ${letters}.\n\n${e.message}\n\n`
+      + `The rest have NOT been sent. The list below shows what is left.`);
+    await redraw();
+    return;
+  }
+  if (btn) { btn.disabled = false; btn.textContent = 'Send all…'; }
+  await redraw();
+  // SAID FIRST, and on its own. These letters ARE with the merchant; the app simply failed to
+  // write them down, so the list below will offer them again. Resending delivers a second copy.
+  if (unlogged.length) {
+    alert(`⚠ ${unlogged.length} statement(s) WERE SENT but could not be recorded:\n\n`
+      + unlogged.slice(0, 20).join('\n')
+      + (unlogged.length > 20 ? `\n…and ${unlogged.length - 20} more` : '')
+      + `\n\nThey will still appear under "Ready to send". DO NOT send them again —`
+      + ` the merchant already has them.`);
+  }
+  if (skipped.length) {
+    alert(`Sent ${done} of ${letters}.\n\n${skipped.length} could not be sent:\n\n`
+      + skipped.slice(0, 15).join('\n')
+      + (skipped.length > 15 ? `\n…and ${skipped.length - 15} more` : ''));
+  }
+}
+
+// ── ONE DEFINITION OF A STATEMENT LETTER (2026-10-02) ────────────────────────────────────────
+// Two things can send: the per-entity dialog, and "Send all" on the Ready list. They must agree
+// on every part of what goes out — the attachments, the blockers, the recipients, what lands in
+// the mail log. A second copy of this would drift, and the drift would only be visible in a
+// merchant's inbox.
+//
+// So: `prepareStatementLetter` works out what WOULD be sent and why it might not be, and sends
+// nothing. `deliverStatementLetter` sends exactly that and records it. The confirmation in
+// between belongs to the caller — the dialog asks per letter, Send all asks once.
+
+// The placeholders for one entity's letter. Every figure that spans brands is the GROUP's:
+// `mailVarsFor` answers for one brand, and this letter covers the whole entity.
+function mailVarsForGroup(group, run) {
+  const first = group.results[0];
+  const groupRevenue = group.results.reduce((a, r) => a + (Number(r.revenue) || 0), 0);
+  return { ...mailVarsFor(first, run),
+           merchant: group.brands.join(', '),
+           entity: group.entity || first.merchantName,
+           revenue: fmt2(groupRevenue),
+           sharePct: groupRevenue > 0 ? (group.payout / groupRevenue * 100).toFixed(1) + '%' : '—',
+           payout: fmt2(group.payout) };
+}
+
+// `index` is the run's orders, fetched ONCE by the caller — it is several MB, so a loop over 100
+// entities must not refetch it per letter.
+function prepareStatementLetter({ group, run, template, index, subject, body, recipients, assign }) {
+  const results = group.results;
+  const from = mailFromAlias(template);
+  const cc = mailCc(template);
+  // One file per brand — the same workbook the download produces, from the same function.
+  const files = results.map(r => ({
+    filename: `${sanitizeFilename(r.merchantName)}.xlsx`,
+    bytes: statementWorkbook(r, index),
+  }));
+  // Checked against what is about to be sent, for EVERY brand, so one unsendable statement stops
+  // the letter rather than going out beside the others.
+  // Every address any brand under this entity lists — the letter is addressed to the entity,
+  // which owns all of them. A stranger from a DIFFERENT entity is still refused.
+  const allowed = [...new Set(results.flatMap(r => mailRecipients(r.contractId)))];
+  const blockers = results.flatMap(r =>
+    statementSendBlockers(r, run, recipients, r.contractId, !!assign, allowed));
+  if (!recipients.length) blockers.push('No recipient.');
+  if (!from) blockers.push('This template has no sender alias. Set one under Mailing → Templates.');
+  // An incomplete file must not be SENDABLE, not merely carry a warning inside it. The September
+  // run's 10.4 MB inputs failed to load and statements went out with no rentals at all — the
+  // letter promising "every rental in the period" is then simply untrue.
+  if (index.ordersError && index.ordersError !== 'predates') {
+    blockers.push(`The rentals could not be loaded for this run (${index.ordersError}),`
+      + ` so the file would go out with no rental detail.`);
+  }
+  if (!String(subject || '').trim()) blockers.push('The subject is empty.');
+  if (!String(body || '').trim()) blockers.push('The message is empty.');
+
+  const rows = index.orders
+    ? results.reduce((a, r) => a + (index.ordersByContract.get(r.contractId) || []).length, 0) : 0;
+  return { files, filenames: files.map(f => f.filename).join(', '), rows, blockers, from, cc };
+}
+
+async function deliverStatementLetter({ group, run, template, letter, subject, body, recipients, assign }) {
+  const sent = await sendGmail(buildMimeMessage({
+    from: letter.from, to: recipients, cc: letter.cc, subject,
+    // `filename` and `type`, which is what buildMimeMessage reads — `name` would have gone out as
+    // `attachment` labelled application/octet-stream, unopenable as a spreadsheet.
+    body, attachments: letter.files.map(f => ({
+      filename: f.filename, bytes: f.bytes,
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })),
+  }));
+  // ONE LOG ROW PER BRAND, even though it was one letter: "already sent" is answered per brand,
+  // and a group whose membership changes next month must not hide a brand that was never
+  // written to.
+  //
+  // THE LOG WRITE MUST NEVER THROW (2026-10-02). Gmail has already accepted the message by this
+  // line — the letter is OUT. If recording it then failed, the old code threw: the group came
+  // back as unsent, and a retry delivered a SECOND copy to a real merchant. Over a batch of 66
+  // one transient API error was enough.
+  //
+  // So it is retried, and if it still cannot be written the fact is RETURNED, not raised. The
+  // callers say "sent but not recorded — do not resend", which is the only honest thing to say.
+  const unlogged = [];
+  for (const r of group.results) {
+    const row = {
+      // Enough to reconcile the Sent log against the run itself: which merchant, which period,
+      // and what figure the letter quoted. Without the amount, "we sent it" cannot be checked
+      // against "we sent the right one".
+      contractId: r.contractId, merchantName: r.merchantName,
+      entity: group.entity || null,
+      to: recipients.join(', '), cc: letter.cc || null, subject,
+      attachment: `${sanitizeFilename(r.merchantName)}.xlsx`,
+      gmailId: sent.id, fromAlias: letter.from,
+      period: periodTag(run.periodStart), payout: Number(r.payout) || 0,
+      attachmentRows: letter.rows, assigned: !!assign,
+    };
+    let wrote = false;
+    for (let attempt = 0; attempt < 3 && !wrote; attempt++) {
+      try {
+        await api(`/bulk-runs/${encodeURIComponent(run.runId)}/mail-log`,
+                  { method: 'POST', body: JSON.stringify(row) });
+        wrote = true;
+      } catch (e) {
+        console.warn('mail log write failed', r.merchantName, 'attempt', attempt + 1, e);
+        if (attempt < 2) await new Promise(res => setTimeout(res, 400 * (attempt + 1)));
+      }
+    }
+    if (!wrote) unlogged.push(r.merchantName);
+  }
+  return { sent, unlogged };
+}
+
 function mailSendDialog(group, run, sentAlready, template) {
   const results = group.results;
   const result = results[0];                 // what the wording is written from
@@ -7872,13 +8097,7 @@ function mailSendDialog(group, run, sentAlready, template) {
   // percentage of a letter that is not about one brand. No live template reads those two, which is
   // the only reason nothing went out wrong. Same shape as the statement bug of this morning: a
   // total that reconciles over one part and nothing else.
-  const groupRevenue = group.results.reduce((a, r) => a + (Number(r.revenue) || 0), 0);
-  const vars = { ...mailVarsFor(result, run),
-                 merchant: group.brands.join(', '),
-                 entity: group.entity || result.merchantName,
-                 revenue: fmt2(groupRevenue),
-                 sharePct: groupRevenue > 0 ? (group.payout / groupRevenue * 100).toFixed(1) + '%' : '—',
-                 payout: fmt2(group.payout) };
+  const vars = mailVarsForGroup(group, run);
 
   if (!MAIL_TEMPLATES.length) {
     card.innerHTML = `<h3 style="margin:0 0 8px;">No mail template yet</h3>
@@ -7959,35 +8178,13 @@ function mailSendDialog(group, run, sentAlready, template) {
     const tokenReady = gmailToken();
     try {
       await tokenReady;
-      // The same file the download produces, from the same function — including the
-      // rental-by-rental block, which this used to omit while the wording promised it.
+      // Several MB. Fetched once here; "Send all" fetches it once for the whole batch.
       const index = await runOrderIndex(run);
-      // One file per brand — the same workbook the download produces, from the same function.
-      const files = results.map(r => ({
-        filename: `${sanitizeFilename(r.merchantName)}.xlsx`,
-        bytes: statementWorkbook(r, index),
-      }));
-      const filename = files.map(f => f.filename).join(', ');
+      const subject = $('#ms-subject').value, body = $('#ms-body').value;
+      const letter = prepareStatementLetter({ group, run, template, index,
+                                              subject, body, recipients, assign });
+      if (letter.blockers.length) return fail('Not sent — ' + letter.blockers.join(' '));
 
-      // Checked against what is about to be sent, not what was rendered — for EVERY brand, so one
-      // unsendable statement stops the letter rather than going out with the others.
-      const blockers = results.flatMap(r =>
-        statementSendBlockers(r, run, recipients, r.contractId, !!assign));
-      // An incomplete file must not be SENDABLE, not merely carry a warning inside it. The
-      // September run's 10.4 MB inputs failed to load and statements went out with no rentals at
-      // all — the letter promising "every rental in the period" is then simply untrue.
-      if (index.ordersError && index.ordersError !== 'predates') {
-        blockers.push(`The rentals could not be loaded for this run (${index.ordersError}),`
-          + ` so the file would go out with no rental detail.`);
-      }
-      // Typed-away wording is as unsendable as a template that never loaded. Checked against
-      // the boxes as they are NOW, not against the template they were filled from.
-      if (!$('#ms-subject').value.trim()) blockers.push('The subject is empty.');
-      if (!$('#ms-body').value.trim()) blockers.push('The message is empty.');
-      if (blockers.length) return fail('Not sent — ' + blockers.join(' '));
-
-      const rows = index.orders
-        ? results.reduce((a, r) => a + (index.ordersByContract.get(r.contractId) || []).length, 0) : 0;
       const ok = confirm(
         (assign ? `Send to an ASSIGNED address?\n(not ${group.entity || result.merchantName}'s own)\n\n`
                 : `Send this statement?\n\n`)
@@ -7996,37 +8193,19 @@ function mailSendDialog(group, run, sentAlready, template) {
         + `Period:     ${periodTag(run.periodStart)}\n`
         + `Payout:     ${fmt2(group.payout)} ${vars.currency}\n`
         + `To:         ${recipients.join(', ')}\n`
-        + (statementCc ? `Cc:         ${statementCc}\n` : '')
-        + `From:       ${from}\n`
-        + `Attached:   ${filename} (${rows ? rows + ' rental rows' : 'summary only'})\n\n`
+        + (letter.cc ? `Cc:         ${letter.cc}\n` : '')
+        + `From:       ${letter.from}\n`
+        + `Attached:   ${letter.filenames} (${letter.rows ? letter.rows + ' rental rows' : 'summary only'})\n\n`
         + `This cannot be unsent.`);
       if (!ok) { btn.disabled = false; btn.textContent = 'Send'; return; }
 
-      const sent = await sendGmail(buildMimeMessage({
-        from, to: recipients, cc: statementCc, subject: $('#ms-subject').value,
-        // `filename` and `type`, which is what buildMimeMessage reads — `name` would have gone
-        // out as `attachment` labelled application/octet-stream, unopenable as a spreadsheet.
-        body: $('#ms-body').value, attachments: files.map(f => ({
-          filename: f.filename, bytes: f.bytes,
-          type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })),
-      }));
-      // ONE LOG ROW PER BRAND, even though it was one letter: "already sent" is answered per
-      // brand, and a group whose membership changes next month must not hide a brand that was
-      // never written to.
-      for (const r of results) await api(`/bulk-runs/${encodeURIComponent(run.runId)}/mail-log`, {
-        method: 'POST',
-        // Enough to reconcile the Sent log against the run itself: which merchant, which
-        // period, and what figure the letter quoted. Without the amount, "we sent it" cannot be
-        // checked against "we sent the right one".
-        body: JSON.stringify({ contractId: r.contractId, merchantName: r.merchantName,
-                               entity: group.entity || null,
-                               to: recipients.join(', '), cc: statementCc || null,
-                               subject: $('#ms-subject').value,
-                               attachment: `${sanitizeFilename(r.merchantName)}.xlsx`,
-                               gmailId: sent.id, fromAlias: from,
-                               period: periodTag(run.periodStart), payout: Number(r.payout) || 0,
-                               attachmentRows: rows, assigned: !!assign }),
-      });
+      const out = await deliverStatementLetter({ group, run, template, letter,
+                                                 subject, body, recipients, assign });
+      if (out.unlogged.length) {
+        alert(`⚠ This statement WAS SENT, but could not be recorded (${out.unlogged.join(', ')}).`
+          + `\n\nIt will still appear under "Ready to send". Do not send it again —`
+          + ` the merchant already has it.`);
+      }
       close();
       // WITH THE TEMPLATE (2026-10-02). Without it every dialog opened after the first send had
       // an empty subject and an empty message — and nothing stopped you sending one.
