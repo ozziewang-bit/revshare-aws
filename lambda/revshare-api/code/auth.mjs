@@ -62,6 +62,9 @@ export function requiredPermission(method, path) {
   if (/^\/bulk-runs\/[^/]+\/unarchive$/.test(path)) return 'admin';
   if (/^\/bulk-runs\/[^/]+\/archive$/.test(path)) return 'runCalcs';
   if (/^\/bulk-runs\/[^/]+\/recompute$/.test(path)) return 'runCalcs';
+  // Creating a payment request from a run (2026-10-13) is the same act as running the calc;
+  // reading their status is an open read and already returned null above.
+  if (/^\/bulk-runs\/[^/]+\/payment-requests$/.test(path)) return 'runCalcs';
   if (path.startsWith('/bulk-runs/')) return 'deleteRuns';   // DELETE only mutating sub-route
   if (path.startsWith('/merchants')) return 'manageMerchants';
   if (path.startsWith('/contracts')) return 'manageMerchants';

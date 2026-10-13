@@ -2,8 +2,10 @@
 // One site, two backends. Both API URLs are public (no auth). Switching region
 // persists to localStorage and reloads (see switchRegion) so no TH/SG state bleeds.
 const REGIONS = {
-  th: { name: 'Thailand',  api: 'https://7z269nmx74.execute-api.ap-southeast-7.amazonaws.com/prod', ccy: 'THB', sym: '฿',  notFound: 'ไม่พบข้อมูล' },
-  sg: { name: 'Singapore', api: 'https://4qcyojfg79.execute-api.ap-southeast-7.amazonaws.com/prod', ccy: 'SGD', sym: 'S$', notFound: 'Not found'   },
+  th: { name: 'Thailand',  api: 'https://7z269nmx74.execute-api.ap-southeast-7.amazonaws.com/prod', ccy: 'THB', sym: '฿',  notFound: 'ไม่พบข้อมูล',
+        prSite: 'https://d3emsfshb1fwfl.cloudfront.net' },   // Payment Request (TH) — a run's requests open there
+  sg: { name: 'Singapore', api: 'https://4qcyojfg79.execute-api.ap-southeast-7.amazonaws.com/prod', ccy: 'SGD', sym: 'S$', notFound: 'Not found',
+        prSite: 'https://d2v9auketxzjkb.cloudfront.net' },   // Payment Request (SG)
 };
 let REGION = (localStorage.getItem('rs_region') in REGIONS) ? localStorage.getItem('rs_region') : 'th';
 const R = () => REGIONS[REGION];
@@ -6290,17 +6292,24 @@ const API_BODY_LIMIT = 10 * 1024 * 1024;
 // roughly half and wave through exactly the body the gateway then rejects.
 const byteLength = (s) => new TextEncoder().encode(s).length;
 
-async function postLarge(path, payload, what) {
+// A payment request's statement goes through a Lambda the gateway calls synchronously, which
+// takes at most 6 MB — less than the gateway's 10 MB. Checked here so a large Brand stops with
+// a reason instead of an opaque failure mid-batch.
+const PR_BODY_LIMIT = 5.5 * 1024 * 1024;
+
+async function postLarge(path, payload, what, limit = API_BODY_LIMIT) {
   const text = JSON.stringify(payload);
   const packed = await gzipBase64(text);
   const body = packed == null ? text : JSON.stringify({ gz: packed });
-  if (byteLength(body) > API_BODY_LIMIT) {
+  if (byteLength(body) > limit) {
     const mb = (n) => (n / 1024 / 1024).toFixed(1) + ' MB';
     throw new Error(
       `This ${what} is too large to send: ${mb(byteLength(body))}`
       + (packed == null ? ' (this browser cannot compress it — try Chrome, Edge or Safari 16.4+)'
                         : ` compressed, from ${mb(byteLength(text))}`)
-      + `. The API accepts at most ${mb(API_BODY_LIMIT)}. Split the period and run it in two halves.`);
+      + `. The API accepts at most ${mb(limit)}. `
+      + (limit === API_BODY_LIMIT ? 'Split the period and run it in two halves.'
+        : 'Create this one in Payment Request by hand and attach the statement from the download.'));
   }
   return api(path, { method: 'POST', body });
 }
@@ -8647,6 +8656,151 @@ function contractEntityFor(contractId) {
   return (c ? entityName(c) : '') || null;
 }
 
+// ── Payment requests from a locked run (2026-10-13) ────────────────────────────────────────
+// Tick Brands on a LOCKED run and each gets one draft payment request for the month in Payment
+// Request, owned by whoever clicked, statement attached. Nothing is submitted from here. Payment
+// Request owns the status wording; this page only shows it.
+function payReqEligible(result, run, pr) {
+  if (!run.archived) return { ok: false, reason: 'Lock this month first' };
+  // Unknown is not "none": without the list, a Brand that already has a request would look free.
+  if (pr.failed) return { ok: false, reason: 'Payment requests could not be loaded — reload to try again' };
+  if (!(Number(result.payout) > 0)) return { ok: false, reason: 'No payout this month' };
+  if (pr.rows && pr.rows[result.contractId]) return { ok: false, reason: 'Already requested' };
+  return { ok: true, reason: '' };
+}
+function payReqCell(row, prSite, payout) {
+  if (!row) return '<span class="muted">—</span>';
+  // A request keeps the amount it was created with. If the month was unlocked and recomputed
+  // since, the run now says something else — say so, rather than let the old figure be submitted.
+  const money = (v) => Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const differs = row.amount != null && payout != null && Math.abs(Number(row.amount) - Number(payout)) >= 0.005
+    ? ` <span class="rc-warn" title="Delete the draft in Payment Request and create it again to use the run's amount">amount differs: request ${money(row.amount)} / run ${money(payout)}</span>` : '';
+  const label = row.status === 'unknown' ? 'Requested · status unavailable' : (row.status.label || row.status.status || '');
+  const doc = row.status && row.status.docNumber ? ` · ${escape(row.status.docNumber)}` : '';
+  const who = row.createdBy ? ` title="Created by ${escape(row.createdBy)} on ${escape(String(row.createdAt || '').slice(0, 10))}"` : '';
+  return `<a class="pr-link" href="${prSite}/#request/${escape(row.requestId)}" target="_blank" rel="noopener"${who}>${escape(label)}${doc}</a>${differs}`;
+}
+// The Payment request cell (2026-10-13: the tick lives here, not in a column of its own).
+// Requested → its live status. Can be requested, by someone allowed to → a "Request" tick.
+// Otherwise a dash that says on hover why there is nothing to do. Same markup on first paint
+// and on every refresh.
+function payReqColumnCell(r, run, pr, prSite, canTick) {
+  const row = pr.rows && pr.rows[r.contractId];
+  if (row) return payReqCell(row, prSite, r.payout);
+  const e = payReqEligible(r, run, pr);
+  if (canTick && e.ok) {
+    return `<label class="pr-request"><input type="checkbox" class="pr-tick" data-cid="${escape(r.contractId)}" data-payout="${r.payout}"
+      aria-label="Create a payment request for ${escape(r.merchantName)}"> Request</label>`;
+  }
+  return `<span class="muted"${canTick ? ` title="${escape(e.reason)}"` : ''}>—</span>`;
+}
+
+// Re-read the month's requests and redraw ONLY the request cells, the ticks and the summary.
+// Runs when you come back to this tab — the usual moment is right after deleting or submitting a
+// draft in Payment Request's own tab. A Brand you had ticked stays ticked if it still can be.
+async function refreshPayReqs(el, run, pr, canTick) {
+  let fresh;
+  try { fresh = await api('/bulk-runs/' + run.runId + '/payment-requests'); }
+  catch { return; }   // keep what is on screen; the next return to the tab tries again
+  if (!document.body.contains(el)) return;
+  pr.failed = false; pr.rows = fresh.rows || {}; pr.warnings = fresh.warnings || {};
+  const byId = new Map((run.results || []).map(r => [r.contractId, r]));
+  el.querySelectorAll('td.pr-cell[data-cid]').forEach(td => {
+    const r = byId.get(td.dataset.cid);
+    if (!r) return;
+    const wasTicked = !!td.querySelector('.pr-tick:checked');
+    td.innerHTML = payReqColumnCell(r, run, pr, R().prSite, canTick);
+    const box = td.querySelector('.pr-tick');
+    if (box && wasTicked) box.checked = true;
+  });
+  const sum = el.querySelector('#pr-summary');
+  if (sum) { sum.textContent = payReqSummary(pr.rows); sum.hidden = !sum.textContent; }
+  el.dispatchEvent(new CustomEvent('payreqs-refreshed'));
+  el.querySelector('.pr-tick')?.dispatchEvent(new Event('change', { bubbles: true }));
+  if (!el.querySelector('.pr-tick')) el.dispatchEvent(new Event('change'));
+}
+
+// Where a Brand's request has got to, in the words the filter and the summary both use.
+// Read off Payment Request's own label — this app never re-derives a status.
+function payReqBucket(row) {
+  if (!row) return 'none';
+  if (row.status === 'unknown') return 'unknown';
+  const l = String((row.status && row.status.label) || '');
+  if (l.startsWith('Paid')) return 'paid';
+  if (l.startsWith('Approved')) return 'topay';
+  if (l.startsWith('Submitted')) return 'inflow';
+  if (l === 'Draft') return 'draft';
+  return 'back';   // Sent back, Rejected
+}
+const PR_BUCKETS = [
+  ['none', 'Not requested'], ['draft', 'Draft'], ['inflow', 'In approval'], ['back', 'Sent back or rejected'],
+  ['topay', 'Approved — to pay'], ['paid', 'Paid'], ['unknown', 'Status unavailable'],
+];
+
+// "12 requested · 3 paid · 1 to pay · 7 in approval · 1 draft" — the month at a glance.
+function payReqSummary(rows) {
+  const all = Object.values(rows || {});
+  if (!all.length) return '';
+  const n = {};
+  for (const r of all) { const b = payReqBucket(r); n[b] = (n[b] || 0) + 1; }
+  return [`${all.length} requested`, n.paid && `${n.paid} paid`, n.topay && `${n.topay} to pay`,
+    n.inflow && `${n.inflow} in approval`, n.draft && `${n.draft} draft`, n.back && `${n.back} sent back or rejected`,
+    n.unknown && `${n.unknown} status unavailable`].filter(Boolean).join(' · ');
+}
+
+// A filter that lives in a column header: a ▾ icon with the browser's own dropdown laid
+// invisibly over it, so a click opens a real <select> (keyboard and screen readers included).
+function thFilter(id, label) {
+  return ` <span class="th-filter" title="${escape(label)}"><span class="th-filter-icon" aria-hidden="true">▾</span>`
+    + `<select id="${id}" aria-label="${escape(label)}"></select></span>`;
+}
+
+// The run table's three filters, combined. `entity` is the lower-cased entity name (the same
+// key the table groups by) or '__none__'; `brand` a contractId; `pr` a payReqBucket.
+function runResultsFiltered(results, f, rows, entityOf) {
+  return (results || []).filter(r => {
+    if (f.entity) {
+      const name = String(entityOf(r.contractId) || '').trim();
+      if (f.entity === '__none__' ? !!name : name.toLowerCase() !== f.entity) return false;
+    }
+    if (f.brand && r.contractId !== f.brand) return false;
+    if (f.pr && payReqBucket((rows || {})[r.contractId]) !== f.pr) return false;
+    return true;
+  });
+}
+
+// Uint8Array → base64 in slices: a statement is several MB, and spreading it into one
+// String.fromCharCode call overflows the stack.
+function bytesToBase64(bytes) {
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+// One Brand per call, in order. The first failure stops the batch and says how far it got;
+// pressing again resumes, because a recorded Brand is no longer tickable.
+async function createPaymentRequests(run, picked, index) {
+  let done = 0;
+  for (const cid of picked) {
+    const result = run.results.find(r => r.contractId === cid);
+    try {
+      await postLarge(`/bulk-runs/${run.runId}/payment-requests`, {
+        contractId: cid,
+        statement: bytesToBase64(statementWorkbook(result, index)),
+        filename: `${sanitizeFilename(result.merchantName)} ${periodMonth(run.periodStart)}.xlsx`,
+      }, 'statement', PR_BODY_LIMIT);
+      done++;
+    } catch (e) {
+      if (/owner_not_linked/.test(e.message) && done === 0) {
+        throw new Error('Your account is not linked to an employee in Payment Request, so it cannot own a request. '
+          + 'Ask its admin to link you. Nothing was created.');
+      }
+      const why = (e.message.match(/"message":"([^"]+)"/) || [])[1] || e.message;
+      throw new Error(`Created ${done} of ${picked.length}. Stopped at ${result.merchantName}: ${why}`);
+    }
+  }
+  return done;
+}
+
 async function renderBulkRunDetail(runId) {
   const main = document.getElementById('main');
   main.innerHTML = `<div class="page-head">
@@ -8655,6 +8809,9 @@ async function renderBulkRunDetail(runId) {
     </div><div id="br-detail">Loading…</div>`;
   document.getElementById('back').addEventListener('click', renderBulkRunsList);
   const run = await api('/bulk-runs/' + runId);
+  // Payment requests for this month, with their live status from Payment Request. Never fatal:
+  // the run is still the run if that app cannot be reached.
+  const pr = await api('/bulk-runs/' + runId + '/payment-requests').catch(() => ({ failed: true, rows: {}, warnings: {} }));
   // A run freezes what it PAID (§10.5) — the contract entity is not part of that, so it is
   // resolved live from the merchant record. See contractEntityFor for what that means.
   await ensureContractCache().catch(() => {});
@@ -8672,6 +8829,8 @@ async function renderBulkRunDetail(runId) {
   const totalRevenue = (run.results || []).reduce((s, r) => s + (r.revenue || 0), 0);
   const totalSharePct = totalRevenue > 0 ? ((run.totalPayout || 0) / totalRevenue * 100).toFixed(1) + '%' : '—';
   const isArchived = !!run.archived;
+  // The tick column exists only where it can be used: a locked month, for someone who runs calcs.
+  const prTicks = isArchived && can('runCalcs');
 
   // Reconciliation: every order either matched a roster row that got paid (totalRevenue),
   // matched one that was skipped (skippedRevenue), or matched nothing (unmatchedRevenue) — no
@@ -8757,7 +8916,7 @@ async function renderBulkRunDetail(runId) {
 
     return ordered.map(g => {
       const rev = sum(g.rows, r => r.revenue), pay = sum(g.rows, r => r.payout);
-      const head = `<tr class="run-ent"><td colspan="7">
+      const head = `<tr class="run-ent"><td colspan="8">
           <strong>${g.name ? escape(g.name) : 'No contract entity'}</strong>
           <span class="muted"> · ${g.rows.length} brand${g.rows.length === 1 ? '' : 's'}
             · ${fmt2(rev)} revenue · <strong>${fmt2(pay)}</strong> payout</span>
@@ -8774,6 +8933,7 @@ async function renderBulkRunDetail(runId) {
         <td>${Number(r.revenue).toFixed(2)}</td>
         <td><strong>${Number(r.payout).toFixed(2)}</strong></td>
         <td>${r.revenue > 0 ? (r.payout / r.revenue * 100).toFixed(1) + '%' : '—'}</td>
+        <td class="pr-cell" data-cid="${escape(r.contractId)}">${payReqColumnCell(r, run, pr, R().prSite, prTicks)}</td>
       </tr>`; }).join('');
     }).join('');
   }
@@ -8828,15 +8988,22 @@ async function renderBulkRunDetail(runId) {
     ${addedNote}
     ${recoveredNote}
 
-    <table class="ts"><thead><tr>
-      <th title="The company a payout is settled with, read from the brand record as it is today — a run does not store it">Contract entity</th>
-      <th>Brand</th><th>Merchants</th><th>Rentals</th><th>Revenue</th><th>Payout</th><th>Share %</th></tr></thead>
-    <tbody>${runRowsByEntity(run)}</tbody>
+    <p class="rf-note" id="rf-note" hidden><span id="rf-note-text"></span>
+      <button type="button" id="rf-clear" class="btn-ghost">Clear filters</button></p>
+    <p class="muted pr-summary-line" id="pr-summary"${pr.failed || Object.keys(pr.rows || {}).length ? '' : ' hidden'}>${
+      pr.failed ? 'Payment requests could not be loaded — reload to try again' : escape(payReqSummary(pr.rows))}</p>
+    <table class="ts run-table"><thead><tr>
+      <th title="The company a payout is settled with, read from the brand record as it is today — a run does not store it">Contract entity${thFilter('rf-entity', 'Filter by contract entity')}</th>
+      <th>Brand${thFilter('rf-brand', 'Filter by Brand')}</th><th>Merchants</th><th>Rentals</th><th>Revenue</th><th>Payout</th><th>Share %</th>
+      <th title="The draft created in Payment Request for this month, and where it has got to">Payment request${thFilter('rf-pr', 'Filter by payment request')}${prTicks
+        ? `<button type="button" id="pr-create" class="pr-create" disabled title="Tick Brands below, then create their draft requests">Create</button>` : ''}</th></tr></thead>
+    <tbody id="run-tbody">${runRowsByEntity(run)}</tbody>
     <tfoot><tr>
-      <td>Total</td><td></td><td></td><td></td>
-      <td>${totalRevenue.toFixed(2)}</td>
-      <td>${Number(run.totalPayout || 0).toFixed(2)}</td>
-      <td>${totalSharePct}</td>
+      <td id="rf-total-label">Total</td><td></td><td></td><td></td>
+      <td id="rf-total-rev">${totalRevenue.toFixed(2)}</td>
+      <td id="rf-total-pay">${Number(run.totalPayout || 0).toFixed(2)}</td>
+      <td id="rf-total-pct">${totalSharePct}</td>
+      <td></td>
     </tr></tfoot>
     </table>
 
@@ -8936,6 +9103,123 @@ async function renderBulkRunDetail(runId) {
   el.querySelector('#dl-unmatched')?.addEventListener('click', () => downloadUnmatchedCsv(run));
   bindUnmatchedActions(el, run);
 
+  // ── Filters: contract entity · Brand · payment request (2026-10-13) ──
+  // They combine; the entity groups and the Total row are recomputed over what is SHOWN, so a
+  // filtered total never quotes Brands you cannot see. A ticked Brand that a filter hides is
+  // unticked — the same rule as Payment Request's own Payments screen: a hidden row can never
+  // be sent.
+  const RF = { entity: '', brand: '', pr: '' };
+  const entityOf = cid => contractEntityFor(cid) || '';
+  const allResults = run.results || [];
+  const opt = (v, label, sel) => `<option value="${escape(v)}"${v === sel ? ' selected' : ''}>${escape(label)}</option>`;
+  const fillFilters = () => {
+    const ents = new Map();
+    let none = 0;
+    for (const r of allResults) {
+      const n = entityOf(r.contractId).trim();
+      if (!n) { none++; continue; }
+      const k = n.toLowerCase();
+      ents.set(k, { name: (ents.get(k) || {}).name || n, count: ((ents.get(k) || {}).count || 0) + 1 });
+    }
+    el.querySelector('#rf-entity').innerHTML = opt('', 'All contract entities', RF.entity)
+      + [...ents.entries()].sort((a, b) => a[1].name.localeCompare(b[1].name))
+        .map(([k, e]) => opt(k, `${e.name} (${e.count})`, RF.entity)).join('')
+      + (none ? opt('__none__', `No contract entity (${none})`, RF.entity) : '');
+    el.querySelector('#rf-brand').innerHTML = opt('', 'All Brands', RF.brand)
+      + allResults.slice().sort((a, b) => String(a.merchantName).localeCompare(String(b.merchantName)))
+        .map(r => opt(r.contractId, r.merchantName, RF.brand)).join('');
+    const counts = {};
+    for (const r of allResults) { const b = payReqBucket(pr.rows[r.contractId]); counts[b] = (counts[b] || 0) + 1; }
+    el.querySelector('#rf-pr').innerHTML = opt('', 'All payment requests', RF.pr)
+      + PR_BUCKETS.filter(([b]) => counts[b] || RF.pr === b).map(([b, l]) => opt(b, `${l} (${counts[b] || 0})`, RF.pr)).join('');
+    el.querySelector('#rf-pr').disabled = !!pr.failed;
+  };
+  const drawRunTable = () => {
+    const ticked = new Set([...el.querySelectorAll('.pr-tick:checked')].map(x => x.dataset.cid));
+    const shown = runResultsFiltered(allResults, RF, pr.rows, entityOf);
+    el.querySelector('#run-tbody').innerHTML = shown.length ? runRowsByEntity({ ...run, results: shown })
+      : `<tr><td colspan="8" class="muted" style="text-align:center;padding:18px;">No Brand matches these filters.</td></tr>`;
+    el.querySelectorAll('.pr-tick').forEach(b => { if (ticked.has(b.dataset.cid)) b.checked = true; });
+    const filtered = !!(RF.entity || RF.brand || RF.pr);
+    const rev = shown.reduce((a, r) => a + (Number(r.revenue) || 0), 0);
+    const pay = shown.reduce((a, r) => a + (Number(r.payout) || 0), 0);
+    el.querySelector('#rf-total-label').textContent = filtered ? `Total · ${shown.length} of ${allResults.length} Brands` : 'Total';
+    el.querySelector('#rf-total-rev').textContent = (filtered ? rev : totalRevenue).toFixed(2);
+    el.querySelector('#rf-total-pay').textContent = (filtered ? pay : Number(run.totalPayout || 0)).toFixed(2);
+    el.querySelector('#rf-total-pct').textContent = filtered ? (rev > 0 ? (pay / rev * 100).toFixed(1) + '%' : '—') : totalSharePct;
+    // The icon of an active filter is coloured and says what it is set to; one line above the
+    // table names every filter in force and clears them.
+    const said = [];
+    for (const id of ['#rf-entity', '#rf-brand', '#rf-pr']) {
+      const sel = el.querySelector(id);
+      const on = !!sel.value;
+      const text = on ? sel.options[sel.selectedIndex].text.replace(/ \(\d+\)$/, '') : '';
+      sel.parentElement.classList.toggle('on', on);
+      sel.parentElement.title = on ? `Filtered: ${text} — click to change` : sel.getAttribute('aria-label');
+      if (on) said.push(text);
+    }
+    el.querySelector('#rf-note').hidden = !filtered;
+    el.querySelector('#rf-note-text').textContent = filtered ? `Showing ${shown.length} of ${allResults.length} Brands · ${said.join(' · ')}` : '';
+    el.querySelectorAll('.run-brand').forEach(b => b.addEventListener('click', () => openRunBrandDetail(run, b.dataset.cid)));
+    el.dispatchEvent(new Event('change'));   // the selection bar recounts what is still ticked
+  };
+  fillFilters();
+  for (const [id, key] of [['#rf-entity', 'entity'], ['#rf-brand', 'brand'], ['#rf-pr', 'pr']]) {
+    el.querySelector(id).addEventListener('change', (ev) => { ev.stopPropagation(); RF[key] = ev.target.value; drawRunTable(); });
+    el.querySelector(id).addEventListener('click', (ev) => ev.stopPropagation());
+  }
+  el.querySelector('#rf-clear').addEventListener('click', () => { RF.entity = RF.brand = RF.pr = ''; fillFilters(); drawRunTable(); });
+  // A status refresh can move a Brand between payment-request buckets.
+  el.addEventListener('payreqs-refreshed', () => { fillFilters(); if (RF.pr) drawRunTable(); });
+
+  // Come back to this tab → the request column catches up with Payment Request. The listener
+  // removes itself once this run page is gone, so revisiting runs never stacks them up.
+  // Tab switch fires visibilitychange; a separate window fires only focus — listen to both, and
+  // let one check run at a time.
+  let checking = false;
+  const onReturn = async () => {
+    if (!document.body.contains(el)) {
+      document.removeEventListener('visibilitychange', onReturn); window.removeEventListener('focus', onReturn); return;
+    }
+    if (document.visibilityState !== 'visible' || checking) return;
+    checking = true;
+    try { await refreshPayReqs(el, run, pr, prTicks); } finally { checking = false; }
+  };
+  document.addEventListener('visibilitychange', onReturn);
+  window.addEventListener('focus', onReturn);
+
+  if (prTicks) {
+    const createBtn = el.querySelector('#pr-create');
+    const picked = () => [...el.querySelectorAll('.pr-tick:checked')];
+    // Delegated, not bound per box: a refresh replaces the boxes (refreshPayReqs).
+    el.addEventListener('change', () => {
+      const p = picked();
+      const total = p.reduce((s, x) => s + Number(x.dataset.payout || 0), 0);
+      createBtn.textContent = p.length ? `Create ${p.length} · ${R().sym}${fmt2(total)}` : 'Create';
+      createBtn.disabled = !p.length;
+    });
+    createBtn.addEventListener('click', async () => {
+      const ids = picked().map(x => x.dataset.cid);
+      const brands = ids.map(id => run.results.find(r => r.contractId === id));
+      const total = brands.reduce((s, r) => s + Number(r.payout || 0), 0);
+      const notes = brands.flatMap(r => (pr.warnings[r.contractId] || []).map(w => `  • ${r.merchantName}: ${w}`));
+      if (!confirm(`Create ${ids.length} draft payment request${ids.length === 1 ? '' : 's'} for `
+        + `${periodMonth(run.periodStart)}, total ${R().sym}${fmt2(total)}?\n\n`
+        + `Each is a DRAFT owned by you in Payment Request, with the Brand's statement attached. `
+        + `Nothing is submitted — you check each one there and submit it.`
+        + (notes.length ? `\n\nWorth knowing before you do:\n${notes.join('\n')}` : ''))) return;
+      createBtn.disabled = true; createBtn.textContent = 'Creating…';
+      try {
+        const index = await runOrderIndex(run);
+        const n = await createPaymentRequests(run, ids, index);
+        alert(`${n} draft payment request${n === 1 ? '' : 's'} created. Open each from the Payment request column to check and submit it.`);
+      } catch (e) {
+        alert(e.message);
+      }
+      renderBulkRunDetail(runId);
+    });
+  }
+
   main.querySelector('#br-archive')?.addEventListener('click', async () => {
     if (!confirm('Lock this month?\n\nIt can no longer be recomputed or deleted — the payouts on '
       + 'it become the record. The statements, the download and the mailing are unaffected.\n\n'
@@ -8952,8 +9236,12 @@ async function renderBulkRunDetail(runId) {
   });
 
   main.querySelector('#br-unarchive')?.addEventListener('click', async () => {
+    const requested = Object.keys(pr.rows || {}).map(cid => (run.results.find(r => r.contractId === cid) || {}).merchantName || cid);
     if (!confirm('Unlock this month?\n\nIt becomes recomputable and deletable again. A recompute '
-      + 'reads today\u2019s terms, so the payouts can change.')) return;
+      + 'reads today\u2019s terms, so the payouts can change.'
+      + (requested.length ? `\n\n${requested.length} Brand${requested.length === 1 ? ' has' : 's have'} a payment request for this month `
+        + `(${requested.slice(0, 8).join(', ')}${requested.length > 8 ? ', …' : ''}). Their amounts will NOT follow a `
+        + 'recompute: if a payout changes, delete that draft in Payment Request and create it again.' : ''))) return;
     const btn = main.querySelector('#br-unarchive');
     btn.disabled = true; btn.textContent = 'Unlocking…';
     try {

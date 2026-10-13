@@ -1,6 +1,8 @@
 # revshare-aws — handoff
 
-Last updated: 2026-10-02 (a run no longer reads a review state — §1ak; locking a month
+Last updated: 2026-10-13 (payment requests from a locked run, with live status and column-header
+filters on the run table — §1ap).
+Previous: 2026-10-02 (a run no longer reads a review state — §1ak; locking a month
 used to orphan its orders — §1al; the statement names which side of a comparison won — §1am;
 a letter can no longer be sent blank — §1an;
 Send all, and the two things it would have lost — §1ao).
@@ -2225,6 +2227,84 @@ and `done++` only follows a successful delivery.
 
 Noted, not a defect: **4 ready letters carry a 0.00 payout** — brands with machines and no revenue.
 They are real statements and go out.
+
+## 1ap. PAYMENT REQUESTS FROM A LOCKED RUN (2026-10-13)
+
+Spec + plan: `docs/superpowers/specs/2026-10-13-payment-requests-from-runs-design.md`,
+`docs/superpowers/plans/2026-10-13-payment-requests-from-runs.md`. Other half lives in
+`~/CSTH_payment` (its CLAUDE.md, "MCRM drafts"). Both regions.
+
+**What it does.** On a 🔒 Locked run, the **Payment request** column offers a "Request" tick per
+payable Brand; **Create** in that column's header makes one DRAFT per Brand per month in Payment
+Request — TH a **PV**, SG a **PES** — owned by whoever clicked, the Brand's statement .xlsx
+attached. Nothing is submitted, approved or paid from MCRM. The column then shows the request's
+**live status** (Draft → Submitted — awaiting <stage> → Approved — paying <date> → Paid <date>),
+linking to `<prSite>/#request/<id>`.
+
+**How the two apps talk.** No shared login (different Google OAuth clients). MCRM's backend calls
+Payment Request's Lambda directly — `lambda:InvokeFunction`, event
+`{ internal: 'mcrm', action: 'findDraft' | 'createDraft' | 'statuses', payload }`, reply
+`{ ok, result }` / `{ ok: false, code, error }`. Payment Request accepts it ONLY on an event with
+no `requestContext`, so the public API cannot reach it.
+- IAM: resource policy `mcrm-invoke` on `csth-api` / `cssg-api` for `revshare-api-role` /
+  `revshare-api-sg-role`; inline `payment-request-invoke` on each MCRM role (recorded in
+  `infra/role-policy.json` for TH); inline `mcrm-statements-read` on `csth-api-role` /
+  `cssg-api-role` → `s3:GetObject` on `revshare-runs[-sg]-…/payreq/*` only.
+- Env on the MCRM functions: `PAYMENT_REQUEST_FUNCTION` (`csth-api` / `cssg-api`),
+  `MCRM_REGION` (`th` / `sg`). Deploy scripts update code only, so these survive deploys.
+- The statement goes to S3 at `payreq/<YYYY-MM>/<contractId>.xlsx` and is handed over by KEY —
+  a Lambda invoke payload is capped at 6 MB. The browser refuses a statement over 5.5 MB
+  (`PR_BODY_LIMIT`) before sending.
+
+**Files.** `code/payreq.mjs` (pure: `buildDraft`, `mapBank`, `taxBase`, `draftWarnings`),
+`code/payreq-db.mjs` (PAYREQ rows, statement upload, invoke — deliberately NOT in `db.mjs`, which
+is never synced to SG), `code/routes/payment-requests.mjs` (`POST`/`GET
+/bulk-runs/:id/payment-requests`; POST needs `runCalcs`, GET is an open read). Frontend:
+`payReqEligible`, `payReqColumnCell`, `payReqCell`, `payReqBucket`, `payReqSummary`,
+`runResultsFiltered`, `refreshPayReqs`, `createPaymentRequests`, `thFilter`.
+
+**Rules that are load-bearing:**
+- **One request per Brand per month**, keyed Brand + month in BOTH apps (MCRM `PAYREQ#<YYYY-MM>` /
+  sk contractId; Payment Request marker `MCRM#<contractId>#<YYYY-MM>`), never on the run — a
+  recompute or a second run of the month cannot make a second request. A request MCRM failed to
+  record is ADOPTED via `findDraft`, never duplicated.
+- **Locked runs only** — a locked run cannot be recomputed or deleted, so a request's amount
+  cannot drift. If someone unlocks, recomputes and relocks, the cell shows **"amount differs:
+  request X / run Y"**; the request keeps its amount (delete and re-create it).
+- **Status wording is Payment Request's** (`mcrmStatusLabel`), incl. its Paid rule
+  (`isPaidOn`: payment date PASSED — on the day itself it is still "paying"). MCRM never derives a
+  status; `payReqBucket` only groups the label for the filter and summary.
+- **Only an explicit `missing` frees a Brand.** The GET deletes the PAYREQ row when Payment
+  Request says the request is gone (a deleted draft). Unreachable → every row `unknown`, nothing
+  deleted. A failed GET disables every tick ("could not be loaded") rather than looking empty.
+- The run page re-checks statuses when the tab/window regains focus (`visibilitychange` + `focus`).
+
+**TH PV content.** Pay to = contract entity (`entityNameOf` rule), else the Brand name. Bank from
+Finance Information, mapped to Payment Request's dropdown by `mapBank` (Thai free text →
+`Kasikorn Bank` etc.; UOB / GH Bank have no option → bank left blank, raw name kept in Details).
+Line = the **statement's own tax base** (payout ÷ 1.07) at VAT 7%. About **1 payout in 15** cannot
+be reached by one VAT line (0.08: 0.07 → 0.07, 0.08 → 0.09), so a VAT-free **"Rounding adjustment"**
+line of ±0.01 closes it — an amount when short, a DISCOUNT row when over (Payment Request refuses a
+negative amount on submit). Tested over every payout 0.01–20,000.00. WHT and payment date are
+finance's.
+**SG PES content.** Subject `<Brand> - ChargeSPOT Revenue Share_<MonYY>`, Competence No
+`II - 7 - (10) - 5`, Monthly — the pattern of the mall licence fees already filed there. SG has
+no Brand with bank details yet, so SG drafts start with blank bank fields.
+
+**Run table filters** (same day): ▾ icons in the Contract entity, Brand and Payment request
+headers — a native `<select>` laid invisibly over the icon. They combine; group subtotals and the
+Total row follow what is shown; a ticked Brand a filter hides is unticked. One line above the
+table names the filters in force, with Clear.
+
+**Verified live:** TH create (Brand Classic, Aug 2026) and delete by Ozzie; the deleted draft then
+reported `missing`. **SG never exercised live** — no SG run exists yet.
+
+**Known, not done:** a REJECTED request cannot be deleted in Payment Request, so it holds its Brand
++ month forever (no release action); concurrent creates → the loser gets 409 instead of adopting;
+status/marker reads are not ConsistentRead (self-heals via findDraft); Payment Request's `safeName`
+strips Thai from the attachment filename; dates are ISO, not "25 Oct"; MCRM users who are not the
+owner/finance/approver get "forbidden" following the link; any principal in the account allowed
+`lambda:InvokeFunction` on csth-api could create drafts as any linked employee.
 
 ## 12. Starting fresh in a future session
 

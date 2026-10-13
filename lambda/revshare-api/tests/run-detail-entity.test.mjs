@@ -46,14 +46,14 @@ test('a merchant deleted since the run reads as nothing rather than throwing', (
 // Anchored inside renderBulkRunDetail: several screens use `table.ts`, and the first match in
 // the file is the Archived list, which also has a Merchant column and its own counter-party one.
 const detail = app.slice(app.indexOf('async function renderBulkRunDetail('));
-const payoutTable = detail.slice(detail.indexOf('<table class="ts"><thead><tr>'));
+const payoutTable = detail.slice(detail.indexOf('<table class="ts run-table"><thead><tr>'));
 
 test('the entity column comes BEFORE the brand column', () => {
   // The ordering is the request, not a detail: finance reads down the entity column.
   const head = payoutTable;
   const entity = head.indexOf('Contract entity');
   // The payout row is a BRAND (vocabulary settled 2026-10-01), so the header says Brand.
-  const brand = head.indexOf('<th>Brand</th>');
+  const brand = head.indexOf('<th>Brand');   // the header now carries its filter icon
   assert.ok(entity > 0 && brand > 0, 'both headers must exist');
   assert.ok(entity < brand, 'Contract entity must be rendered before Brand');
 });

@@ -126,3 +126,8 @@ test('every permission in PERMS has a label in the Users screen', async () => {
   assert.deepEqual(missing, [],
     `PERMS with no checkbox on the Users screen — a save would revoke these: ${missing.join(', ')}`);
 });
+
+test('payment requests: create needs runCalcs, list is an open read', () => {
+  assert.equal(requiredPermission('POST', '/bulk-runs/R1/payment-requests'), 'runCalcs');
+  assert.equal(requiredPermission('GET', '/bulk-runs/R1/payment-requests'), null);
+});

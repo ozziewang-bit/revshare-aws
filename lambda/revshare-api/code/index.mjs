@@ -30,6 +30,7 @@ import {
   importContractsRoute, lastUploadRoute, lastUploadRowsRoute,
 } from './routes/contracts.mjs';
 import { importRevShareRoute } from './routes/import.mjs';
+import { createPaymentRequestRoute, listPaymentRequestsRoute } from './routes/payment-requests.mjs';
 import { createBulkRunRoute, listBulkRunsRoute, getBulkRunRoute, deleteBulkRunRoute, prepareBulkRunRoute, archiveBulkRunRoute, unarchiveBulkRunRoute, recomputeBulkRunRoute, getBulkRunInputsRoute } from './routes/bulk-runs.mjs';
 import {
   listMachineModelsRoute, createMachineModelRoute,
@@ -149,6 +150,8 @@ export const handler = async (event) => {
     else if (method === 'POST'   && /^\/bulk-runs\/[^/]+\/archive$/.test(path))                result = await routeBulkRun(event, archiveBulkRunRoute);
     else if (method === 'POST'   && /^\/bulk-runs\/[^/]+\/unarchive$/.test(path))              result = await routeBulkRun(event, unarchiveBulkRunRoute);
     else if (method === 'POST'   && /^\/bulk-runs\/[^/]+\/recompute$/.test(path))              result = await routeBulkRun(event, recomputeBulkRunRoute);
+    else if (method === 'POST'   && /^\/bulk-runs\/[^/]+\/payment-requests$/.test(path))      result = await routeBulkRun(event, createPaymentRequestRoute);
+    else if (method === 'GET'    && /^\/bulk-runs\/[^/]+\/payment-requests$/.test(path))      result = await routeBulkRun(event, listPaymentRequestsRoute);
     else if (method === 'GET'    && /^\/bulk-runs\/[^/]+\/inputs$/.test(path))                 result = await routeBulkRun(event, getBulkRunInputsRoute);
     else if (method === 'GET'    && /^\/bulk-runs\/[^/]+$/.test(path))                         result = await routeBulkRun(event, getBulkRunRoute);
     else if (method === 'DELETE' && /^\/bulk-runs\/[^/]+$/.test(path))                         result = await routeBulkRun(event, deleteBulkRunRoute);
