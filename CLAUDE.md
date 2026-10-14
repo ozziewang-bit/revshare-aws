@@ -1,7 +1,7 @@
 # revshare-aws — handoff
 
-Last updated: 2026-10-13 (payment requests from a locked run, with live status and column-header
-filters on the run table — §1ap).
+Last updated: 2026-10-14 (Government Housing Bank now maps to Payment Request's new TH option —
+§1ap; payment requests from a locked run, live status, column-header filters — §1ap).
 Previous: 2026-10-02 (a run no longer reads a review state — §1ak; locking a month
 used to orphan its orders — §1al; the statement names which side of a comparison won — §1am;
 a letter can no longer be sent blank — §1an;
@@ -2281,7 +2281,10 @@ is never synced to SG), `code/routes/payment-requests.mjs` (`POST`/`GET
 
 **TH PV content.** Pay to = contract entity (`entityNameOf` rule), else the Brand name. Bank from
 Finance Information, mapped to Payment Request's dropdown by `mapBank` (Thai free text →
-`Kasikorn Bank` etc.; UOB / GH Bank have no option → bank left blank, raw name kept in Details).
+`Kasikorn Bank` etc.; ธนาคารอาคารสงเคราะห์ / GH Bank / GHB → `Government Housing Bank`, an
+option Payment Request added for TH on 2026-10-14; UOB still has no option → bank left blank, raw
+name kept in Details). **SG not synced:** `payreq.mjs` in `~/revshare_sg` and the live SG Lambda
+still predate the GH Bank line — harmless (SG maps with its own list), sync on the next SG deploy.
 Line = the **statement's own tax base** (payout ÷ 1.07) at VAT 7%. About **1 payout in 15** cannot
 be reached by one VAT line (0.08: 0.07 → 0.07, 0.08 → 0.09), so a VAT-free **"Rounding adjustment"**
 line of ±0.01 closes it — an amount when short, a DISCOUNT row when over (Payment Request refuses a

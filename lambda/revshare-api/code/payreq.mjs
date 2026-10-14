@@ -21,6 +21,7 @@ const TH_BANKS = [
   [/กรุงไทย|krung ?thai|\bktb\b/i, 'Krung Thai Bank'],
   [/กรุงศรี|krungsri|ayudhya|\bbay\b/i, 'Krungsri Bank'],
   [/ทหารไทย|ธนชาต|\bttb\b|\btmb\b/i, 'TTB Bank'],
+  [/อาคารสงเคราะห์|government housing|\bgh ?bank\b|\bghb\b/i, 'Government Housing Bank'],
   [/พร้อมเพย์|prompt ?pay/i, 'Prompt Pay'],
 ];
 const SG_BANKS = [

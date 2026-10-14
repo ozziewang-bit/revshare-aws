@@ -8,16 +8,19 @@ const r2 = (v) => Math.round(v * 100) / 100;
 test('every live TH bank name maps (values read from RevsharePartner 2026-10-13)', () => {
   const live = { 'ธนาคารกสิกรไทย': 'Kasikorn Bank', 'ธนาคารกสิกร': 'Kasikorn Bank', 'ธนาคารกสิกรำทย': 'Kasikorn Bank',
     'ธนาคารไทยพาณิชย์': 'Siam Commercial Bank', 'ธนาคารกรุงเทพ': 'Bangkok Bank', 'ธนาคารกรุงไทย': 'Krung Thai Bank',
-    'ธนาคารกรุงศรี': 'Krungsri Bank', 'ธนาคารทหารไทย': 'TTB Bank', 'KBank': 'Kasikorn Bank', 'SCB': 'Siam Commercial Bank' };
+    'ธนาคารกรุงศรี': 'Krungsri Bank', 'ธนาคารทหารไทย': 'TTB Bank', 'ธนาคารอาคารสงเคราะห์': 'Government Housing Bank', 'KBank': 'Kasikorn Bank', 'SCB': 'Siam Commercial Bank' };
   for (const [raw, want] of Object.entries(live)) assert.equal(mapBank(raw, 'th').value, want, raw);
 });
 test('banks with no dropdown option are unmapped, not guessed', () => {
-  for (const raw of ['ธนาคารยูโอบี', 'ธนาคารอาคารสงเคราะห์']) {
+  for (const raw of ['ธนาคารยูโอบี']) {
     const m = mapBank(raw, 'th'); assert.equal(m.value, null); assert.equal(m.unmapped, true); assert.equal(m.raw, raw);
   }
 });
 test('"-" and blank are no bank at all', () => {
   for (const raw of ['-', '', '  ', null, undefined]) assert.deepEqual(mapBank(raw, 'th'), { value: null, raw: '', unmapped: false });
+});
+test('Government Housing Bank by its English names too', () => {
+  for (const raw of ['Government Housing Bank', 'GH Bank', 'GHB']) assert.equal(mapBank(raw, 'th').value, 'Government Housing Bank', raw);
 });
 test('SG banks', () => {
   assert.equal(mapBank('DBS Bank', 'sg').value, 'DBS / POSB');
