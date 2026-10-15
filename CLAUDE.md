@@ -2285,8 +2285,7 @@ is never synced to SG), `code/routes/payment-requests.mjs` (`POST`/`GET
 Finance Information, mapped to Payment Request's dropdown by `mapBank` (Thai free text →
 `Kasikorn Bank` etc.; ธนาคารอาคารสงเคราะห์ / GH Bank / GHB → `Government Housing Bank`, an
 option Payment Request added for TH on 2026-10-14; UOB still has no option → bank left blank, raw
-name kept in Details). **SG not synced:** `payreq.mjs` in `~/revshare_sg` and the live SG Lambda
-still predate the GH Bank line — harmless (SG maps with its own list), sync on the next SG deploy.
+name kept in Details). Synced to `~/revshare_sg` and deployed there 2026-10-14.
 Line = the **statement's own tax base** (payout ÷ 1.07) at VAT 7%. About **1 payout in 15** cannot
 be reached by one VAT line (0.08: 0.07 → 0.07, 0.08 → 0.09), so a VAT-free **"Rounding adjustment"**
 line of ±0.01 closes it — an amount when short, a DISCOUNT row when over (Payment Request refuses a
