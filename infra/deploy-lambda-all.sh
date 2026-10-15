@@ -13,6 +13,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# Refuse to ship a name that is not defined anywhere (eslint.config.js, one rule) — 2026-10-14.
+( cd "$ROOT" && npx --no-install eslint 'lambda/revshare-api/code/**/*.mjs' ) || { echo "deploy stopped: undefined name (see above)"; exit 1; }
 SG_ROOT="${REVSHARE_SG_ROOT:-/Users/ozziewang/revshare_sg}"
 TH_CODE="$ROOT/lambda/revshare-api/code"
 SG_CODE="$SG_ROOT/lambda/revshare-api/code"

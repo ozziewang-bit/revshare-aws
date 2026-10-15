@@ -1162,3 +1162,20 @@ test('only the editor still shows the raw string, and says what it is', () => {
   assert.ok(reads <= 4, `counterParty is read ${reads} times; it should be nearly nowhere`);
   assert.match(grab('openContractEditor'), /This row still reads its own text/);
 });
+
+// ── "no response when I click on preview" (2026-10-14) ────────────────────────────────────────
+// The dialog read `statementCc`, a local of mailSendDialog, so Preview threw a ReferenceError
+// after ctModal had opened an empty card: a white strip and nothing else. Every test above reads
+// the source text; this one RUNS the dialog, which is what would have caught it.
+test('the preview actually renders, Cc line included', () => {
+  const card = { innerHTML: '', querySelector: () => ({ addEventListener() {} }) };
+  const run = new Function('escape', 'renderTemplate', 'mailVarsFor', 'mailRecipients', 'ctModal',
+    'mailFromAlias', 'mailCc', 'sanitizeFilename', 'runOrderIndex', 'mailSendDialog',
+    grab('mailPreviewDialog') + '\nreturn mailPreviewDialog;');
+  const dialog = run((s) => String(s), (t) => t, () => ({ period: '2026_09' }), () => ['a@b.com'],
+    () => ({ card, close() {} }), () => 'partner.th@inforich.com', (t) => String(t.cc || '').trim(),
+    (s) => s, () => new Promise(() => {}), () => {});
+  dialog({ contractId: 'c1', merchantName: 'Classic' }, {}, { subject: 'S', body: 'B', cc: 'finance.th@inforich.com' });
+  assert.match(card.innerHTML, /Cc<\/dt><dd>finance\.th@inforich\.com/);
+  assert.match(card.innerHTML, /Preview — Classic/);
+});

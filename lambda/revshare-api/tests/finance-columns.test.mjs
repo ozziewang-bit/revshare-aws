@@ -41,14 +41,15 @@ test('both regions get the Finance Information columns', () => {
   }
 });
 
-test('the finance columns sit between Contract and Share terms', () => {
-  // Payment details follow the contract they are paid under. Order matters beyond taste: the
-  // new-merchant form groups by RUNS of the same group key, so a split group would render two
-  // "Finance Information" sections.
+test('the finance columns are one run, after Share terms', () => {
+  // MOVED 2026-10-15: Finance info became its own header ("divide brand terms into finance info
+  // and rev share terms"), so it follows the Contract + Share terms pair instead of splitting it.
+  // Still ONE run: the new-merchant form groups by RUNS of the same group key, so a split group
+  // would render two "Finance Information" sections.
   const groups = columnsFor('th').map(c => c.group);
   assert.equal(groups.filter((g, i) => g === 'finance' && groups[i - 1] !== 'finance').length, 1);
-  assert.equal(groups[groups.indexOf('finance') - 1], 'contract');
-  assert.equal(groups[groups.lastIndexOf('finance') + 1], 'terms');
+  assert.equal(groups[groups.indexOf('finance') - 1], 'terms');
+  assert.equal(groups[groups.indexOf('terms') - 1], 'contract', 'Contract and Share terms stay adjacent');
 });
 
 test('every finance column is writable by the backend', () => {

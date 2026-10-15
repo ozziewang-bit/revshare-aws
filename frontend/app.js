@@ -1297,9 +1297,11 @@ function buildContractGridColumns(models) {
     { key: 'terminationNoticeDays', label: 'Notice',        type: 'number', width: 84  , group: 'contract', suffix: ' days' },
     { key: 'autoRenewal',           label: 'Auto-renewal',  type: 'select', width: 135 , group: 'contract' },
     { key: 'contractLink',          label: 'Contract',      type: 'url',    width: 80  , group: 'contract' },
-    ...FINANCE_COLUMNS,
     { key: 'term.method',      label: 'Mode',         type: 'term-mode',    width: 130, group: 'terms' },
     { key: 'term.summary',     label: 'Rev terms',    type: 'term-summary', width: 230, group: 'terms' },
+    // AFTER the share terms (2026-10-15): Finance info is its own header now, and a header can
+    // only span adjacent columns.
+    ...FINANCE_COLUMNS,
   ];
 }
 let CONTRACT_GRID_COLUMNS = buildContractGridColumns();
@@ -1355,15 +1357,20 @@ function refreshContractGridColumns() {
 // The three terms groups keep their own keys because the editor and the new-merchant form build
 // their sections from them, but the GRID shows them as a single category: they are agreed,
 // signed and settled together, so reading one without the others is reading half a contract.
+//
+// SPLIT 2026-10-15 (user): "divide brand terms into finance info and rev share terms". Contract +
+// Share terms are what was agreed; Finance info is who and where to pay — two headers, two toggles.
+// Later the same day: the contract columns are "Contract detail", not rev share terms — three.
 const CONTRACT_GROUPS = [
   { key: 'contact',  label: 'Contact'  },
   { key: 'machines', label: 'Machines' },
-  { key: 'contract', label: 'Contract',            category: 'terms' },
-  { key: 'finance',  label: 'Finance Information', category: 'terms' },
+  { key: 'contract', label: 'Contract',            category: 'contract' },
   { key: 'terms',    label: 'Share terms',         category: 'terms' },
+  { key: 'finance',  label: 'Finance Information', category: 'finance' },
 ];
-// What the grid's category row shows for a merged category, and the one key its toggle writes.
-const CONTRACT_CATEGORIES = { terms: 'Brand terms' };
+// What the grid's category row shows for each hand-kept category; its key is the one its toggle
+// writes.
+const CONTRACT_CATEGORIES = { contract: 'Contract detail', terms: 'Rev share terms', finance: 'Finance info' };
 // A column's category is its group's, falling back to the group itself.
 function contractCategoryOf(groupKey) {
   const g = CONTRACT_GROUPS.find(x => x.key === groupKey);
@@ -1392,7 +1399,7 @@ let CONTRACT_GROUPS_ON = (() => {
   // hand, and it now covers contract, finance AND share terms since the three were merged into
   // one category. Leaving it collapsed meant an edit saved correctly and the table showed a
   // narrow empty stub, which reads as "my change did not save".
-  return Object.fromEntries(CONTRACT_GROUPS.map(g => [g.key, g.category === 'terms' || g.key === 'terms']));
+  return Object.fromEntries(CONTRACT_GROUPS.map(g => [g.key, !!g.category]));
 })();
 // One definition of "is this group open", used by the layout AND the toggle. They disagreed in
 // the obvious way when the default flipped: a group that is open unless explicitly false, and a
@@ -7779,6 +7786,7 @@ function mailPreviewDialog(result, run, template, sentAlready) {
   const subject = renderTemplate(template.subject, vars);
   const body = renderTemplate(template.body, vars);
   const unfilled = [...new Set((subject + '\n' + body).match(/\{\{\w+\}\}/g) || [])];
+  const statementCc = mailCc(template);   // the same Cc the send dialog uses
   const { card, close } = ctModal(760);
   card.innerHTML = `
     <h3 style="margin:0 0 4px;">Preview — ${escape(result.merchantName)}</h3>

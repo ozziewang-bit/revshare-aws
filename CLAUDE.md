@@ -1,7 +1,9 @@
 # revshare-aws — handoff
 
-Last updated: 2026-10-14 (Government Housing Bank now maps to Payment Request's new TH option —
-§1ap; payment requests from a locked run, live status, column-header filters — §1ap).
+Last updated: 2026-10-15 (an undefined name now fails `npm test` and stops every deploy; the
+Overview's "Brand terms" became Contract detail / Rev share terms / Finance info — §1aq).
+Previous: 2026-10-14 (Government Housing Bank now maps to Payment Request's new TH option — §1ap;
+payment requests from a locked run, live status, column-header filters — §1ap).
 Previous: 2026-10-02 (a run no longer reads a review state — §1ak; locking a month
 used to orphan its orders — §1al; the statement names which side of a comparison won — §1am;
 a letter can no longer be sent blank — §1an;
@@ -2308,6 +2310,32 @@ status/marker reads are not ConsistentRead (self-heals via findDraft); Payment R
 strips Thai from the attachment filename; dates are ISO, not "25 Oct"; MCRM users who are not the
 owner/finance/approver get "forbidden" following the link; any principal in the account allowed
 `lambda:InvokeFunction` on csth-api could create drafts as any linked employee.
+
+## 1aq. AN UNDEFINED NAME CANNOT SHIP; BRAND TERMS SPLIT IN THREE (2026-10-14/15)
+
+**Mailing → Preview opened an empty white strip.** `mailPreviewDialog` read `statementCc`, a local
+of `mailSendDialog`; it threw after `ctModal` had opened the card. Every preview test read source
+TEXT, so none ran the dialog. Fixed (preview computes `mailCc(template)` itself) and a test now RUNS
+it (`mail.test.mjs`, "the preview actually renders").
+
+**The class is now blocked.** `eslint.config.js` — ONE rule, `no-undef` — over `frontend/app.js`,
+`frontend/service-worker.js` and `lambda/revshare-api/code/**/*.mjs`. It runs in `npm test`
+(`tests/no-undef.test.mjs`) and at the top of `deploy-frontend.sh`, `deploy-lambda.sh` and
+`deploy-lambda-all.sh` ("deploy stopped: undefined name"). Needs `npm install` once per checkout
+(eslint is a devDependency); a global loaded by an index.html `<script>` must be declared in the
+config (XLSX, jspdf, html2canvas, SimpleZip, google). It only catches names defined NOWHERE — a
+misspelt property (`run.lockd`) still passes.
+- First sweep found `routes/import.mjs` calling `compileRule`, which it only re-exported
+  (`export { x } from` binds nothing locally) — `POST /import/rev-share` threw on any new partner.
+  No UI calls the route; fixed and deployed both regions anyway.
+
+**Overview grid categories** (user, 2026-10-15): "Brand terms" (one merged category since
+2026-09-30) is now THREE headers, each its own toggle, all open by default (`!!g.category`):
+`contract` → **Contract detail**, `terms` → **Rev share terms** (Mode, Rev terms), `finance` →
+**Finance info**. The finance columns MOVED to after Rev terms — a header spans only adjacent
+columns. Storage key stays `rs_ct_groups_v3`: saved objects already carry all three keys. The
+new-merchant form follows column order (Finance after Share terms); the Edit dialog and the Excel
+download keep their own order.
 
 ## 12. Starting fresh in a future session
 

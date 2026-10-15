@@ -36,7 +36,7 @@ test('a first visit collapses the file-owned groups', () => {
   const { CONTRACT_GROUPS, groupOpen } = load(null);
   assert.ok(CONTRACT_GROUPS.length >= 5);
   for (const g of CONTRACT_GROUPS) {
-    if (g.category === 'terms' || g.key === 'terms') continue;
+    if (g.category) continue;
     assert.equal(groupOpen(g.key), false, `${g.key} should start closed`);
   }
 });
@@ -86,14 +86,34 @@ test('the toggle and the layout share one definition of open', () => {
 // signed and settled together, so the grid shows them under one header with one toggle.
 const appSrc = readFileSync(new URL('../../../frontend/app.js', import.meta.url), 'utf8');
 
-test('contract, finance and share terms are one category', () => {
-  const block = appSrc.slice(appSrc.indexOf('const CONTRACT_GROUPS = ['),
-                             appSrc.indexOf('function contractCategoryOf'));
-  for (const k of ['contract', 'finance', 'terms']) {
-    assert.match(block, new RegExp(`key: '${k}',[^\\n]*category: 'terms'`),
-      `${k} belongs to the Merchant terms category`);
-  }
-  assert.match(block, /CONTRACT_CATEGORIES = \{ terms: 'Brand terms' \}/);
+// SPLIT 2026-10-15 (user): "divide brand terms into finance info and rev share terms". Contract +
+// Share terms are what was agreed; Finance info is who and where to pay. Two headers, two toggles.
+// Run, not read: the layout is built from the real columns, so a header that cannot span its
+// columns (they must be ADJACENT) fails here rather than on screen.
+const layout = (stored = null) => new Function('localStorage', 'UNIT_MODELS_FALLBACK',
+  src + '\n' + between('const FINANCE_COLUMNS = [', '];') + '\n' + grab('buildContractGridColumns')
+  + '\nconst CONTRACT_GRID_COLUMNS = buildContractGridColumns(["L20"]);\n' + grab('contractLayout')
+  + '\nreturn contractLayout();')({ getItem: () => stored, setItem: () => {} }, ['L20']);
+
+// And again the same day: the contract columns are "Contract detail", not rev share terms.
+test('Brand terms is split into Contract detail, Rev share terms and Finance info, each one header', () => {
+  const segs = layout().filter((x) => x.toggleable);
+  assert.deepEqual(segs.map((x) => x.label), ['Contact', 'Machines', 'Contract detail', 'Rev share terms', 'Finance info'],
+    'each label appears exactly once, so each category is one contiguous header');
+  const cols = (label) => segs.find((x) => x.label === label).cols.map((c) => c.key);
+  assert.deepEqual(cols('Contract detail'),
+    ['counterParty', 'startDate', 'endDate', 'terminationNoticeDays', 'autoRenewal', 'contractLink']);
+  assert.deepEqual(cols('Rev share terms'), ['term.method', 'term.summary']);
+  assert.deepEqual(cols('Finance info'),
+    ['bankName', 'bankAccountName', 'bankAccountNumber', 'financeContactName', 'financeContactEmail']);
+});
+
+test('both open on a first visit, and each closes on its own', () => {
+  assert.ok(layout().filter((x) => x.toggleable && x.label !== 'Contact' && x.label !== 'Machines').every((x) => x.open));
+  const segs = layout(JSON.stringify({ contract: false, terms: true, finance: false }));
+  assert.equal(segs.find((x) => x.label === 'Contract detail').open, false);
+  assert.equal(segs.find((x) => x.label === 'Rev share terms').open, true);
+  assert.equal(segs.find((x) => x.label === 'Finance info').open, false);
 });
 
 test('the file-owned groups are NOT folded into it', () => {
@@ -133,7 +153,7 @@ test('the editor keeps Contract and Finance as named sections', () => {
 test('Merchant terms starts OPEN; the file-owned groups stay closed', () => {
   const { CONTRACT_GROUPS, groupOpen } = load(null);
   for (const g of CONTRACT_GROUPS) {
-    const expected = g.category === 'terms' || g.key === 'terms';
+    const expected = !!g.category;
     assert.equal(groupOpen(g.key), expected,
       `${g.key} should start ${expected ? 'open' : 'closed'}`);
   }

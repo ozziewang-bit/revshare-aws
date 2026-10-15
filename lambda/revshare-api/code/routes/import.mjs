@@ -15,6 +15,9 @@ export function parseDeviceType(deviceType) {
 // compileRule moved to ../rules.mjs (2026-08-27) so the pure contracts.mjs can build a rule
 // from sheet columns without pulling this module's AWS imports in. Re-exported for callers.
 export { compileRule } from '../rules.mjs';
+// The re-export above does NOT bind the name here — the import below does. Without it the
+// partner loop threw `compileRule is not defined` (found by the no-undef lint, 2026-10-14).
+import { compileRule } from '../rules.mjs';
 
 export async function importRevShareRoute(event) {
   const body = JSON.parse(event.body || '{}');

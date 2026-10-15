@@ -4,6 +4,10 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUCKET="revshare-ozziemac-sea7"
 DIST_ID="${REVSHARE_CLOUDFRONT_DIST_ID:-E3JLOVJXN5DI24}"
 
+# Refuse to ship a name that is not defined anywhere — it throws only when that code path runs
+# (2026-10-14: Mailing → Preview). One ESLint rule, see eslint.config.js.
+( cd "$ROOT" && npx --no-install eslint frontend/app.js frontend/service-worker.js ) || { echo "deploy stopped: undefined name (see above)"; exit 1; }
+
 # Build stamp for live auto-update (the app polls version.json and reloads when it changes).
 printf '{"v":"%s"}\n' "$(date -u +%Y%m%d%H%M%S)" > "$ROOT/frontend/version.json"
 aws s3 cp "$ROOT/frontend/version.json" "s3://$BUCKET/version.json" --content-type "application/json" --cache-control "no-cache"
