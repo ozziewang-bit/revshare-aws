@@ -7,6 +7,9 @@ DIST_ID="${REVSHARE_CLOUDFRONT_DIST_ID:-E3JLOVJXN5DI24}"
 # Refuse to ship a name that is not defined anywhere — it throws only when that code path runs
 # (2026-10-14: Mailing → Preview). One ESLint rule, see eslint.config.js.
 ( cd "$ROOT" && npx --no-install eslint frontend/app.js frontend/service-worker.js ) || { echo "deploy stopped: undefined name (see above)"; exit 1; }
+# And the whole app must get through its own top level — a const used before its declaration
+# blanked every screen on 2026-10-15, and the lint cannot see it (tests/boot.test.mjs).
+( cd "$ROOT" && node --test lambda/revshare-api/tests/boot.test.mjs >/dev/null ) || { echo "deploy stopped: app.js throws while loading — run: node --test lambda/revshare-api/tests/boot.test.mjs"; exit 1; }
 
 # Build stamp for live auto-update (the app polls version.json and reloads when it changes).
 printf '{"v":"%s"}\n' "$(date -u +%Y%m%d%H%M%S)" > "$ROOT/frontend/version.json"

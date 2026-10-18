@@ -926,6 +926,21 @@ body:has(#main.main-wide) .topbar { width: 100vw; left: 0; }
 .ct-r { text-align: right; }
 .ct-c { text-align: center; }
 .ct-empty { color: var(--ink-faint); }
+/* Merged two-line cells on the Overview (2026-10-15): Term, Pay to, Finance contact. */
+.ct-two { line-height: 1.35; }
+.ct-two .ct-sub { color: var(--ink-soft); font-size: 11.5px; margin-top: 1px; }
+.ct-missing { display: inline-block; padding: 0 5px; border-radius: 4px; font-size: 11px;
+  color: var(--warn); background: var(--warn-soft); }
+.ct-pill { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 9px;
+  font-size: 10.5px; font-weight: 600; line-height: 16px; vertical-align: 1px; }
+.ct-pill-ok   { color: var(--gain); background: var(--gain-soft); }
+.ct-pill-soon { color: var(--warn); background: var(--warn-soft); }
+.ct-pill-over { color: var(--loss); background: var(--loss-soft); }
+.ct-pill-none { color: var(--ink-faint); background: var(--surface-muted); }
+.ct-gcount { color: var(--ink-faint); font-weight: 400; }
+/* A long entity name wraps to two lines and is cut there; the full name is the hover title. */
+.ct-clamp { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  white-space: normal; max-width: 210px; line-height: 1.35; }
 
 /* Zebra + hover: at 25 columns the eye needs help staying on one row. Sticky cells carry
    their own background, so they must be striped and hovered explicitly or the frozen

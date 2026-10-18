@@ -1,6 +1,9 @@
 # revshare-aws — handoff
 
-Last updated: 2026-10-15 (an undefined name now fails `npm test` and stops every deploy; the
+Last updated: 2026-10-18 (Overview shows merged two-line Term / Pay to / Finance contact cells
+with status pills, "missing" tags and per-header completeness; app.js must boot in `npm test` and
+before every frontend deploy — §1aq).
+Previous: 2026-10-15 (an undefined name now fails `npm test` and stops every deploy; the
 Overview's "Brand terms" became Contract detail / Rev share terms / Finance info — §1aq).
 Previous: 2026-10-14 (Government Housing Bank now maps to Payment Request's new TH option — §1ap;
 payment requests from a locked run, live status, column-header filters — §1ap).
@@ -2335,6 +2338,26 @@ misspelt property (`run.lockd`) still passes.
 columns. Storage key stays `rs_ct_groups_v3`: saved objects already carry all three keys. The
 new-merchant form follows column order (Finance after Share terms); the Edit dialog and the Excel
 download keep their own order.
+
+**Merged cells (2026-10-15).** The grid renders `gridDisplayColumns(CONTRACT_GRID_COLUMNS)`:
+`GRID_MERGES` folds Start/End/Notice/Auto-renewal → **Term** (`@term`, `ctTermHtml`, with a pill:
+Active / Ends in N days / Expired / No dates — same rule as `renewalFlag`), bank + account no. +
+account name → **Pay to** (`@payTo`), finance name + email → **Finance contact**
+(`@financeContact`). DISPLAY ONLY: the editor, new-merchant form and Excel download still read
+`CONTRACT_GRID_COLUMNS`. Empty required fields (`INCOMPLETE_FIELDS`) show an amber "… missing"
+tag; each terms header shows "· N / total complete" (`ctCompleteCounts`, archived excluded,
+share terms = `!needsTerms`). Contract entity clamps to two lines (`.ct-clamp`), full name on hover.
+The End-date cell tint is gone (the pill replaces it). The "From your merchant upload" hover now
+sits only on file-owned columns; hand-kept ones say "Change it with Edit…" (`isHandKept`).
+Tests: `overview-cells.test.mjs`.
+
+**The whole app blanked (2026-10-15) — and the second guard.** `GRID_MERGES` was first declared
+BELOW `contractLayout`; `CT_CELLS = contractRenderCells()` runs while the script loads, so it hit
+the const before initialisation and every screen came up empty. no-undef cannot see this (the
+name exists). `tests/boot.test.mjs` now runs the WHOLE app.js against a stub page (`bootApp`),
+and `deploy-frontend.sh` runs it after the lint — a file that throws while loading is not
+uploaded. **Anything read at load time (top-level `let x = f()`) must be declared above its
+first top-level use.**
 
 ## 12. Starting fresh in a future session
 

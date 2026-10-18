@@ -1371,6 +1371,16 @@ const CONTRACT_GROUPS = [
 // What the grid's category row shows for each hand-kept category; its key is the one its toggle
 // writes.
 const CONTRACT_CATEGORIES = { contract: 'Contract detail', terms: 'Rev share terms', finance: 'Finance info' };
+// Defined HERE, above contractLayout: CT_CELLS is computed while the script loads, and a const
+// declared further down is not initialised yet — that blanked the whole app (2026-10-15).
+const GRID_MERGES = [
+  { key: '@term', label: 'Term', type: 'merged', group: 'contract', width: 235,
+    from: ['startDate', 'endDate', 'terminationNoticeDays', 'autoRenewal'] },
+  { key: '@payTo', label: 'Pay to', type: 'merged', group: 'finance', width: 235,
+    from: ['bankName', 'bankAccountNumber', 'bankAccountName'] },
+  { key: '@financeContact', label: 'Finance contact', type: 'merged', group: 'finance', width: 205,
+    from: ['financeContactName', 'financeContactEmail'] },
+];
 // A column's category is its group's, falling back to the group itself.
 function contractCategoryOf(groupKey) {
   const g = CONTRACT_GROUPS.find(x => x.key === groupKey);
@@ -1410,7 +1420,7 @@ const groupOpen = key => CONTRACT_GROUPS_ON[key] === true;
 // merchant is what identifies the row, so there must always be something to read.
 function contractLayout() {
   const segs = [];
-  for (const col of CONTRACT_GRID_COLUMNS) {
+  for (const col of gridDisplayColumns(CONTRACT_GRID_COLUMNS)) {
     const groupKey = col.group || 'id';
     // Contract, Finance and Share terms collapse into one segment — one header, one toggle, one
     // data set. Everything else is its own group exactly as before.
@@ -1451,6 +1461,10 @@ let CT_CELLS = contractRenderCells();
 
 function contractHeadHtml() {
   const groupRow = [], colRow = [];
+  // "Finance info · 142 / 200 complete" — what is left to fill in, on the header itself.
+  const done = ctCompleteCounts(CONTRACTS);
+  const countOf = (seg) => done[seg.key] == null ? ''
+    : ` <span class="ct-gcount" title="Active brands with every required ${escape(seg.label.toLowerCase())} field filled in">· ${done[seg.key]} / ${done.total} complete</span>`;
   for (const seg of contractLayout()) {
     if (!seg.toggleable) {
       // The Merchant column is frozen, so the group row needs its own pinned cell above it —
@@ -1459,10 +1473,10 @@ function contractHeadHtml() {
       if (seg.cols.length > 1) groupRow.push(`<th colspan="${seg.cols.length - 1}"></th>`);
     } else if (seg.open) {
       groupRow.push(`<th class="ct-gsep ct-ghead-btn" colspan="${seg.cols.length}" data-group="${seg.key}"`
-        + ` title="Hide the ${escape(seg.label)} columns">${escape(seg.label)} <span class="ct-caret">▾</span></th>`);
+        + ` title="Hide the ${escape(seg.label)} columns">${escape(seg.label)}${countOf(seg)} <span class="ct-caret">▾</span></th>`);
     } else {
       groupRow.push(`<th class="ct-gsep ct-ghead-btn ct-ghead-closed" data-group="${seg.key}"`
-        + ` title="Show the ${escape(seg.label)} columns"><span class="ct-caret">▸</span> ${escape(seg.label)}</th>`);
+        + ` title="Show the ${escape(seg.label)} columns"><span class="ct-caret">▸</span> ${escape(seg.label)}${countOf(seg)}</th>`);
     }
   }
   groupRow.push('<th class="ct-gsep" colspan="2"></th>');
@@ -2363,6 +2377,66 @@ function renewalFlag(c) {
   return { cls: '', title: '' };
 }
 
+// ── The Overview's hand-kept columns, merged for reading (2026-10-15) ──────────────────────
+// 13 single-value columns became 5 two-line cells: Term, Pay to and Finance contact stand in for
+// their fields. DISPLAY ONLY — the editor, the new-merchant form and the Excel download read
+// CONTRACT_GRID_COLUMNS and keep every field separate. An empty REQUIRED field (the same
+// INCOMPLETE_FIELDS the Incomplete tabs use) says "missing" by name, not a dash.
+const ctMissing = (what) => `<span class="ct-missing" title="Not filled in yet — Edit… at the end of the row">${escape(what ? what + ' missing' : 'missing')}</span>`;
+// Typed in this app (Edit…), not read from the upload — decides a cell's hover text only.
+const isHandKept = (col) => EDITABLE_GROUPS.has(col.group);
+// Each merged column takes the place of the first of its fields; the rest drop out.
+function gridDisplayColumns(cols) {
+  const out = [];
+  for (const col of cols) {
+    const m = GRID_MERGES.find(x => x.from.includes(col.key));
+    if (!m) out.push(col);
+    else if (!out.includes(m)) out.push(m);
+  }
+  return out;
+}
+
+function ctTermHtml(c) {
+  const has = (k) => String(c[k] ?? '').trim() !== '';
+  const rf = renewalFlag(c);
+  const d = daysToEnd(c);
+  const pill = !has('startDate') && !has('endDate')
+      ? '<span class="ct-pill ct-pill-none">No dates</span>'
+    : rf.cls === 'ct-expired' ? `<span class="ct-pill ct-pill-over" title="${escape(rf.title)}">Expired</span>`
+    : rf.cls === 'ct-soon' ? `<span class="ct-pill ct-pill-soon" title="${escape(rf.title)}">Ends in ${d} day${d === 1 ? '' : 's'}</span>`
+    : '<span class="ct-pill ct-pill-ok">Active</span>';
+  const dates = `${has('startDate') ? escape(c.startDate) : ctMissing('start date')} → ${has('endDate') ? escape(c.endDate) : ctMissing('end date')}`;
+  const notice = has('terminationNoticeDays') ? `${escape(String(c.terminationNoticeDays))} days notice` : ctMissing('notice');
+  const renew = !has('autoRenewal') ? ctMissing('auto-renewal')
+    : /^y/i.test(String(c.autoRenewal)) ? 'auto-renews' : 'no auto-renewal';
+  return `<div class="ct-two"><div>${dates} ${pill}</div><div class="ct-sub">${notice} · ${renew}</div></div>`;
+}
+
+function ctPayToHtml(c) {
+  const v = (k) => String(c[k] ?? '').trim();
+  if (!v('bankName') && !v('bankAccountNumber') && !v('bankAccountName')) return ctMissing('');
+  return `<div class="ct-two"><div>${v('bankName') ? escape(v('bankName')) : ctMissing('bank')} · `
+    + `${v('bankAccountNumber') ? escape(v('bankAccountNumber')) : ctMissing('account no.')}</div>`
+    + `<div class="ct-sub">${v('bankAccountName') ? escape(v('bankAccountName')) : ctMissing('account name')}</div></div>`;
+}
+
+function ctFinanceContactHtml(c) {
+  const v = (k) => String(c[k] ?? '').trim();
+  if (!v('financeContactName') && !v('financeContactEmail')) return ctMissing('');
+  return `<div class="ct-two"><div>${v('financeContactName') ? escape(v('financeContactName')) : ctMissing('name')}</div>`
+    + `<div class="ct-sub">${v('financeContactEmail') ? escape(v('financeContactEmail')) : ctMissing('email')}</div></div>`;
+}
+
+// How many active brands each hand-kept header has complete — the same test the Incomplete tabs
+// apply (INCOMPLETE_FIELDS; `needsTerms` for share terms, which a no-payout brand passes).
+function ctCompleteCounts(contracts) {
+  const live = (contracts || []).filter(c => c && !c.archived);
+  const done = (part) => live.filter(c => INCOMPLETE_FIELDS[part]
+    .every(f => String((f === 'entity' ? entityName(c) : c[f]) ?? '').trim() !== '')).length;
+  return { total: live.length, contract: done('contract'), finance: done('finance'),
+           terms: live.filter(c => !needsTerms(c)).length };
+}
+
 // Canonical string form of a value for structural equality checks — key-order-insensitive
 // (compileRule emits `_method` last, so plain JSON.stringify gives false negatives when
 // comparing a freshly compiled rule against one stored earlier with different key order).
@@ -2461,7 +2535,10 @@ function contractRowHtml(c) {
             : col.key.startsWith('units.') ? (unitsOf(c)[col.key.slice(6)] ?? null)
             : cellValue(c, col.key);
     let disp;
-    if (col.type && col.type.startsWith('term-')) disp = termCellHtml(c, col);
+    if (col.key === '@term') disp = ctTermHtml(c);
+    else if (col.key === '@payTo') disp = ctPayToHtml(c);
+    else if (col.key === '@financeContact') disp = ctFinanceContactHtml(c);
+    else if (col.type && col.type.startsWith('term-')) disp = termCellHtml(c, col);
     else if (col.type === 'computed') {
       const fromFile = !!fileBrandOf(c);
       const why = fromFile
@@ -2469,6 +2546,7 @@ function contractRowHtml(c) {
         : 'Sum of the per-model counts. This brand is not in your latest upload, so these are the stored numbers.';
       disp = `<span class="ct-computed" title="${escape(why)}">${unitsTotal(c)}</span>`;
     }
+    else if (col.key === 'counterParty') disp = v ? `<span class="ct-clamp">${escape(String(v))}</span>` : '';
     else if (col.type === 'bool') disp = v ? '✓' : '';
     else if (col.type === 'url') {
       disp = !v ? ''
@@ -2510,12 +2588,17 @@ function contractRowHtml(c) {
     }
     // An explicit dash for empty, so "nothing recorded" is distinguishable from a cell that
     // simply failed to render — at this width a blank cell reads as a glitch.
-    if (disp === '') disp = '<span class="ct-empty">–</span>';
+    if (disp === '') disp = col.key === 'counterParty' ? ctMissing('entity') : '<span class="ct-empty">–</span>';
     const cls = colClasses(cell, i);
-    const flag = col.key === 'endDate' && rf.cls ? ` ${rf.cls}` : '';
+    const flag = '';   // renewal risk is the Term cell's pill now, not a tinted End cell
     const ro = editable || !can('manageMerchants') ? '' : ' ct-ro';
-    const tip = col.key === 'endDate' && rf.title ? ` title="${escape(rf.title)}"`
-      : (ro ? ' title="From your merchant upload — change it in the file, not here. An import would overwrite an edit made in this cell."' : '');
+    // The upload warning is for FILE-OWNED columns only. It used to sit on every cell, so the
+    // contract entity — typed in this app, never in the file — told people to change it in the
+    // file (2026-10-15 screenshot). Hand-kept cells point at Edit… instead.
+    const tip = col.key === 'counterParty' ? ` title="${escape(String(v || ''))}"`
+      : !ro ? ''
+      : isHandKept(col) ? ' title="Change it with Edit… at the end of the row."'
+      : ' title="From your merchant upload — change it in the file, not here. An import would overwrite an edit made in this cell."';
     return `<td class="ct-cell ${cls}${flag}${ro}" data-id="${escape(c.contractId)}" data-key="${col.key}"${tip}>${disp}</td>`;
   }).join('');
   // Edit-terms column: the row owns its terms directly now, so this is just a control,

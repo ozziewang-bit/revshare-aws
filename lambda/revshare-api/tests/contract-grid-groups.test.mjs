@@ -92,7 +92,8 @@ const appSrc = readFileSync(new URL('../../../frontend/app.js', import.meta.url)
 // columns (they must be ADJACENT) fails here rather than on screen.
 const layout = (stored = null) => new Function('localStorage', 'UNIT_MODELS_FALLBACK',
   src + '\n' + between('const FINANCE_COLUMNS = [', '];') + '\n' + grab('buildContractGridColumns')
-  + '\nconst CONTRACT_GRID_COLUMNS = buildContractGridColumns(["L20"]);\n' + grab('contractLayout')
+  + '\nconst CONTRACT_GRID_COLUMNS = buildContractGridColumns(["L20"]);\n'
+  + grab('gridDisplayColumns') + grab('contractLayout')   // GRID_MERGES is inside `src`
   + '\nreturn contractLayout();')({ getItem: () => stored, setItem: () => {} }, ['L20']);
 
 // And again the same day: the contract columns are "Contract detail", not rev share terms.
@@ -101,11 +102,11 @@ test('Brand terms is split into Contract detail, Rev share terms and Finance inf
   assert.deepEqual(segs.map((x) => x.label), ['Contact', 'Machines', 'Contract detail', 'Rev share terms', 'Finance info'],
     'each label appears exactly once, so each category is one contiguous header');
   const cols = (label) => segs.find((x) => x.label === label).cols.map((c) => c.key);
-  assert.deepEqual(cols('Contract detail'),
-    ['counterParty', 'startDate', 'endDate', 'terminationNoticeDays', 'autoRenewal', 'contractLink']);
+  // The grid shows merged cells (2026-10-15, overview-cells.test.mjs); the fields behind them are
+  // unchanged.
+  assert.deepEqual(cols('Contract detail'), ['counterParty', '@term', 'contractLink']);
   assert.deepEqual(cols('Rev share terms'), ['term.method', 'term.summary']);
-  assert.deepEqual(cols('Finance info'),
-    ['bankName', 'bankAccountName', 'bankAccountNumber', 'financeContactName', 'financeContactEmail']);
+  assert.deepEqual(cols('Finance info'), ['@payTo', '@financeContact']);
 });
 
 test('both open on a first visit, and each closes on its own', () => {
